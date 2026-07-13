@@ -1,0 +1,1982 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RDF Expense System  ระบบบริหารรายจ่าย มูลนิธิ RDF</title>
+    <meta name="description" content="ระบบบันทึกและบริหารรายจ่ายโครงการ มูลนิธิ Dr. Robert Dyckerhoff  วิทยาลัยการอาชีพแม่สะเรียง">
+    <!-- SweetAlert2 -->
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* Extra inline styles */
+        .header-filters {
+            display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+            background: var(--surface); backdrop-filter: blur(var(--blur-amount));
+            border: 1px solid var(--border-color);
+            padding: 16px 24px; border-radius: 16px; margin-bottom: 24px;
+        }
+        .header-filter-group { display: flex; align-items: center; gap: 8px; }
+        .header-filter-group label { font-size: 13px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+        .carry-over-banner {
+            display: flex; align-items: center; gap: 12px;
+            background-color: var(--warning-light); border: 1px solid var(--warning);
+            color: var(--text-primary); padding: 12px 20px;
+            border-radius: 12px; margin-bottom: 24px; font-size: 14px; font-weight: 500;
+        }
+        .carry-over-banner svg { color: var(--warning); }
+        .month-status-box {
+            display: flex; align-items: center; gap: 8px;
+            background-color: var(--surface-solid); padding: 8px 16px;
+            border-radius: 10px; border: 1px solid var(--border-color);
+            font-size: 13px; cursor: pointer; user-select: none;
+        }
+        .month-status-box input { cursor: pointer; }
+        .badge-project {
+            background-color: var(--accent-light); color: var(--accent);
+            padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+        }
+        .badge-fund {
+            background-color: var(--warning-light); color: var(--warning);
+            padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+            border: 1px solid rgba(245,158,11,0.2);
+        }
+        .badge-cat {
+            background-color: rgba(99,102,241,0.12); color: #6366f1;
+            padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+        }
+        /* Master Data Tab */
+        .master-data-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+        }
+        @media (max-width: 900px) { .master-data-grid { grid-template-columns: 1fr; } }
+        .master-section-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 16px;
+        }
+        .master-section-title {
+            font-size: 16px; font-weight: 700; color: var(--text-primary);
+            display: flex; align-items: center; gap: 8px;
+        }
+        .master-section-icon {
+            width: 32px; height: 32px; border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 16px;
+        }
+        .icon-project { background: var(--accent-light); color: var(--accent); }
+        .icon-category { background: rgba(99,102,241,0.12); color: #6366f1; }
+        .icon-vendor { background: rgba(16,185,129,0.12); color: #10b981; }
+        .icon-fund { background: var(--warning-light); color: var(--warning); }
+    </style>
+    <!-- Google Identity Services (for Google Login) -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+<div class="app-container">
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+        <div class="logo-container" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div class="logo-icon"><i data-lucide="wallet"></i></div>
+                <span class="logo-text">RDF Expense</span>
+            </div>
+            <button class="btn btn-icon sidebar-close-btn" id="btn-sidebar-close" style="display: none; background: transparent; border: none; color: var(--text-secondary); cursor: pointer; padding: 4px;">
+                <i data-lucide="x" style="width: 20px; height: 20px;"></i>
+            </button>
+        </div>
+        
+        <!-- User Profile Box -->
+        <div class="user-profile-box" id="user-profile-box" style="display:none; padding:12px 16px; margin: 0 16px 16px 16px; background:var(--surface-solid); border-radius:12px; border:1px solid var(--border-color); font-size:12px; display: flex; align-items: center; gap: 10px;">
+            <div style="width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px;" id="user-avatar-char">U</div>
+            <div style="flex: 1; min-width: 0;">
+                <div style="font-weight:600; color:var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" id="user-profile-name">ผู้ใช้งาน</div>
+                <div style="color:var(--text-muted); font-size:10px; text-transform: uppercase;" id="user-profile-role">สิทธิ์: staff</div>
+            </div>
+        </div>
+
+        <nav class="nav-menu" style="display: flex; flex-direction: column; flex: 1;">
+            <div class="sidebar-category" style="font-size: 11px; font-weight: 700; color: var(--text-muted); padding: 16px 16px 8px 16px; text-transform: uppercase; letter-spacing: 0.5px;">เมนูหลัก (Main)</div>
+            <li class="nav-item active" data-tab="dashboard">
+                <a><i data-lucide="layout-dashboard"></i> แดชบอร์ด</a>
+            </li>
+            <li class="nav-item" data-tab="bills-table">
+                <a><i data-lucide="receipt"></i> บันทึกบิลประจำเดือน</a>
+            </li>
+            <li class="nav-item" data-tab="claims-view">
+                <a><i data-lucide="package"></i> จัดกลุ่มส่งเบิก (Claims)</a>
+            </li>
+            <li class="nav-item" data-tab="spreadsheet-view">
+                <a><i data-lucide="table-2"></i> สเปรดชีตส่งเบิก</a>
+            </li>
+            <div class="sidebar-category" style="font-size: 11px; font-weight: 700; color: var(--text-muted); padding: 16px 16px 8px 16px; text-transform: uppercase; letter-spacing: 0.5px;">ค่าอาหาร (Food)</div>
+            <li class="nav-item" data-tab="food-overview">
+                  <a><i data-lucide="utensils"></i> ค่าอาหารประจำเดือน</a>
+              </li>
+            <div class="sidebar-category" style="font-size: 11px; font-weight: 700; color: var(--text-muted); padding: 16px 16px 8px 16px; text-transform: uppercase; letter-spacing: 0.5px;">ระบบ (System)</div>
+            <li class="nav-item" data-tab="summary-view">
+                <a><i data-lucide="calendar-days"></i> รายงานสรุปรายปี</a>
+            </li>
+            <!-- Logout Button -->
+            <li class="nav-item" data-tab="settings-view" id="nav-settings">
+                <a><i data-lucide="settings"></i> ตั้งค่าระบบ</a>
+            </li>
+            <li class="nav-item" id="nav-item-logout" style="margin-top: auto; border-top: 1px solid var(--border-color); padding-top: 8px;">
+                <a style="color: var(--danger);"><i data-lucide="log-out"></i> ออกจากระบบ</a>
+            </li>
+        </nav>
+        <div class="sidebar-footer">
+            <button class="theme-toggle-btn" id="theme-toggle">
+                <i data-lucide="moon" class="theme-icon-dark"></i>
+                <i data-lucide="sun" class="theme-icon-light" style="display:none;"></i>
+                <span id="theme-text">โหมดมืด</span>
+            </button>
+            <div style="font-size:11px; color:var(--text-muted); text-align:center;">
+                วก.แม่สะเรียง &copy; 2026
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- Header Bar -->
+        <header class="header-bar">
+            <div style="display: flex; align-items: center; gap: 14px;">
+                <button class="btn btn-outline sidebar-toggle-btn" id="btn-sidebar-toggle" style="padding: 8px; border-radius: 8px; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; border-color: var(--border-color); color: var(--text-primary); cursor: pointer; background: transparent;">
+                    <i data-lucide="menu" style="width: 20px; height: 20px;"></i>
+                </button>
+                <div>
+                    <h1 class="page-title" id="page-title-display">แดชบอร์ดรายจ่าย</h1>
+                <p class="page-subtitle" id="page-subtitle-display">ภาพรวมการเงินแยกตามเดือน โครงการ และแหล่งเงิน</p>
+            </div>
+            <div class="header-actions">
+
+            <!-- User Profile Top Right -->
+            <div style="display:flex; align-items:center; gap:10px; cursor:pointer;" onclick="openUserProfileModal()">
+                <div style="text-align:right;">
+                    <div id="header-username" style="font-size:14px; font-weight:bold;">Guest</div>
+                    <div id="header-role" style="font-size:12px; color:var(--text-secondary);">User</div>
+                </div>
+                <img id="header-avatar" src="https://ui-avatars.com/api/name=User&background=random" style="width:36px; height:36px; border-radius:50%; object-fit:cover;">
+            </div>
+
+                <button class="btn btn-outline" id="btn-export-main" onclick="openExportModal()" style="display:flex; align-items:center; gap:8px; border-color:var(--primary); color:var(--primary);">
+                    <i data-lucide="file-down" style="width:16px;height:16px;"></i> ส่งออกรายงาน
+                </button>
+            </div>
+        </header>
+
+        <!-- Month / Year / Calc Mode Controls -->
+        <section class="header-filters">
+            <div class="header-filter-group">
+                <label for="select-month"><i data-lucide="calendar" style="width:16px;height:16px;vertical-align:middle;"></i> เลือกเดือน:</label>
+                <select id="select-month" class="form-select">
+                    <option value="1">มกราคม</option><option value="2">กุมภาพันธ์</option>
+                    <option value="3">มีนาคม</option><option value="4">เมษายน</option>
+                    <option value="5">พฤษภาคม</option><option value="6">มิถุนายน</option>
+                    <option value="7">กรกฎาคม</option><option value="8">สิงหาคม</option>
+                    <option value="9">กันยายน</option><option value="10">ตุลาคม</option>
+                    <option value="11">พฤศจิกายน</option><option value="12">ธันวาคม</option>
+                </select>
+            </div>
+            <div class="header-filter-group">
+                <label for="select-year">ปี ..:</label>
+                <select id="select-year" class="form-select">
+                    <option value="2566">2566</option><option value="2567">2567</option>
+                    <option value="2568">2568</option><option value="2569">2569</option>
+                    <option value="2570">2570</option>
+                </select>
+            </div>
+            <div class="header-filter-group" style="margin-left:auto;">
+                <label for="select-calc-mode"><i data-lucide="calculator" style="width:16px;height:16px;vertical-align:middle;"></i> คำนวณยอดเงิน:</label>
+                <select id="select-calc-mode" class="form-select">
+                    <option value="all">แสดงข้อมูลทั้งหมด (All)</option>
+                    <option value="claim">แสดงเฉพาะยอดเบิกมูลนิธิ</option>
+                    <option value="no-claim">แสดงเฉพาะยอดไม่เบิกมูลนิธิ</option>
+                </select>
+            </div>
+            <label class="month-status-box" id="month-status-label">
+                <input type="checkbox" id="month-status-unclaimed">
+                <span>ยังไม่ได้เบิก (ยกยอดไปเดือนถัดไป)</span>
+            </label>
+        </section>
+
+        <!-- Carry Over Banner -->
+        <div id="carry-over-banner" class="carry-over-banner" style="display:none;">
+            <i data-lucide="info"></i>
+            <span id="carry-over-text">ยอดยกมาจากเดือนก่</span>
+        </div>
+
+        <!-- Metrics Cards -->
+        <section class="metrics-grid" id="metrics-bar">
+            <div class="metric-card primary">
+                <div class="metric-header">
+                    <span>ยอดค่าใช้จ่ายประจำเดือน</span>
+                    <div class="metric-icon"><i data-lucide="coins"></i></div>
+                </div>
+                <div class="metric-value" id="metric-total-expense">0.00</div>
+                <div class="metric-thai-text" id="metric-total-expense-thai">-</div>
+            </div>
+            <div class="metric-card accent" id="metric-claimable-card">
+                <div class="metric-header">
+                    <span>ยอดขอเบิกมูลนิธิ (เดือนนี้ + ยกมา)</span>
+                    <div class="metric-icon"><i data-lucide="file-check"></i></div>
+                </div>
+                <div class="metric-value" id="metric-total-claimable">0.00</div>
+                <div class="metric-thai-text" id="metric-total-claimable-thai">-</div>
+            </div>
+            <div class="metric-card warning" id="metric-non-claimable-card">
+                <div class="metric-header">
+                    <span>ยอดไม่ขอเบิกมูลนิธิ</span>
+                    <div class="metric-icon"><i data-lucide="file-x"></i></div>
+                </div>
+                <div class="metric-value" id="metric-total-non-claimable">0.00</div>
+                <div class="metric-thai-text" id="metric-total-non-claimable-thai">-</div>
+            </div>
+        </section>
+
+        <!-- ===== TAB 1: Dashboard ===== -->
+        <div id="tab-dashboard" class="tab-content active">
+            <div class="dashboard-row">
+                <div style="display:flex; flex-direction:column; gap:24px;">
+                    <!-- Project breakdown -->
+                    <div class="widget">
+                        <div class="widget-header">
+                            <h3 class="widget-title">สรุปค่าใช้จ่ายแยกตามโครงการ</h3>
+                        </div>
+                        <div class="table-container">
+                            <table class="data-table" id="dashboard-project-table">
+                                <thead>
+                                    <tr>
+                                        <th>โครงการ</th>
+                                        <th class="text-right">ยอดเบิกมูลนิธิ</th>
+                                        <th class="text-right">ยอดไม่เบิก</th>
+                                        <th class="text-right">รวมทั้งหมด</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <!-- Fund Sources breakdown -->
+                    <div class="widget">
+                        <div class="widget-header">
+                            <h3 class="widget-title">สรุปยอดสำรองจ่ายจำแนกตามแหล่งเงิน</h3>
+                        </div>
+                        <div class="table-container">
+                            <table class="data-table" id="dashboard-fund-table">
+                                <thead>
+                                    <tr>
+                                        <th>แหล่งเงินสำรองจ่าย</th>
+                                        <th class="text-right">ยอดเงินนรวม</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                <!-- Chart -->
+                <div class="widget" style="display:flex; flex-direction:column; justify-content:center;">
+                    <div class="widget-header">
+                        <h3 class="widget-title">สัดส่วนรายจ่ายตามหมวดหมู่</h3>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="chart-categories"></canvas>
+                    </div>
+                </div>
+            </div>
+            <!-- Recent Bills table -->
+            <div class="widget">
+                <div class="widget-header">
+                    <h3 class="widget-title">รายการบิลล่าสุดของเดือนนี้</h3>
+                    <button class="btn btn-secondary btn-sm" id="btn-view-all-dashboard">ดูและจัดการบิลทั้งหมด</button>
+                </div>
+                <div class="table-container">
+                    <table class="data-table" id="dashboard-recent-table">
+                        <thead>
+                            <tr>
+                                <th>เลขบิล</th>
+                                <th>วันที่</th>
+                                <th>โครงการ</th>
+                                <th>หมวดหมู่</th>
+                                <th>แหล่งเงิน</th>
+                                <th>ร้าน + รายการ</th>
+                                <th class="text-right">ราคา/หน่วย</th>
+                                <th class="text-right">รวม</th>
+                                <th>ประเภท</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== TAB 2: Bills Table ===== -->
+        <div id="tab-bills-table" class="tab-content">
+
+            <div class="summary-filter-bar">
+                <div class="filter-group">
+                    <label for="filter-search">ค้นหารายการ</label>
+                    <input type="text" id="filter-search" class="form-input" placeholder="พิมพ์คำค้น...">
+                </div>
+                <div class="filter-group">
+                    <label for="filter-project">โครงการ</label>
+                    <select id="filter-project" class="form-select">
+                        <option value="all">ทั้งหมด</option>
+                        <!-- populated dynamically -->
+                    </select>
+                </div>
+            </div>
+
+            <!-- Additional Project Bills Button (No Table) -->
+            <div class="widget" style="margin-bottom:24px;">
+                <div class="widget-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                    <h3 class="widget-title" id="additional-bills-widget-title" style="margin-bottom:0;">รายการใช้จ่าย (โครงการเพิ่มเติม)</h3>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <button class="btn btn-accent btn-sm" onclick="openExpenseModal(null, true)" style="display:flex; align-items:center; gap:6px;">
+                            <i data-lucide="folder-plus" style="width:16px; height:16px;"></i> เพิ่มรายการใช้จ่าย
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Expense Records Table -->
+            <div class="widget" style="margin-bottom:24px;">
+                <div class="widget-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                    <h3 class="widget-title" id="bills-widget-title" style="margin-bottom:0;">รายการบิลประจำเดือน</h3>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <button class="btn btn-primary btn-sm" onclick="openExpenseModal()" style="display:flex; align-items:center; gap:6px;">
+                            <i data-lucide="plus-circle" style="width:16px; height:16px;"></i> กรอกผ่าน Popup
+                        </button>
+                    </div>
+                </div>
+                <div class="table-container">
+                    <table class="data-table" id="full-bills-table">
+                        <thead>
+                            <tr>
+                                <th>เลขบิล</th>
+                                <th>วันที่บิล</th>
+                                <th>โครงการ</th>
+                                <th>หมวดหมู่</th>
+                                <th>แหล่งเงิน</th>
+                                <th>ร้านค้า/ผู้ขาย</th>
+                                <th>รายละเอียด</th>
+                                <th class="text-right">จำนวน</th>
+                                <th class="text-right">ราคา/หน่วย</th>
+                                <th class="text-right">รวม</th>
+                                <th>ประเภท</th>
+                                <th class="text-center">หลักฐาน</th>
+                                <th class="text-center">เครื่องมือ</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+
+            
+            <!-- Food Expenses Table -->
+            <div class="widget" style="margin-bottom:24px;">
+                <div class="widget-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                    <div style="display:flex; align-items:center; gap:14px;">
+                        <h3 class="widget-title" id="food-bills-widget-title" style="margin-bottom:0;">ค่าอาหารประจำเดือน</h3>
+                        <span id="food-widget-month-badge" style="font-size:12px; color:var(--text-secondary); background:var(--bg-main); padding:3px 10px; border-radius:20px; border:1px solid var(--border-color);"></span>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="openFoodEntryModal()" style="display:flex; align-items:center; gap:6px;">
+                        <i data-lucide="plus-circle" style="width:16px; height:16px;"></i> เพิ่มค่าอาหาร
+                    </button>
+                </div>
+                <div class="table-container">
+                    <table class="data-table" id="food-bills-table">
+                        <thead>
+                            <tr>
+                                <th>ลำดับ</th>
+                                <th>วันที่</th>
+                                <th>รายการ</th>
+                                <th>หมวดหมู่</th>
+                                <th class="text-right">จำนวน</th>
+                                <th class="text-right">ราคา/หน่วย</th>
+                                <th class="text-right">รวมเป็นเงิน</th>
+                                <th class="text-center">หลักฐาน</th>
+                                <th class="text-center">เครื่องมือ</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                    <datalist id="food-item-suggestions"></datalist>
+                </div>
+            </div>
+
+            <!-- Attachment Records Table -->
+            <div class="widget">
+                <div class="widget-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                    <h3 class="widget-title" id="attach-widget-title" style="margin-bottom:0;">รายการบิลแนบ / ค่าสาธารณูปโภคประจำเดือน</h3>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <button class="btn btn-secondary btn-sm" onclick="openAttachmentModal()" style="display:flex; align-items:center; gap:6px;">
+                            <i data-lucide="paperclip" style="width:16px; height:16px;"></i> กรอกบิลแนบผ่าน Popup
+                        </button>
+                    </div>
+                </div>
+                <div class="table-container">
+                    <table class="data-table" id="attached-bills-table">
+                        <thead>
+                            <tr>
+                                <th>เลขบิล</th>
+                                <th>วันที่บิล</th>
+                                <th>โครงการ</th>
+                                <th>หมวดหมู่</th>
+                                <th>แหล่งเงิน</th>
+                                <th>ร้านค้า/ผู้ขาย</th>
+                                <th>รายละเอียด</th>
+                                <th class="text-right">จำนวน</th>
+                                <th class="text-right">ราคา/หน่วย</th>
+                                <th class="text-right">รวม</th>
+                                <th>ประเภท</th>
+                                <th class="text-center">หลักฐาน</th>
+                                <th>เครื่องมือ</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+
+
+
+
+                </div>
+
+        <!-- ===== TAB 2.5: Claim Packages (จัดกลุ่มงเบิ) ===== -->
+        <div id="tab-claims-view" class="tab-content">
+            <div class="header-filters" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                <div style="display:flex; gap:12px; align-items:center;">
+                    <button class="btn btn-primary" id="btn-create-claim">
+                        <i data-lucide="plus-circle"></i> สร้างชุดส่งเบิกใหม่
+                    </button>
+                </div>
+                <div style="font-size:13px; color:var(--text-secondary);" id="claims-count-display">
+                    จำนวนชุดงเบิกทั้งหมด: 0 รายการ
+                </div>
+            </div>
+
+            <div class="widget">
+                <div class="table-container">
+                    <table class="data-table" id="claims-list-table">
+                          <thead>
+                              <tr>
+                                  <th style="width:40px; text-align:center;"><input type="checkbox" id="claim-master-checkbox" onchange="toggleMasterClaimCheckbox()"></th>
+                                <th>รหัสชุด</th>
+                                <th>ชื่อชุดส่งเบิก</th>
+                                <th>ประจำเดือน</th>
+                                <th class="text-right">จำนวนรายการ</th>
+                                <th class="text-right">ยอดรวมสุทธิ</th>
+                                <th class="text-center">สถานะ</th>
+                                <th class="text-center">การจัดการ / ลายเซ็น</th>
+                                <th class="text-center">เครื่องมือ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="claims-list-tbody">
+                            <!-- Dynamic content -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== TAB 3: Spreadsheet ===== -->
+        <div id="tab-spreadsheet-view" class="tab-content">
+            <div class="spreadsheet-outer">
+                <div class="spreadsheet-toolbar" style="display:flex; justify-content:space-between; align-items:center;">
+                    <span class="spreadsheet-tab-title">
+                        <i data-lucide="file-spreadsheet" style="vertical-align:middle;"></i>
+                        ใบขอเบิกเงินบิล RDF ประจำเดือน <span id="sheet-month-name">สิงหาคม</span> .. <span id="sheet-year-val">2566</span>
+                    </span>
+                    <button class="btn btn-success btn-sm" id="btn-export-excel" style="background-color: var(--success); border-color: var(--success); color: white; display:flex; align-items:center; gap:6px;">
+                        <i data-lucide="download"></i> ส่งออกไฟล์ Excel (.xlsx)
+                    </button>
+                </div>
+                <div class="spreadsheet-grid-container">
+                    <table class="spreadsheet-table" id="excel-grid"></table>
+                </div>
+                <div class="spreadsheet-tabs">
+                    <div class="sheet-tab" id="sheet-tab-name">บิล RDF</div>
+                </div>
+            </div>
+            <div style="margin-top:12px; font-size:13px; color:var(--text-secondary); display:flex; align-items:center; gap:6px;">
+                <i data-lucide="info" size="16"></i>
+                <span>ดับเบิ้ลคลิกที่เซลล์เพื่อแก้ไขข้อมูลโดยตรง</span>
+            </div>
+        </div>
+
+        
+        <!-- ===== TAB: Food Overview ===== -->
+        <div id="tab-food-overview" class="tab-content">
+            <div class="header-filters" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:16px;">
+                <h2 class="widget-title" style="margin-bottom:0;">ภาพรวมค่าอาหารประจำเดือน</h2>
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <label>เลือกเดือน:</label>
+                    <input type="month" id="food-overview-month" class="form-input" onchange="loadFoodOverview()">
+                    <button type="button" class="btn btn-primary" onclick="exportFoodPDF()"><i data-lucide="file-text"></i> ส่งออกสรุปยอด (PDF)</button>
+                </div>
+            </div>
+
+            <div style="display:grid; grid-template-columns: 1fr; gap:24px; margin-top:24px;">
+                <div class="widget">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                        <h3 class="widget-title">รายการค่าอาหารประจำเดือน</h3>
+                        <div class="kpi-value" style="color:var(--primary); font-size:24px;" id="food-overview-total">0.00 บาท</div>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:40px;">#</th>
+                                    <th style="width:100px;">วันที่</th>
+                                    <th>รายการอาหาร/วัตถุดิบ</th>
+                                    <th>หมวดหมู่</th>
+                                    <th class="text-right">จำนวน</th>
+                                    <th class="text-right">ราคา/หน่วย</th>
+                                    <th class="text-right">รวมเป็นเงิน</th>
+                                </tr>
+                            </thead>
+                            <tbody id="food-overview-tbody">
+                                <!-- Data will be loaded here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== TAB: Food Entry ===== -->
+
+
+        <!-- TAB: User Management -->
+        <!-- JS will populate -->
+
+    <!-- TAB: Settings -->
+    <div class="tab-content" id="tab-settings-view">
+        <div style="max-width:900px; margin:0;">
+            
+            <div class="settings-header" style="background: linear-gradient(135deg, #4f46e5, #7c3aed); padding: 30px; border-radius: 16px; color: white; margin-bottom: 30px; box-shadow: 0 10px 25px rgba(79, 70, 229, 0.25); position: relative; overflow: hidden;">
+                <div style="position: absolute; right: -20px; top: -20px; opacity: 0.1;">
+                    <i data-lucide="settings" style="width: 150px; height: 150px;"></i>
+                </div>
+
+            <!-- ========================================================= -->
+            <!-- SECTION: Master Data Management -->
+            <!-- ========================================================= -->
+            <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
+                <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">จัดการข้อมูลหลัก (Master Data)</div>
+                <div style="flex:1; height:1px; background:var(--border-color);"></div>
+            </div>
+
+            <div class="master-data-grid" style="margin-bottom: 20px;">
+                <!-- โครงการ -->
+                <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
+                    <div class="master-section-header">
+                        <div class="master-section-title">
+                            <div class="master-section-icon icon-project"><i data-lucide="briefcase"></i></div>
+                            โครงการ
+                        </div>
+                        <button class="btn btn-primary" onclick="openMasterModal('project')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
+                    </div>
+                    <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                        <table class="table" id="master-projects-table" style="margin:0;">
+                            <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
+                                <tr><th>ชื่อโครงการ</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- หมวดหมู่ -->
+                <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
+                    <div class="master-section-header">
+                        <div class="master-section-title">
+                            <div class="master-section-icon icon-category"><i data-lucide="tag"></i></div>
+                            หมวดหมู่
+                        </div>
+                        <button class="btn btn-primary" onclick="openMasterModal('category')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
+                    </div>
+                    <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                        <table class="table" id="master-categories-table" style="margin:0;">
+                            <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
+                                <tr><th>หมวดหมู่</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- แหล่งเงิน -->
+                <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
+                    <div class="master-section-header">
+                        <div class="master-section-title">
+                            <div class="master-section-icon icon-fund"><i data-lucide="wallet"></i></div>
+                            แหล่งเงิน
+                        </div>
+                        <button class="btn btn-primary" onclick="openMasterModal('fundsource')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
+                    </div>
+                    <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                        <table class="table" id="master-fundsources-table" style="margin:0;">
+                            <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
+                                <tr><th>แหล่งเงิน</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ร้านค้า -->
+                <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
+                    <div class="master-section-header">
+                        <div class="master-section-title">
+                            <div class="master-section-icon icon-vendor"><i data-lucide="store"></i></div>
+                            ร้านค้า/ผู้ขาย
+                        </div>
+                        <button class="btn btn-primary" onclick="openMasterModal('vendor')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
+                    </div>
+                    <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                        <table class="table" id="master-vendors-table" style="margin:0;">
+                            <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
+                                <tr><th>ร้านค้า/ผู้ขาย</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+                <h2 style="margin: 0; font-size: 24px; font-weight: 700; position: relative; z-index: 1;">ตั้งค่าระบบ (System Settings)</h2>
+                <p style="margin: 5px 0 0; font-size: 14px; opacity: 0.9; position: relative; z-index: 1;">ปรับแต่งการทำงาน การเชื่อมต่อ และควบคุมระบบทั้งหมดจากที่นี่</p>
+            </div>
+
+            
+            <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
+                <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">การตั้งค่าทั่วไป (General)</div>
+                <div style="flex:1; height:1px; background:var(--border-color);"></div>
+            </div>
+
+            <!-- Section: File Upload -->
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+                    <div style="width:40px;height:40px;background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                        <i data-lucide="upload-cloud" style="width:20px;height:20px;color:white;"></i>
+                    </div>
+                    <div>
+                        <h3 style="font-size:15px;font-weight:700;margin:0;">ตั้งค่าการอัปโหลดไฟล์ (File Upload Limit)</h3>
+                        <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">กำหนดขนาดสูงสุดที่อนุญาตให้อัปโหลด (ระบบจะบีบอัดภาพอัตโนมัติให้ไม่เกินค่านี้)</p>
+                    </div>
+                </div>
+                <div class="form-group" style="max-width:300px;">
+                    <label class="form-label">ขนาดไฟล์แนบสูงสุด (MB)</label>
+                    <div style="display:flex; gap:8px;">
+                        <input type="number" id="setting-max-upload-size" class="form-input" min="1" max="20" placeholder="2">
+                        <button class="btn btn-primary" onclick="saveSystemSetting('MAX_UPLOAD_SIZE_MB', document.getElementById('setting-max-upload-size').value)" style="white-space:nowrap; padding:0 16px;">บันทึก</button>
+                    </div>
+                </div>
+            </div>
+
+            
+
+            <!-- Section: Bottom Nav Opacity -->
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+                    <div style="width:40px;height:40px;background:linear-gradient(135deg,#f59e0b,#d97706);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                        <i data-lucide="smartphone" style="width:20px;height:20px;color:white;"></i>
+                    </div>
+                    <div style="flex:1;">
+                        <h3 style="font-size:15px;font-weight:700;margin:0;">ความโปร่งใสของเมนูด้านล่าง (มือถือ)</h3>
+                        <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">ปรับระดับความทึบแสงของแถบ Bottom Navigation</p>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <div style="display:flex; justify-content:space-between; margin-bottom: 8px;">
+                        <span style="font-size:12px; font-weight:600;">โปร่งใสมาก</span>
+                        <span style="font-size:12px; font-weight:600;" id="bottom-nav-opacity-value">85%</span>
+                        <span style="font-size:12px; font-weight:600;">ทึบแสง</span>
+                    </div>
+                    <input type="range" id="setting-bottom-nav-opacity" min="0.3" max="1.0" step="0.05" value="0.85" style="width:100%; cursor:pointer;">
+                    <div style="text-align:right; margin-top:12px;">
+                        <button class="btn btn-primary" onclick="saveBottomNavOpacity()" style="padding:6px 16px; font-size:13px;">บันทึกการตั้งค่า</button>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
+                <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">การเชื่อมต่อบริการ (Integrations)</div>
+                <div style="flex:1; height:1px; background:var(--border-color);"></div>
+            </div>
+
+            <!-- Section: Google Login -->
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+                    <div style="width:40px;height:40px;background:linear-gradient(135deg,#4285f4,#34a853);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                        <i data-lucide="chrome" style="width:20px;height:20px;color:white;"></i>
+                    </div>
+                    <div>
+                        <h3 style="font-size:15px;font-weight:700;margin:0;">Google Login (OAuth 2.0)</h3>
+                        <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">อนุญาตให้ผู้ใช้เข้าสู่ระบบด้วยบัญชี Google</p>
+                    </div>
+                    <div style="margin-left:auto;display:flex;align-items:center;gap:10px;">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="setting-google-login-enabled" onchange="saveSystemSetting('GOOGLE_LOGIN_ENABLED', this.checked)">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span id="setting-google-login-status" style="font-size:12px;color:var(--text-secondary);">ปิดอยู่</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Google OAuth Client ID</label>
+                    <div style="display:flex; gap:8px;">
+                        <input type="text" id="setting-google-client-id" class="form-input" placeholder="xxxxxxxx.apps.googleusercontent.com" style="font-size:12px; font-family:monospace;">
+                        <button class="btn btn-primary" onclick="saveSecureSetting('GOOGLE_OAUTH_CLIENT_ID', document.getElementById('setting-google-client-id').value)" style="white-space:nowrap; padding:0 16px;">
+                            <i data-lucide="save"></i> บันทึก
+                        </button>
+                    </div>
+                    <p style="font-size:11px;color:var(--text-secondary);margin-top:6px;">
+                        📌 วิธีขอ Client ID: <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:var(--primary);">Google Cloud Console</a>  ที่หน้า OAuth 2.0 Client เลือก Web Application  และเพิ่ม Authorized origins ของ URL แอปนี้
+                    </p>
+                </div>
+            </div>
+
+            <!-- Section: Google Drive -->
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+                    <div style="width:40px;height:40px;background:linear-gradient(135deg,#0f9d58,#0b8043);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                        <i data-lucide="folder-open" style="width:20px;height:20px;color:white;"></i>
+                    </div>
+                    <div>
+                        <h3 style="font-size:15px;font-weight:700;margin:0;">Google Drive จัดเก็บไฟล์</h3>
+                        <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">ระบุโฟลเดอร์สำหรับเก็บใบเสร็จ เอกสาร และรูปภาพ</p>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Drive Folder ID (โฟลเดอร์หลัก)</label>
+                    <div style="display:flex; gap:8px;">
+                        <input type="text" id="setting-drive-folder-id" class="form-input" placeholder="1AbcXxxx... (จาก URL ของ Google Drive Folder)" style="font-size:12px; font-family:monospace;">
+                        <button class="btn btn-primary" onclick="saveSecureSetting('DRIVE_FOLDER_ID', document.getElementById('setting-drive-folder-id').value)" style="white-space:nowrap; padding:0 16px;">
+                            <i data-lucide="save"></i> บันทึก
+                        </button>
+                    </div>
+                    <p style="font-size:11px;color:var(--text-secondary);margin-top:6px;">
+                        📌 วิธีหา Folder ID: เปิด Google Drive  คลิกขวาโฟลเดอร์  "แชร์"  ดูจาก URL (ส่วน <code style="background:var(--bg-secondary);padding:2px 4px;border-radius:3px;">folders/xxxxxxxxxx</code>)
+                    </p>
+                </div>
+                <div id="drive-folder-status" style="padding:10px 14px;background:var(--bg-secondary);border-radius:8px;font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;">
+                    <i data-lucide="info" style="width:14px;height:14px;"></i>
+                    <span>ยังไม่ได้ตั้งค่า Folder ID ระบบจะสร้างโฟลเดอร์ใหม่อัตโนมัติหลังจากกำหนด</span>
+                </div>
+                <div style="margin-top:14px;padding:12px;background:rgba(15,157,88,0.08);border:1px solid rgba(15,157,88,0.2);border-radius:8px;font-size:12px;">
+                    <strong>โครงสร้างโฟลเดอร์อัตโนมัติ:</strong><br>
+                    📁 RDF_Billing (root)<br>
+                    &nbsp;&nbsp;├── 📁 ปี 2568<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── 📁 เดือน 06<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── 📁 ค่าอาหาร<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── 📁 วัสดุอุปกรณ์
+                </div>
+            </div>
+
+            
+            <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
+                <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">ข้อมูลและการบำรุงรักษา (Maintenance)</div>
+                <div style="flex:1; height:1px; background:var(--border-color);"></div>
+            </div>
+
+            <!-- Section: System Info -->
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+                    <div style="width:40px;height:40px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                        <i data-lucide="info" style="width:20px;height:20px;color:white;"></i>
+                    </div>
+                    <h3 style="font-size:15px;font-weight:700;margin:0;">ข้อมูลระบบ</h3>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div style="padding:12px;background:var(--bg-secondary);border-radius:8px;">
+                        <div style="font-size:11px;color:var(--text-secondary);">เวอร์ชั่น</div>
+                        <div style="font-weight:700;font-size:14px;">RDF Billing v2.0</div>
+                    </div>
+                    <div style="padding:12px;background:var(--bg-secondary);border-radius:8px;">
+                        <div style="font-size:11px;color:var(--text-secondary);">สถานะ API</div>
+                        <div style="font-weight:700;font-size:14px;" id="setting-api-status">ตรวจ...</div>
+                    </div>
+                    <div style="padding:12px;background:var(--bg-secondary);border-radius:8px;">
+                        <div style="font-size:11px;color:var(--text-secondary);">ผู้ดูแลระบบ</div>
+                        <div style="font-weight:700;font-size:14px;" id="setting-admin-info">-</div>
+                    </div>
+                    <div style="padding:12px;background:var(--bg-secondary);border-radius:8px;">
+                        <div style="font-size:11px;color:var(--text-secondary);">เข้าสู่ระบบล่าสุด</div>
+                        <div style="font-weight:700;font-size:14px;" id="setting-last-login">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Section: Login Logs -->
+            <div class="card" id="card-login-logs" style="margin-bottom:20px; display:none;">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <div style="width:40px;height:40px;background:linear-gradient(135deg,#f093fb,#f5576c);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                            <i data-lucide="activity" style="width:20px;height:20px;color:white;"></i>
+                        </div>
+                        <h3 style="font-size:15px;font-weight:700;margin:0;">ประวัติการเข้าสู่ระบบ</h3>
+                    </div>
+                    <button class="btn btn-outline" style="font-size:12px;padding:6px 12px;" onclick="loadLoginLogs()">
+                        <i data-lucide="refresh-cw"></i> รีเฟรช
+                    </button>
+                </div>
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>เวลา</th>
+                                <th>ผู้ใช้งาน</th>
+                                <th>การกระทำ</th>
+                                <th>รายละเอียด</th>
+                            </tr>
+                        </thead>
+                        <tbody id="login-logs-tbody">
+                            <tr><td colspan="4" style="text-align:center;color:var(--text-secondary);">กำลังโหลด...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </div>
+    </div>
+    </main>
+
+    <!-- Mobile Bottom Navigation -->
+    <nav class="bottom-nav">
+        <!-- 1. Dashboard -->
+        <a class="bottom-nav-item active" data-tab="dashboard">
+            <i data-lucide="layout-dashboard"></i>
+            <span>แดชบอร์ด</span>
+        </a>
+
+        <!-- 2. Bills & Claims (Has Submenu) -->
+        <div class="bottom-nav-item has-submenu">
+            <i data-lucide="receipt"></i>
+            <span>บิล&เบิก</span>
+            <div class="bottom-nav-submenu">
+                <a class="submenu-item" data-tab="bills-table">
+                    <i data-lucide="file-text"></i> บันทึกบิล
+                </a>
+                <a class="submenu-item" data-tab="claims-view">
+                    <i data-lucide="package"></i> จัดกลุ่มส่งเบิก
+                </a>
+                <a class="submenu-item" data-tab="spreadsheet-view">
+                    <i data-lucide="table-2"></i> สเปรดชีต
+                </a>
+            </div>
+        </div>
+
+        <!-- 3. Food -->
+        <a class="bottom-nav-item" data-tab="food-overview">
+            <i data-lucide="utensils"></i>
+            <span>ค่าอาหาร</span>
+        </a>
+
+        <!-- 4. Reports -->
+        <a class="bottom-nav-item" data-tab="report-year">
+            <i data-lucide="calendar-days"></i>
+            <span>รายงาน</span>
+        </a>
+
+        <!-- 5. Settings -->
+        <a class="bottom-nav-item" data-tab="settings-view">
+            <i data-lucide="settings"></i>
+            <span>ตั้งค่า</span>
+        </a>
+    </nav>
+
+</div>
+
+<!-- ===================================================
+     MODAL: File Attachments per Expense
+===================================================== -->
+<div class="modal-overlay" id="modal-attachments">
+    <div class="modal-card modal-wide">
+        <header class="modal-header">
+            <div style="flex:1;min-width:0;">
+                <h3 class="modal-title" id="modal-att-title">หลักฐานแนบ</h3>
+                <div id="att-storage-info" style="font-size:11px;color:var(--text-muted);margin-top:2px;">พื้นที่ใช้งาน: ~0 KB</div>
+            </div>
+            <button class="modal-close" id="modal-att-close"><i data-lucide="x"></i></button>
+        </header>
+        <div class="modal-body" id="modal-att-body" style="min-height:180px;">
+            <!-- Dynamic content -->
+        </div>
+        <footer class="modal-footer" style="align-items:center;">
+            <span style="font-size:12px;color:var(--text-muted);flex:1;">รองรับ: รูปภาพ (JPG, PNG) และ PDF สูงสุด 4MB ต่อไฟล์</span>
+            <label class="btn btn-secondary" for="att-file-input" style="cursor:pointer;">
+                <i data-lucide="upload"></i> เพิ่มหลักฐาน
+            </label>
+            <input type="file" id="att-file-input" accept=".jpg,.jpeg,.png,.webp,.pdf,.csv,.xls,.xlsx" multiple style="display:none;">
+            <button class="btn btn-secondary" id="modal-att-close-btn">ปิด</button>
+        </footer>
+    </div>
+</div>
+
+<!-- ===================================================
+     MODAL: Add / Edit Expense (Bill)
+===================================================== -->
+<div class="modal-overlay" id="modal-bill">
+    <div class="modal-card">
+        <header class="modal-header">
+            <h3 class="modal-title" id="modal-bill-title">เพิ่มรายการรายจ่ายใหม่</h3>
+            <button class="modal-close" id="modal-bill-close"><i data-lucide="x"></i></button>
+        </header>
+        <form id="form-bill">
+            <input type="hidden" id="bill-edit-index">
+            <div class="modal-body" style="max-height:520px; overflow-y:auto;">
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                    <div class="form-group">
+                        <label class="form-label" for="bill-docno">เลขที่ / เลขบิล</label>
+                        <input type="text" id="bill-docno" class="form-input" placeholder="เช่น X04" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="bill-date">วันที่บิล</label>
+                        <input type="date" id="bill-date" class="form-input" required>
+                    </div>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                    <div class="form-group" id="bill-project-select-group">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
+                            <label class="form-label" for="bill-project" style="margin-bottom:0;">โครงการ</label>
+                            <button type="button" class="btn btn-link btn-xs" onclick="quickAddProject('bill')" style="font-size:11px; padding:0; color:var(--primary); background:none; border:none; cursor:pointer; font-weight:600; display:flex; align-items:center; gap:2px;">
+                                <i data-lucide="plus" style="width:12px; height:12px;"></i> เพิ่มโครงการด่วน
+                            </button>
+                        </div>
+                        <select id="bill-project" class="form-select w-full" style="padding:10px;"></select>
+                    </div>
+                    <div class="form-group" id="bill-project-new-group" style="display:none;">
+                        <label class="form-label" for="bill-project-new-name">ชื่อโครงการ / กิจกรรมเพิ่มเติม</label>
+                        <input type="text" id="bill-project-new-name" class="form-input w-full" placeholder="พิมพ์ชื่อโครงการใหม่..." style="padding:10px;">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="bill-category">หมวดหมู่รายจ่าย</label>
+                        <select id="bill-category" class="form-select w-full" style="padding:10px;"></select>
+                    </div>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                    <div class="form-group">
+                        <label class="form-label" for="bill-vendor">ผู้ขาย / ร้านค้า</label>
+                        <select id="bill-vendor" class="form-select w-full" style="padding:10px;"></select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="bill-fund-source">แหล่งเงินสำรองจ่าย</label>
+                        <select id="bill-fund-source" class="form-select w-full" style="padding:10px;"></select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="bill-desc">รายละเอียดรายการ</label>
+                    <input type="text" id="bill-desc" class="form-input" placeholder="รายละเอียดสินค้า/บริการ" required>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                    <div class="form-group">
+                        <label class="form-label" for="bill-qty">จำนวน</label>
+                        <input type="number" id="bill-qty" class="form-input" value="1" min="0.01" step="any" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="bill-price">ราคาต่อหน่วย (บาท)</label>
+                        <input type="number" id="bill-price" class="form-input" value="0.00" min="0" step="any" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="bill-claim-type">ประเภทการเบิก</label>
+                    <select id="bill-claim-type" class="form-select w-full" style="padding:10px;">
+                        <option value="claim">ขอเบิกจากมูลนิธิ (Claimable)</option>
+                        <option value="no-claim">ไม่เบิกจากมูลนิธิ (Non-claimable)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="bill-note">หมายเหตุ (ถ้ามี)</label>
+                    <input type="text" id="bill-note" class="form-input" placeholder="ระบุรายละเอียดเพิ่มเติม">
+                </div>
+                <div class="form-group" style="background:var(--bg-color); padding:12px; border-radius:6px; border:1px solid var(--border-color);">
+                    <label class="form-label">หลักฐานแนบ (สามารถเพิ่มได้หลายไฟล์)</label>
+                    <div id="bill-attachments-preview" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;"></div>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('bill-attachment-input').click()" style="display:flex; align-items:center; gap:6px; margin-top:8px;">
+                        <i data-lucide="upload-cloud" style="width:16px; height:16px;"></i> เพิ่มไฟล์หลักฐาน
+                    </button>
+                    <input type="file" id="bill-attachment-input" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,.csv,.xls,.xlsx" style="display:none;" onchange="handleBillAttachmentSelect(event)">
+                </div>
+            </div>
+            <footer class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="btn-bill-cancel">ยกเลิก</button>
+                <button type="submit" class="btn btn-primary" id="btn-bill-save">บันทึกรายการ</button>
+            </footer>
+        </form>
+    </div>
+</div>
+
+<!-- ===================================================
+     MODAL: Add / Edit Master Data (Project, Category, etc.)
+===================================================== -->
+<div class="modal-overlay" id="modal-master">
+    <div class="modal-card">
+        <header class="modal-header">
+            <h3 class="modal-title" id="modal-master-title">จัดการข้อมูลหลัก</h3>
+            <button class="modal-close" id="modal-master-close"><i data-lucide="x"></i></button>
+        </header>
+        <form id="form-master">
+            <div class="modal-body" id="modal-master-body" style="max-height:480px; overflow-y:auto;">
+                <!-- Content will be injected dynamically -->
+            </div>
+            <footer class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="btn-master-cancel">ยกเลิก</button>
+                <button type="submit" class="btn btn-primary" id="btn-master-save">บันทึกข้อมูล</button>
+            </footer>
+        </form>
+    </div>
+</div>
+
+<!-- ===================================================
+     MODAL: Add / Edit Attachment (Utility Bill)
+===================================================== -->
+<div class="modal-overlay" id="modal-attachment">
+    <div class="modal-card">
+        <header class="modal-header">
+            <h3 class="modal-title" id="modal-attachment-title">เพิ่มบิลแนบ / ค่าสาธารณูปโภค</h3>
+            <button class="modal-close" id="modal-attachment-close"><i data-lucide="x"></i></button>
+        </header>
+        <form id="form-attachment">
+            <input type="hidden" id="attachment-edit-index">
+            <div class="modal-body" style="max-height:480px; overflow-y:auto;">
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                    <div class="form-group">
+                        <label class="form-label" for="attach-date">วันที่บันทึก</label>
+                        <input type="date" id="attach-date" class="form-input" required>
+                    </div>
+                    <div class="form-group">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
+                            <label class="form-label" for="attach-project" style="margin-bottom:0;">โครงการ</label>
+                            <button type="button" class="btn btn-link btn-xs" onclick="quickAddProject('attach')" style="font-size:11px; padding:0; color:var(--primary); background:none; border:none; cursor:pointer; font-weight:600; display:flex; align-items:center; gap:2px;">
+                                <i data-lucide="plus" style="width:12px; height:12px;"></i> เพิ่มโครงการด่วน
+                            </button>
+                        </div>
+                        <select id="attach-project" class="form-select w-full" style="padding:10px;"></select>
+                    </div>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                    <div class="form-group">
+                        <label class="form-label" for="attach-category">หมวดหมู่รายจ่าย</label>
+                        <select id="attach-category" class="form-select w-full" style="padding:10px;"></select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="attach-fund-source">แหล่งเงินสำรองจ่าย</label>
+                        <select id="attach-fund-source" class="form-select w-full" style="padding:10px;"></select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="attach-desc">รายละเอียดบิลแนบ</label>
+                    <input type="text" id="attach-desc" class="form-input" placeholder="เช่ ค่าไฟฟ้าเดือน งหาค 2566" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="attach-amount">จำนวนเงิ ()</label>
+                    <input type="number" id="attach-amount" class="form-input" value="0.00" min="0" step="any" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="attach-claim-type">ประเภทการเบิก</label>
+                    <select id="attach-claim-type" class="form-select w-full" style="padding:10px;">
+                        <option value="claim">ขอเบิกจากมูลนิธิ (Claimable)</option>
+                        <option value="no-claim">ไม่เบิกจากมูลนิธิ (Non-claimable)</option>
+                    </select>
+                </div>
+            </div>
+            <footer class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="btn-attach-cancel">ยกเลิก</button>
+                <button type="submit" class="btn btn-primary" id="btn-attach-save">บันทึกรายการ</button>
+            </footer>
+        </form>
+    </div>
+</div>
+
+<!-- ===================================================
+     MODAL: Create Claim Package
+===================================================== -->
+<div class="modal-overlay" id="modal-create-claim">
+    <div class="modal-card modal-wide">
+        <header class="modal-header">
+            <h3 class="modal-title">สร้างชุดส่งเบิกใหม่</h3>
+            <button class="modal-close" id="modal-claim-close"><i data-lucide="x"></i></button>
+        </header>
+        <div class="modal-body">
+            <form id="claim-form" onsubmit="event.preventDefault();">
+                <div class="form-grid" style="grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label for="claim-title" class="form-label">ชื่อชุดส่งเบิ *</label>
+                        <input type="text" id="claim-title" class="form-control" placeholder="ระบุชื่อชุดส่งเบิกเพื่อระลึกความจ" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="claim-month" class="form-label">เดือนงเบิ *</label>
+                        <select id="claim-month" class="form-select">
+                            <option value="1">มกราคม</option><option value="2">กุมภาพันธ์</option>
+                            <option value="3">มีนาคม</option><option value="4">เมษายน</option>
+                            <option value="5">พฤษภาคม</option><option value="6">มิถุนายน</option>
+                            <option value="7">กรกฎาคม</option><option value="8">สิงหาคม</option>
+                            <option value="9">กันยายน</option><option value="10">ตุลาคม</option>
+                            <option value="11">พฤศจิกายน</option><option value="12">ธันวาคม</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="claim-year" class="form-label">ปี .. *</label>
+                        <select id="claim-year" class="form-select">
+                            <option value="2566">2566</option><option value="2567">2567</option>
+                            <option value="2568">2568</option><option value="2569">2569</option>
+                            <option value="2570">2570</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">เลือกรายการค่าใช้จ่ายเพื่อรวมกลุ่มงเบิ *</label>
+                    <div style="border: 1px solid var(--border-color); border-radius: 8px; max-height: 250px; overflow-y: auto; background: var(--surface-solid);">
+                        <table class="data-table" style="font-size:12px; margin-bottom:0;" id="claim-selector-table">
+                            <thead>
+                                <tr style="position: sticky; top:0; background: var(--surface); z-index:1;">
+                                    <th style="width: 40px; text-align: center;"><input type="checkbox" id="claim-select-all"></th>
+                                    <th>เลขบิล</th>
+                                    <th>วันที่</th>
+                                    <th>ร้านค้ / รายละเอียด</th>
+                                    <th class="text-right">ยอดเงิน ()</th>
+                                </tr>
+                            </thead>
+                            <tbody id="claim-selector-tbody">
+                                <!-- Dynamic content -->
+                            </tbody>
+                        </table>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; margin-top:8px; font-weight:600; font-size:13px;">
+                        <span id="claim-selected-count">เลือกแล้ว: 0 รายการ</span>
+                        <span id="claim-selected-total" class="text-success">ยอดรวมทั้งสิ้น: 0.00</span>
+                    </div>
+                </div>
+            </form>
+        </div>
+        <footer class="modal-footer">
+            <button class="btn btn-outline" id="btn-claim-cancel">ยกเลิก</button>
+            <button class="btn btn-primary" id="btn-claim-save">้างชุดงเบิ</button>
+        </footer>
+    </div>
+</div>
+<!-- ===================================================
+     MODAL: Add / Edit Food Expense
+===================================================== -->
+<div class="modal-overlay" id="modal-food-expense">
+    <div class="modal-card" style="max-width: 900px;">
+        <header class="modal-header">
+            <h3 class="modal-title" id="food-modal-title">บันทึกค่าอาหารประจำเดือน</h3>
+            <button class="btn btn-icon" id="modal-food-close"><i data-lucide="x"></i></button>
+        </header>
+        <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+            <input type="hidden" id="food-edit-index" value="">
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                <div class="form-group">
+                    <label class="form-label required">เดือน</label>
+                    <select id="food-month" class="form-input" required>
+                        <option value="1">มกราคม</option><option value="2">กุมภาพันธ์</option><option value="3">มีนาคม</option>
+                        <option value="4">เมษายน</option><option value="5">พฤษภาคม</option><option value="6">มิถุนายน</option>
+                        <option value="7">กรกฎาคม</option><option value="8">สิงหาคม</option><option value="9">กันยายน</option>
+                        <option value="10">ตุลาคม</option><option value="11">พฤศจิกายน</option><option value="12">ธันวาคม</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label required">ปี (..)</label>
+                    <input type="number" id="food-year" class="form-input" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label required">หอพัก</label>
+                    <select id="food-dormitory" class="form-input" required>
+                        <option value="ชาย">ชาย</option>
+                        <option value="หญิง">หญิง</option>
+                        <option value="อื่น">อื่น</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label required">ผู้รับผิดชอบ (ครูหัก)</label>
+                    <input type="text" id="food-responsible" class="form-input" required>
+                </div>
+                <div class="form-group" style="grid-column: 1 / -1;">
+                    <label class="form-label">ายเ</label>
+                    <textarea id="food-note" class="form-input" rows="2"></textarea>
+                </div>
+            </div>
+
+            <!-- Food Items Sub-table -->
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h4 style="margin:0;">รายการวัตถุดิบ</h4>
+                <button type="button" class="btn btn-outline btn-sm" onclick="addFoodItemRow()">
+                    <i data-lucide="plus"></i> เพิ่มรายการ
+                </button>
+            </div>
+            <div class="table-container" style="margin-bottom: 24px;">
+                <table class="data-table" id="food-items-table">
+                    <thead>
+                        <tr>
+                            <th style="width:50px;">ลำดับ</th>
+                            <th style="width:120px;">วันที่</th>
+                            <th>รายการวัตถุดิบ</th>
+                            <th style="width:100px;">จำนวน</th>
+                            <th style="width:80px;">หน่วย</th>
+                            <th style="width:120px;">ราคา/หน่วย</th>
+                            <th style="width:120px;">รวมเงิน</th>
+                            <th style="width:80px;">แนบหลักฐาน</th>
+                            <th style="width:50px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="food-items-tbody">
+                        <!-- Dynamic rows -->
+                    </tbody>
+                    <tfoot>
+                        <tr>
+                            <td colspan="6" style="text-align:right; font-weight:bold;">ยอดรวมทั้งสิ้น</td>
+                            <td id="food-total-display" style="font-weight:bold; color:var(--primary);">0.00</td>
+                            <td colspan="2"></td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </div>
+        <footer class="modal-footer">
+            <button type="button" class="btn btn-secondary" id="btn-food-cancel">ยกเลิก</button>
+            <button type="button" class="btn btn-primary" onclick="handleFoodExpenseSubmit()">บันทึกข้อมูล</button>
+        </footer>
+    </div>
+</div>
+
+<!-- ===================================================
+     MODAL: Export Report (Full Featured)
+===================================================== -->
+<div class="modal-overlay" id="modal-export-pdf">
+    <div class="modal-card" style="max-width:98%; width:98%; height:min(98vh, calc(100dvh - 0px)); max-height:calc(100dvh - 40px); display:flex; flex-direction:column; border-radius:20px; overflow:hidden;">
+        
+        <!-- Header -->
+        <header class="modal-header" style="flex-shrink:0; background:linear-gradient(135deg,#4f46e5,#7c3aed); color:white; padding:16px 24px;">
+            <div style="display:flex; align-items:center; gap:12px;">
+                <i data-lucide="file-text" style="width:22px; height:22px;"></i>
+                <div>
+                    <h3 style="margin:0; font-size:18px; font-weight:700; color:white;">ตั้งค่าและส่งออกรายงาน</h3>
+                    <p style="margin:2px 0 0; font-size:12px; opacity:0.85;" id="export-header-subtitle">Preview &amp; Export</p>
+                </div>
+            </div>
+            <button class="btn btn-icon" id="modal-export-pdf-close" style="background:rgba(255,255,255,0.15); border:none; color:white; border-radius:8px; width:34px; height:34px;"><i data-lucide="x"></i></button>
+        </header>
+
+        <!-- Body: 2-column layout -->
+        <div style="display:grid; grid-template-columns:400px 1fr; flex:1; overflow:hidden; min-height:0;">
+            
+            <!-- ===== LEFT PANEL: Settings ===== -->
+            <div style="overflow-y:auto; border-right:1px solid var(--border-color); background:var(--bg-sidebar); display:flex; flex-direction:column; gap:0;">
+
+                <!-- Accordion Section 1: หัวข้อเอกสาร -->
+                <div class="export-accordion" style="border-bottom:1px solid var(--border-color);">
+                    <div class="export-acc-header" onclick="toggleExportAcc(this)" style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; cursor:pointer; font-weight:700; font-size:13px; color:var(--text-primary);">
+                        <span><i data-lucide="file-badge" style="width:15px;height:15px;vertical-align:middle;margin-right:6px;color:var(--primary);"></i> 1. หัวข้อเอกสาร (Header)</span>
+                        <i data-lucide="chevron-down" style="width:16px;height:16px;" class="acc-chevron"></i>
+                    </div>
+                    <div class="export-acc-body" style="padding:0 20px 16px;">
+                        <!-- Logo row -->
+                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+                            <div id="export-logo-preview" style="width:52px;height:52px;border-radius:10px;border:2px dashed var(--border-color);display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden;flex-shrink:0;" onclick="document.getElementById('export-logo-input').click()">
+                                <i data-lucide="image" style="width:22px;height:22px;color:var(--text-muted);" id="export-logo-icon"></i>
+                            </div>
+                            <input type="file" id="export-logo-input" accept="image/*" style="display:none;" onchange="handleExportLogo(event)">
+                            <div style="flex:1;">
+                                <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">ตราสัญลักษณ์/โลโก้</div>
+                                <button type="button" class="btn btn-outline btn-sm" style="font-size:11px;padding:4px 10px;" onclick="document.getElementById('export-logo-input').click()">อัปโหลดรูป</button>
+                                <button type="button" class="btn btn-outline btn-sm" style="font-size:11px;padding:4px 10px;margin-left:4px;" onclick="clearExportLogo()">ลบ</button>
+                            </div>
+                        </div>
+                        <div class="form-group" style="margin-bottom:8px;">
+                            <label class="form-label" style="font-size:11px;">ชื่อหน่วยงาน / สถาบัน</label>
+                            <input type="text" id="export-org-name" class="form-input" style="font-size:13px;padding:6px 10px;" placeholder="เช่น โรงเรียน/มูลนิธิ..." oninput="renderExportPreview()">
+                        </div>
+                        <div class="form-group" style="margin-bottom:8px;">
+                            <label class="form-label" style="font-size:11px;">ชื่อเอกสาร (Report Title)</label>
+                            <input type="text" id="pdf-report-title" class="form-input" style="font-size:13px;padding:6px 10px;" placeholder="เช่น รายงานค่าใช้จ่ายประจำเดือน..." oninput="renderExportPreview()">
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
+                            <div class="form-group" style="margin:0;">
+                                <label class="form-label" style="font-size:11px;">เดือน/ปี ที่รายงาน</label>
+                                <input type="month" id="export-report-month" class="form-input" style="font-size:13px;padding:6px 8px;" onchange="renderExportPreview()">
+                            </div>
+                            <div class="form-group" style="margin:0;">
+                                <label class="form-label" style="font-size:11px;">เลขที่เอกสาร (ถ้ามี)</label>
+                                <input type="text" id="export-doc-number" class="form-input" style="font-size:13px;padding:6px 8px;" placeholder="RDF-2568-06" oninput="renderExportPreview()">
+                            </div>
+                        </div>
+                        <div class="form-group" style="margin-bottom:0;">
+                            <label class="form-label" style="font-size:11px;">รายละเอียดส่วนหัว (Sub-heading)</label>
+                            <textarea id="export-header-detail" class="form-input" rows="2" style="font-size:12px;padding:6px 10px;resize:vertical;" placeholder="เช่น สำหรับโครงการ..., ปีงบประมาณ..." oninput="renderExportPreview()"></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Accordion Section 2: เลือกหัวข้อ/รายการ -->
+                <div class="export-accordion" style="border-bottom:1px solid var(--border-color);">
+                    <div class="export-acc-header" onclick="toggleExportAcc(this)" style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; cursor:pointer; font-weight:700; font-size:13px; color:var(--text-primary);">
+                        <span><i data-lucide="list-checks" style="width:15px;height:15px;vertical-align:middle;margin-right:6px;color:var(--primary);"></i> 2. เลือกหัวข้อที่ต้องการ</span>
+                        <i data-lucide="chevron-down" style="width:16px;height:16px;" class="acc-chevron"></i>
+                    </div>
+                    <div class="export-acc-body" style="padding:0 20px 16px;">
+                        <!-- Section: Bills -->
+                        <div style="border:1px solid var(--border-color); border-radius:8px; margin-bottom:8px; overflow:hidden;">
+                            <div style="display:flex; align-items:center; gap:8px; padding:0 0 0 0;">
+                                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-weight:600; font-size:13px; flex:1; padding:8px 14px; background:var(--bg-main);">
+                                <input type="checkbox" id="export-chk-bills" checked style="accent-color:var(--primary); width:15px; height:15px;" onchange="renderExportPreview()">
+                                <i data-lucide="receipt" style="width:15px;height:15px;color:var(--accent);"></i>
+                                รายการบิลประจำเดือน
+                                <span id="export-bills-badge" style="font-size:10px; background:var(--accent-light); color:var(--accent); padding:2px 8px; border-radius:20px;">0 รายการ</span>
+                                <button type="button" onclick="exportSingleSection('bills')" title="ดาวน์โหลดเฉพาะหัวข้อนี้" style="background:none; border:1px solid var(--accent); color:var(--accent); border-radius:6px; padding:3px 8px; font-size:11px; cursor:pointer; white-space:nowrap; display:flex; align-items:center; gap:4px; margin-left:4px;">
+                                    <i data-lucide="download" style="width:12px;height:12px;"></i> ดาวน์โหลด
+                                </button>
+                            </label></div>
+                            <div style="padding:8px 14px 12px; display:flex; flex-direction:column; gap:6px; border-top:1px solid var(--border-color);">
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="docNo" checked onchange="renderExportPreview()"> เลขบิล</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="date" checked onchange="renderExportPreview()"> วันที่</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="project" checked onchange="renderExportPreview()"> โครงการ</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="category" checked onchange="renderExportPreview()"> หมวดหมู่</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="vendor" checked onchange="renderExportPreview()"> ร้านค้า/ผู้ขาย</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="amount" checked onchange="renderExportPreview()"> ยอดรวม</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="claimType" checked onchange="renderExportPreview()"> ประเภทเบิก</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="attachments" onchange="renderExportPreview()"> แสดงหลักฐานแนบ</label>
+                            </div>
+                        </div>
+
+                        <!-- Section: Food -->
+                        <div style="border:1px solid var(--border-color); border-radius:8px; margin-bottom:8px; overflow:hidden;">
+                            <div style="display:flex; align-items:center; gap:8px; padding:8px 14px; background:var(--bg-main);">
+                                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-weight:600; font-size:13px; flex:1;">
+                                    <input type="checkbox" id="export-chk-food" checked style="accent-color:var(--primary); width:15px; height:15px;" onchange="renderExportPreview()">
+                                    <i data-lucide="utensils" style="width:15px;height:15px;color:#f59e0b;"></i>
+                                    ค่าอาหารประจำเดือน
+                                    <span id="export-food-badge" style="font-size:10px; background:#fef3c7; color:#d97706; padding:2px 8px; border-radius:20px;">0 รายการ</span>
+                                </label>
+                                <button type="button" onclick="exportSingleSection('food')" title="ดาวน์โหลดเฉพาะหัวข้อนี้" style="background:none; border:1px solid #f59e0b; color:#d97706; border-radius:6px; padding:3px 8px; font-size:11px; cursor:pointer; white-space:nowrap; display:flex; align-items:center; gap:4px; flex-shrink:0;">
+                                    <i data-lucide="download" style="width:12px;height:12px;"></i> ดาวน์โหลด
+                                </button>
+                            </div>
+                            <div style="padding:8px 14px 12px; display:flex; flex-direction:column; gap:6px; border-top:1px solid var(--border-color);">
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="foodDate" checked onchange="renderExportPreview()"> วันที่</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="foodName" checked onchange="renderExportPreview()"> รายการ</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="foodCategory" checked onchange="renderExportPreview()"> หมวดหมู่</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="foodAmount" checked onchange="renderExportPreview()"> ยอดเงิน</label>
+                            </div>
+                        </div>
+
+                        <!-- Section: Attach -->
+                        <div style="border:1px solid var(--border-color); border-radius:8px; overflow:hidden;">
+                            <div style="display:flex; align-items:center; gap:8px; padding:8px 14px; background:var(--bg-main);">
+                                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-weight:600; font-size:13px; flex:1;">
+                                    <input type="checkbox" id="export-chk-attach" checked style="accent-color:var(--primary); width:15px; height:15px;" onchange="renderExportPreview()">
+                                    <i data-lucide="paperclip" style="width:15px;height:15px;color:#8b5cf6;"></i>
+                                    บิลแนบ / ค่าสาธารณูปโภค
+                                    <span id="export-attach-badge" style="font-size:10px; background:#ede9fe; color:#7c3aed; padding:2px 8px; border-radius:20px;">0 รายการ</span>
+                                </label>
+                                <button type="button" onclick="exportSingleSection('attach')" title="ดาวน์โหลดเฉพาะหัวข้อนี้" style="background:none; border:1px solid #8b5cf6; color:#7c3aed; border-radius:6px; padding:3px 8px; font-size:11px; cursor:pointer; white-space:nowrap; display:flex; align-items:center; gap:4px; flex-shrink:0;">
+                                    <i data-lucide="download" style="width:12px;height:12px;"></i> ดาวน์โหลด
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Accordion Section 3: รูปแบบและการจัดเรียง -->
+                <div class="export-accordion" style="border-bottom:1px solid var(--border-color);">
+                    <div class="export-acc-header" onclick="toggleExportAcc(this)" style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; cursor:pointer; font-weight:700; font-size:13px; color:var(--text-primary);">
+                        <span><i data-lucide="sliders" style="width:15px;height:15px;vertical-align:middle;margin-right:6px;color:var(--primary);"></i> 3. รูปแบบและการจัดเรียง</span>
+                        <i data-lucide="chevron-down" style="width:16px;height:16px;" class="acc-chevron"></i>
+                    </div>
+                    <div class="export-acc-body" style="padding:0 20px 16px;">
+                        <div class="form-group" style="margin-bottom:10px;">
+                            <label class="form-label" style="font-size:11px;">รูปแบบรายงาน</label>
+                            <select id="export-report-type" class="form-select" style="font-size:13px;padding:6px 10px;" onchange="renderExportPreview()">
+                                <option value="summary">รายงานแบบสรุป</option>
+                                <option value="detailed">รายงานแบบละเอียด</option>
+                                <option value="with_attachments">รายงานพร้อมหลักฐานแนบ</option>
+                                <option value="only_attachments">รายงานเฉพาะหลักฐาน</option>
+                                <option value="audit">รายงานรับตรวจบัญชี</option>
+                            </select>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px;">
+                            <div class="form-group" style="margin:0;">
+                                <label class="form-label" style="font-size:11px;">เรียงตาม</label>
+                                <select id="export-sort-by" class="form-select" style="font-size:13px;padding:6px 10px;" onchange="renderExportPreview()">
+                                    <option value="date">วันที่</option>
+                                    <option value="docNo">เลขที่</option>
+                                    <option value="project">โครงการ</option>
+                                    <option value="category">หมวดหมู่</option>
+                                    <option value="amount">จำนวนเงิน</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="margin:0;">
+                                <label class="form-label" style="font-size:11px;">ลำดับ</label>
+                                <select id="export-sort-order" class="form-select" style="font-size:13px;padding:6px 10px;" onchange="renderExportPreview()">
+                                    <option value="asc">น้อย → มาก</option>
+                                    <option value="desc">มาก → น้อย</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div style="display:flex; flex-direction:column; gap:8px; border:1px solid var(--border-color); border-radius:8px; padding:10px 12px; background:var(--bg-main);">
+                            <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_img" checked onchange="renderExportPreview()"> แสดงรูปหลักฐาน</label>
+                            <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_pdf" checked onchange="renderExportPreview()"> แสดง PDF หลักฐาน</label>
+                            <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_qr" onchange="renderExportPreview()"> แสดง QR Code</label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Accordion Section 4: การลงนาม -->
+                <div class="export-accordion" style="border-bottom:1px solid var(--border-color);">
+                    <div class="export-acc-header" onclick="toggleExportAcc(this)" style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; cursor:pointer; font-weight:700; font-size:13px; color:var(--text-primary);">
+                        <span><i data-lucide="pen-line" style="width:15px;height:15px;vertical-align:middle;margin-right:6px;color:var(--primary);"></i> 4. การลงชื่อใต้เอกสาร</span>
+                        <i data-lucide="chevron-down" style="width:16px;height:16px;" class="acc-chevron"></i>
+                    </div>
+                    <div class="export-acc-body" style="padding:0 20px 16px;">
+                        <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; margin-bottom:12px;">
+                            <input type="checkbox" id="pdf-include-signature" checked style="accent-color:var(--primary); width:15px; height:15px;" onchange="renderExportPreview()">
+                            แสดงพื้นที่ลงนาม
+                        </label>
+                        <div id="pdf-signature-fields" style="display:flex; flex-direction:column; gap:8px;">
+                            <div>
+                                <label class="form-label" style="font-size:11px; margin-bottom:3px;">ผู้จัดทำ</label>
+                                <input type="text" id="pdf-preparer-name" class="form-input" style="font-size:13px;padding:6px 10px;" placeholder="ชื่อ-สกุล / ตำแหน่ง" oninput="renderExportPreview()">
+                            </div>
+                            <div>
+                                <label class="form-label" style="font-size:11px; margin-bottom:3px;">ผู้ตรวจสอบ</label>
+                                <input type="text" id="pdf-reviewer-name" class="form-input" style="font-size:13px;padding:6px 10px;" placeholder="ชื่อ-สกุล / ตำแหน่ง" oninput="renderExportPreview()">
+                            </div>
+                            <div>
+                                <label class="form-label" style="font-size:11px; margin-bottom:3px;">ผู้อนุมัติ</label>
+                                <input type="text" id="pdf-approver-name" class="form-input" style="font-size:13px;padding:6px 10px;" placeholder="ชื่อ-สกุล / ตำแหน่ง" oninput="renderExportPreview()">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Template save/load -->
+                <div style="padding:14px 20px; border-bottom:1px solid var(--border-color); display:flex; align-items:center; gap:8px;">
+                    <select id="export-template-select" class="form-select" style="flex:1; font-size:12px; padding:6px 8px;" onchange="loadExportTemplate(this.value)">
+                        <option value="">-- โหลด Template --</option>
+                    </select>
+                    <button type="button" class="btn btn-outline btn-sm" style="white-space:nowrap; font-size:12px;" onclick="saveExportTemplate()">
+                        <i data-lucide="save" style="width:13px;height:13px;"></i> บันทึก
+                    </button>
+                </div>
+
+                <input type="hidden" id="pdf-export-mode" value="dashboard">
+            </div>
+
+            <!-- ===== RIGHT PANEL: Live Preview ===== -->
+            <div style="overflow-y:auto; background:#e2e8f0; display:flex; justify-content:center; padding:24px;">
+                <div id="export-preview-page" style="background:white; width:210mm; min-height:297mm; padding:15mm; box-shadow:0 10px 30px rgba(0,0,0,0.15); font-family:'Sarabun',sans-serif; position:relative; border-radius:4px;">
+                    <!-- Live preview rendered here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="modal-footer" style="flex-shrink:0; border-top:1px solid var(--border-color); padding:14px 20px; display:flex; justify-content:space-between; align-items:center;">
+            <div style="display:flex; gap:8px; align-items:center;">
+                <button type="button" class="btn btn-outline btn-sm" onclick="toggleAllExportCheckboxes(true)">เลือกทั้งหมด</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="toggleAllExportCheckboxes(false)">ยกเลิกทั้งหมด</button>
+            </div>
+            <div style="display:flex; gap:8px;">
+                <button type="button" class="btn btn-secondary" id="btn-export-pdf-cancel">ปิดหน้าต่าง</button>
+                <button type="button" class="btn btn-outline" onclick="executeDynamicExport('csv')" style="color:#0ea5e9;border-color:#0ea5e9; display:flex; align-items:center; gap:6px;">
+                    <i data-lucide="file-text" style="width:15px;height:15px;"></i> CSV
+                </button>
+                <button type="button" class="btn btn-outline" onclick="executeDynamicExport('excel')" style="color:#10b981;border-color:#10b981; display:flex; align-items:center; gap:6px;">
+                    <i data-lucide="file-spreadsheet" style="width:15px;height:15px;"></i> Excel
+                </button>
+                <button type="button" class="btn btn-primary" onclick="executeDynamicExport('pdf')" style="display:flex; align-items:center; gap:6px;">
+                    <i data-lucide="printer" style="width:15px;height:15px;"></i> PDF / พิมพ์
+                </button>
+            </div>
+        </footer>
+    </div>
+</div>
+
+
+
+<!-- ===================================================
+     MODAL: Signature Pad
+===================================================== -->
+<div class="modal-overlay" id="modal-signature">
+    <div class="modal-card" style="max-width: 490px;">
+        <header class="modal-header">
+            <h3 class="modal-title" id="modal-sig-title">เขียนลายเซ็นดิจิทัล</h3>
+            <button class="modal-close" id="modal-sig-close"><i data-lucide="x"></i></button>
+        </header>
+        <div class="modal-body" style="text-align: center;">
+            <p style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">
+                กรุณาวาดลายเซ็นลงบนพื้นที่กรอบสี่เหลี่ยมด้านล่างนี้ด้วยนิ้วมือหรือเมาส์
+            </p>
+            <div style="border: 2px solid var(--border-color); border-radius: 12px; background: white; width: 100%; height: 200px; position: relative; overflow: hidden; display: flex; justify-content: center; align-items: center;">
+                <canvas id="sig-canvas" width="450" height="200" style="cursor: crosshair; touch-action: none; width: 100%; height: 100%;"></canvas>
+            </div>
+            <div style="display: flex; justify-content: center; gap: 8px; margin-top: 12px;">
+                <button class="btn btn-outline btn-sm" id="btn-sig-clear"><i data-lucide="rotate-ccw"></i> ล้างหน้าจอ</button>
+            </div>
+        </div>
+        <footer class="modal-footer">
+            <input type="hidden" id="sig-role-target" value="">
+            <button class="btn btn-outline" id="btn-sig-cancel">ยกเลิก</button>
+            <button class="btn btn-primary" id="btn-sig-save">บันทึกลายเซ็น</button>
+        </footer>
+    </div>
+</div>
+
+<!-- ===================================================
+     MODAL: Login Screen Overlay
+===================================================== -->
+<div class="login-overlay" id="login-overlay" style="display: flex;">
+    <!-- Background Slideshow -->
+    <div class="login-slideshow" id="login-slideshow">
+        <div class="login-slide active" style="background-image: url('login_bg.png')"></div>
+        <div class="login-slide" style="background-image: url('login_slide_1.png')"></div>
+        <div class="login-slide" style="background-image: url('login_slide_2.png')"></div>
+        <div class="login-slide" style="background-image: url('login_slide_3.png')"></div>
+    </div>
+    <div class="login-slideshow-overlay"></div>
+
+    <!-- Glowing Animated Blobs for Animation Mode -->
+    <div class="login-blobs" id="login-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <!-- Floating Interactive Particles -->
+    <div class="login-particles" id="login-particles"></div>
+
+    <!-- Slide Indicator Dots -->
+    <div class="login-slide-dots" id="login-slide-dots">
+        <span class="dot active" data-slide="0"></span>
+        <span class="dot" data-slide="1"></span>
+        <span class="dot" data-slide="2"></span>
+        <span class="dot" data-slide="3"></span>
+    </div>
+
+    <!-- Split Layout Card -->
+    <div class="login-split-card" id="login-split-card">
+        <!-- Left: Branding Panel -->
+        <div class="login-brand-panel">
+            <div class="brand-content">
+                <div class="brand-icon-ring">
+                    <i data-lucide="graduation-cap"></i>
+                </div>
+                <h1>RDF Expense</h1>
+                <p class="brand-subtitle">ระบบบริหารรายจ่าย<br>มูลนิธิ Dr. Robert Dyckerhoff</p>
+                <div class="brand-divider"></div>
+                <p class="brand-college">วิทยาลัยการอาชีพแม่สะเรียง<br><span>Mae Sariang Industrial &amp; Community Education College</span></p>
+                <div class="brand-features">
+                    <div class="brand-feature-item"><i data-lucide="shield-check"></i><span>ปลอดภัยระดับสูง</span></div>
+                    <div class="brand-feature-item"><i data-lucide="cloud"></i><span>ข้อมูลคลาวด์</span></div>
+                    <div class="brand-feature-item"><i data-lucide="zap"></i><span>เรียลไทม์</span></div>
+                </div>
+            </div>
+        </div>
+        <!-- Right: Login Form Panel -->
+        <div class="login-form-panel">
+            <div class="login-form-inner">
+                <div class="login-form-header">
+                    <div class="login-logo-icon"><i data-lucide="wallet"></i></div>
+                    <h2>เข้าสู่ระบบ</h2>
+                    <p>กรุณาลงชื่อเพื่อเชื่อมต่อฐานข้อมูลคลาวด์</p>
+                </div>
+                <form id="form-login" onsubmit="event.preventDefault();">
+                    <div class="login-input-group">
+                        <label class="form-label" for="login-username"><i data-lucide="user"></i> ชื่อผู้ใช้งานน</label>
+                        <input type="text" id="login-username" class="form-input" placeholder="Username" required>
+                    </div>
+                    <div class="login-input-group">
+                        <label class="form-label" for="login-password"><i data-lucide="lock"></i> รหัสผ่าน</label>
+                        <input type="password" id="login-password" class="form-input" placeholder="Password" required>
+                    </div>
+                    <div class="error-msg" id="login-error-msg" style="display:none;"></div>
+                    <button type="submit" class="login-submit-btn" id="btn-login-submit">
+                        <i data-lucide="log-in"></i> <span>เข้าสู่ระบบ</span>
+                    </button>
+                </form>
+                <div id="google-login-container" style="display:none; margin-top:16px;">
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                        <span style="font-size:12px; color:var(--text-secondary);">หรหรือ</span>
+                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                    </div>
+                    <div id="g_id_onload"
+                         data-client_id=""
+                         data-callback="handleGoogleLogin"
+                         data-auto_prompt="false">
+                    </div>
+                    <div class="g_id_signin"
+                         data-type="standard"
+                         data-theme="outline"
+                         data-text="signin_with"
+                         data-locale="th"
+                         data-width="100%"
+                         style="display:flex; justify-content:center;">
+                    </div>
+                </div>
+                <div class="login-footer-text">
+                    วิทยาลัยการอาชีพแม่สะเรียง &copy; 2026
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===================================================
+     MODAL: Multiple Items Selector (Nested Lines)
+===================================================== -->
+<div class="modal-overlay" id="modal-multi-items" style="display:none; z-index: 15000;">
+    <div class="modal-card modal-wide">
+        <header class="modal-header">
+            <h3 class="modal-title">บันทึกสินค้าหลายรายการในบิลเดียว</h3>
+            <button class="modal-close" type="button" onclick="closeMultiItemsModal()"><i data-lucide="x"></i></button>
+        </header>
+        <div class="modal-body">
+            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">ป้อนรายการสินค้าแต่ละรายการย่อยในใบเสร็จนี้ ยอดรวมจะถูกคำนวณและป้อนกลับเข้าสู่หน้าตารางหลักโดยอัตโนมัติ</p>
+            <div class="table-container">
+                <table class="data-table" id="multi-items-table">
+                    <thead>
+                        <tr>
+                            <th>รายการนค้า/รายละเอียด</th>
+                            <th class="text-right" style="width:80px;">จำนวน</th>
+                            <th class="text-right" style="width:100px;">ราคาต่อหน่วย</th>
+                            <th class="text-right" style="width:120px;">ราคารวมม (฿)</th>
+                            <th class="text-center" style="width:80px;">เครื่องมือ</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Dynamic sub-item rows -->
+                    </tbody>
+                </table>
+            </div>
+            <button type="button" class="btn btn-outline btn-sm" onclick="addMultiItemRow()" style="margin-top:12px; display:inline-flex; align-items:center; gap:4px; border-radius:6px; padding:6px 12px; font-weight:600;">
+                <i data-lucide="plus"></i> เพิ่มรายการสินค้าย่อย
+            </button>
+        </div>
+        <footer class="modal-footer">
+            <div style="flex:1; font-weight:700; font-size:14px; color:var(--primary);" id="multi-items-grand-total">
+                ยอดรวมสุทธิ: 0.00
+            </div>
+            <button type="button" class="btn btn-secondary" onclick="closeMultiItemsModal()" style="border-radius:6px; padding:6px 16px;">ยกเลิก</button>
+            <button type="button" class="btn btn-primary" onclick="saveMultiItems()" style="border-radius:6px; padding:6px 16px;">ตกลงและบันทึก</button>
+        </footer>
+    </div>
+</div>
+
+<!-- ===================================================
+     LOADING OVERLAY
+===================================================== -->
+<div class="loading-overlay" id="loading-overlay" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(15,23,42,0.4); backdrop-filter:blur(3px); z-index:20000; align-items:center; justify-content:center; flex-direction:column; gap:16px; color:white;">
+    <div style="width:48px; height:48px; border:4px solid rgba(255,255,255,0.2); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite;"></div>
+    <div style="font-weight:600; font-size:14px; text-shadow:0 1px 2px rgba(0,0,0,0.3); letter-spacing:0.5px; color:#ffffff;">กำลังประมวลผลข้อมูลล...</div>
+</div>
+<style>
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
+<!-- Application Scripts -->
+<script src="thai-baht.js"></script>
+<script src="app.js"></script>
+<script>
+    // Wire up Master Data modal buttons
+    (document.getElementById('modal-master-close') || {}).addEventListener?.('click', closeMasterModal);
+    (document.getElementById('btn-master-cancel') || {}).addEventListener?.('click', closeMasterModal);
+    (document.getElementById('form-master') || {}).addEventListener?.('submit', handleMasterSubmit);
+
+    // Wire up Attachment modal close buttons
+    (document.getElementById('modal-att-close') || {}).addEventListener?.('click', closeExpenseAttachmentModal);
+    (document.getElementById('modal-att-close-btn') || {}).addEventListener?.('click', closeExpenseAttachmentModal);
+
+    // Wire up Claim modal close buttons
+    (document.getElementById('modal-claim-close') || {}).addEventListener?.('click', closeClaimModal);
+    (document.getElementById('btn-claim-cancel') || {}).addEventListener?.('click', closeClaimModal);
+
+    // Wire up Signature modal close buttons
+    (document.getElementById('modal-sig-close') || {}).addEventListener?.('click', closeSignatureModal);
+    (document.getElementById('btn-sig-cancel') || {}).addEventListener?.('click', closeSignatureModal);
+    // Wire up Export PDF modal close buttons
+    (document.getElementById('modal-export-pdf-close') || {}).addEventListener?.('click', closeExportModal);
+    (document.getElementById('btn-export-pdf-cancel') || {}).addEventListener?.('click', closeExportModal);
+    // Wire up Food Expense modal close buttons
+    (document.getElementById('modal-food-close') || {}).addEventListener?.('click', closeFoodExpenseModal);
+    (document.getElementById('btn-food-cancel') || {}).addEventListener?.('click', closeFoodExpenseModal);
+</script>
+
+
+    <!-- MODAL: My Profile -->
+    <div class="modal" id="modal-user-profile" style="display:none;">
+        <div class="modal-content" style="max-width:440px; border-radius:16px; overflow:hidden;">
+            <div class="modal-header" style="background:linear-gradient(135deg,var(--primary),var(--primary-dark));color:white;padding:20px 24px;">
+                <h2 style="font-size:16px;font-weight:700;margin:0; color:white;"><i data-lucide="user-circle" style="width:18px;height:18px;vertical-align:middle;"></i> ข้อมูลส่วนตัว</h2>
+                <button onclick="closeUserProfileModal()" style="background:rgba(255,255,255,0.2);border:none;border-radius:8px;padding:6px;cursor:pointer;color:white;"><i data-lucide="x" style="width:16px;height:16px;"></i></button>
+            </div>
+            <div class="modal-body" style="padding:24px;">
+                <div style="text-align:center;margin-bottom:20px;">
+                    <div style="position:relative;display:inline-block;">
+                        <img id="profile-modal-avatar-preview" src="https://ui-avatars.com/api/name=User&background=random" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:3px solid var(--primary);">
+                        <label for="profile-modal-avatar" style="position:absolute;bottom:0;right:0;background:var(--primary);border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:2px solid var(--bg-card);">
+                            <i data-lucide="camera" style="width:12px;height:12px;color:white;"></i>
+                        </label>
+                        <input type="file" id="profile-modal-avatar" accept="image/*" style="display:none;" onchange="previewProfileAvatar(this)">
+                    </div>
+                    <div style="margin-top:10px;font-weight:700;" id="profile-modal-name">-</div>
+                    <div style="font-size:12px;color:var(--text-secondary);" id="profile-modal-role">-</div>
+                </div>
+                <div class="form-group" style="margin-bottom:14px;">
+                    <label class="form-label">อีอีเมล</label>
+                    <input type="email" id="profile-modal-email" class="form-input" placeholder="example@email.com">
+                </div>
+                <div style="border-top:1px solid var(--border-color);padding-top:16px;margin-top:4px;">
+                    <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:12px;text-transform:uppercase;letter-spacing:0.5px;">เปลี่ยนรหัสผ่าน</div>
+                    <div class="form-group" style="margin-bottom:10px;">
+                        <label class="form-label">รหัสผ่านปัจจุบัน</label>
+                        <input type="password" id="profile-current-password" class="form-input" placeholder="รหัสผ่านปัจจุบัน">
+                    </div>
+                    <div class="form-group" style="margin-bottom:10px;">
+                        <label class="form-label">รหัสผ่านใหม่</label>
+                        <input type="password" id="profile-new-password" class="form-input" placeholder="อย่างน้อย 8 ตัว มี A-Z, a-z, 0-9">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeUserProfileModal()">ยกเลิก</button>
+                <button class="btn btn-primary" onclick="saveUserProfile()"><i data-lucide="save"></i> บันทึก</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: Create/Edit User (Admin) -->
+    <div class="modal" id="modal-admin-user" style="display:none;">
+        <div class="modal-content" style="max-width:440px; border-radius:16px; overflow:hidden;">
+            <div class="modal-header" style="background:linear-gradient(135deg,var(--primary),var(--primary-dark));color:white;padding:20px 24px;">
+                <h2 id="admin-user-modal-title" style="font-size:16px;font-weight:700;margin:0;color:white;">เพิ่มผู้ใช้งานนน</h2>
+                <button onclick="closeAdminUserModal()" style="background:rgba(255,255,255,0.2);border:none;border-radius:8px;padding:6px;cursor:pointer;color:white;"><i data-lucide="x" style="width:16px;height:16px;"></i></button>
+            </div>
+            <div class="modal-body" style="padding:24px;">
+                <input type="hidden" id="admin-user-mode" value="create">
+                <div class="form-group" style="margin-bottom:14px;">
+                    <label class="form-label">Username <span style="color:var(--danger);">*</span></label>
+                    <input type="text" id="admin-user-username" class="form-input" placeholder="ตัวพิมพ์เล็ก ไม่มีเว้นวรรค">
+                </div>
+                <div class="form-group" style="margin-bottom:14px;">
+                    <label class="form-label">ชื่อ-สกุล</label>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                        <input type="text" id="admin-user-firstname" class="form-input" placeholder="ชื่อ">
+                        <input type="text" id="admin-user-lastname" class="form-input" placeholder="นามสกุลล">
+                    </div>
+                </div>
+                <div class="form-group" style="margin-bottom:14px;">
+                    <label class="form-label">อีเมล (สำหรับ Google Login)</label>
+                    <input type="email" id="admin-user-email" class="form-input" placeholder="example@gmail.com">
+                </div>
+                <div class="form-group" style="margin-bottom:14px;">
+                    <label class="form-label">รหัสผ่าน <span id="admin-user-pw-hint" style="font-size:11px;color:var(--text-secondary);">(จำเป็น)</span></label>
+                    <input type="password" id="admin-user-password" class="form-input" placeholder="อย่างน้อย 8 ตัว A-Z a-z 0-9">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">สิสิทธิ์การใช้งานน</label>
+                    <select id="admin-user-role" class="form-select" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-card);color:var(--text-primary);font-size:14px;">
+                        <option value="user">👤 User  ผู้ใช้ทั่วไป (อ่าน-บันทึก)</option>
+                        <option value="manager">👨‍ Manager  ผู้จัดการ (อนุมัติ-รายงาน)</option>
+                        <option value="admin">🛡 Admin  ผู้ดูแลระบบบ (จัดการทุกอย่าง)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeAdminUserModal()">ยกเลิก</button>
+                <button class="btn btn-primary" onclick="saveAdminUser()"><i data-lucide="save"></i> บันทึก</button>
+            </div>
+        </div>
+    </div>
+
+
+<!-- ===================================================
+     MODAL: Food Entry (Add/Edit food record)
+===================================================== -->
+<div class="modal-overlay" id="modal-food-entry">
+    <div class="modal-card" style="max-width:620px;">
+        <header class="modal-header">
+            <div>
+                <h3 class="modal-title">🍽️ บันทึกค่าอาหาร</h3>
+                <div style="font-size:12px; color:var(--text-muted); margin-top:4px;" id="food-modal-month-label">เดือนปัจจุบัน</div>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px;">
+                <input type="month" id="food-modal-month" class="form-input" style="font-size:13px; padding:6px 10px; width:160px;" onchange="onFoodModalMonthChange()">
+                <button class="modal-close" id="modal-food-entry-close"><i data-lucide="x"></i></button>
+            </div>
+        </header>
+        <div class="modal-body" style="max-height:70vh; overflow-y:auto;">
+            <form id="food-entry-form" onsubmit="submitFoodEntry(event)">
+                <div style="display:grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; margin-bottom: 14px;">
+                    <div>
+                        <label class="form-label">1. รายการ/วัตถุดิบ *</label>
+                        <input type="text" id="food-entry-name" class="form-input" required placeholder="เช่น หมู, ไก่, ผัก">
+                    </div>
+                    <div>
+                        <label class="form-label">2. ปริมาณ/จำนวน *</label>
+                        <div style="display:flex; gap:6px;">
+                            <input type="number" id="food-entry-qty" class="form-input" step="0.01" min="0" required placeholder="0.00" oninput="calcFoodEntryTotal()">
+                            <select id="food-entry-unit" class="form-input" style="width:74px;">
+                                <option value="กก.">กก.</option>
+                                <option value="ขีด">ขีด</option>
+                                <option value="ลิตร">ลิตร</option>
+                                <option value="แพ็ค">แพ็ค</option>
+                                <option value="ชิ้น">ชิ้น</option>
+                                <option value="ชุด">ชุด</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="form-label">3. ราคา/หน่วย (บาท) *</label>
+                        <input type="number" id="food-entry-price" class="form-input" step="0.01" min="0" required placeholder="0.00" oninput="calcFoodEntryTotal()">
+                    </div>
+                </div>
+                <div style="display:grid; grid-template-columns: 1fr 1fr 2fr; gap: 14px; margin-bottom: 14px;">
+                    <div>
+                        <label class="form-label">4. หมวดหมู่ *</label>
+                        <select id="food-entry-category" class="form-input" required>
+                            <option value="">-- เลือกหมวดหมู่ --</option>
+                            <option value="เนื้อสัตว์">เนื้อสัตว์</option>
+                            <option value="ผัก/ผลไม้">ผัก/ผลไม้</option>
+                            <option value="เครื่องปรุง">เครื่องปรุง</option>
+                            <option value="ของแห้ง">ของแห้ง</option>
+                            <option value="เครื่องดื่ม">เครื่องดื่ม</option>
+                            <option value="อื่นๆ">อื่นๆ</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label">5. วันที่ซื้อ *</label>
+                        <input type="date" id="food-entry-date" class="form-input" required>
+                    </div>
+                    <div>
+                        <label class="form-label">6. อัปโหลดสลิป/บิล (ถ้ามี)</label>
+                        <input type="file" id="food-entry-file" class="form-input" accept=".jpg,.jpeg,.png,.webp,.pdf,.csv,.xls,.xlsx" onchange="handleFoodFiles(event)">
+                        <div id="food-file-list" style="margin-top:6px; display:flex; flex-direction:column; gap:6px;"></div>
+                    </div>
+                </div>
+                <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border-color); padding-top:14px;">
+                    <div style="font-size:16px; font-weight:600;">รวม: <span id="food-entry-total-display" style="color:var(--primary); font-size:18px;">0.00 บาท</span></div>
+                    <button type="submit" class="btn btn-primary"><i data-lucide="plus"></i> บันทึกรายการ</button>
+                </div>
+            </form>
+
+            <!-- Recent entries in selected month -->
+            <div style="margin-top:20px; border-top:1px solid var(--border-color); padding-top:16px;">
+                <h4 style="font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:12px;">รายการที่บันทึกแล้วในเดือนนี้</h4>
+                <div class="table-container" style="border-radius:10px;">
+                    <table class="data-table" style="font-size:13px;">
+                        <thead>
+                            <tr>
+                                <th>วันที่</th>
+                                <th>รายการ</th>
+                                <th>หมวดหมู่</th>
+                                <th class="text-right">ยอดเงิน</th>
+                                <th class="text-center" style="width:70px;">จัดการ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="food-entry-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        <footer class="modal-footer">
+            <button type="button" class="btn btn-secondary" onclick="closeFoodEntryModal()">ปิด</button>
+        </footer>
+    </div>
+</div>
+
+<!-- ===================================================
+     MODAL: Export Report (Bills Table)
+===================================================== -->
+<div class="modal-overlay" id="modal-export-bills">
+    <div class="modal-card" style="max-width:560px;">
+        <header class="modal-header">
+            <div>
+                <h3 class="modal-title">📊 ส่งออกรายงาน</h3>
+                <div style="font-size:12px; color:var(--text-muted); margin-top:4px;" id="export-month-label">เลือกข้อมูลที่ต้องการส่งออก</div>
+            </div>
+            <button class="modal-close" id="modal-export-bills-close"><i data-lucide="x"></i></button>
+        </header>
+        <div class="modal-body">
+            <!-- Section selector -->
+            <div style="margin-bottom:20px;">
+                <label class="form-label" style="margin-bottom:10px; display:block; font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-secondary);">เลือกหัวข้อที่ต้องการส่งออก</label>
+                <div style="display:flex; flex-direction:column; gap:10px;">
+                    <label class="export-section-toggle" style="display:flex; align-items:center; gap:12px; padding:12px 16px; border:1px solid var(--border-color); border-radius:10px; cursor:pointer; transition:all 0.2s;" id="toggle-bills-main">
+                        <input type="checkbox" id="export-chk-bills" checked style="width:16px; height:16px; cursor:pointer; accent-color:var(--primary);">
+                        <div>
+                            <div style="font-weight:600; font-size:14px;">📄 รายการบิลประจำเดือน</div>
+                            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;" id="export-bills-count">กำลังนับ...</div>
+                        </div>
+                    </label>
+                    <label class="export-section-toggle" style="display:flex; align-items:center; gap:12px; padding:12px 16px; border:1px solid var(--border-color); border-radius:10px; cursor:pointer; transition:all 0.2s;" id="toggle-food">
+                        <input type="checkbox" id="export-chk-food" checked style="width:16px; height:16px; cursor:pointer; accent-color:var(--primary);">
+                        <div>
+                            <div style="font-weight:600; font-size:14px;">🍽️ รายการค่าอาหาร</div>
+                            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;" id="export-food-count">กำลังนับ...</div>
+                        </div>
+                    </label>
+                    <label class="export-section-toggle" style="display:flex; align-items:center; gap:12px; padding:12px 16px; border:1px solid var(--border-color); border-radius:10px; cursor:pointer; transition:all 0.2s;" id="toggle-attach">
+                        <input type="checkbox" id="export-chk-attach" checked style="width:16px; height:16px; cursor:pointer; accent-color:var(--primary);">
+                        <div>
+                            <div style="font-weight:600; font-size:14px;">📎 รายการบิลแนบ / ค่าสาธารณูปโภค</div>
+                            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;" id="export-attach-count">กำลังนับ...</div>
+                        </div>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Month & Format options -->
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:20px;">
+                <div class="form-group">
+                    <label class="form-label">เดือน / ปี ที่ส่งออก</label>
+                    <input type="month" id="export-bills-month" class="form-input" onchange="updateExportBillsCounts()">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">รูปแบบไฟล์</label>
+                    <select id="export-bills-format" class="form-select" style="width:100%;">
+                        <option value="excel">📊 Excel (.xlsx)</option>
+                        <option value="csv">📄 CSV</option>
+                        <option value="pdf">🖨️ PDF / พิมพ์</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Summary counts -->
+            <div style="background:var(--bg-main); border-radius:10px; padding:12px 16px; font-size:13px; color:var(--text-secondary);">
+                <i data-lucide="info" style="width:14px; height:14px; vertical-align:middle; margin-right:4px;"></i>
+                รวมรายการที่จะส่งออก: <strong id="export-total-count" style="color:var(--primary);">0</strong> รายการ
+            </div>
+        </div>
+        <footer class="modal-footer">
+            <button type="button" class="btn btn-secondary" onclick="closeBillsExportModal()">ยกเลิก</button>
+            <button type="button" class="btn btn-primary" onclick="executeBillsExport()" style="display:flex; align-items:center; gap:8px;">
+                <i data-lucide="download" style="width:16px; height:16px;"></i> ส่งออก
+            </button>
+        </footer>
+    </div>
+</div>
+</body>
+</html>
+
+
+
+

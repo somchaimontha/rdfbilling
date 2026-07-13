@@ -1,0 +1,27 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+
+# clasp deployment bindings contain the real Apps Script scriptId — keep local only
+**/.clasp.json
+
+# Backend implementation + internal docs — public repo, local-only by policy
+*.md
+*.gs
+backend/
+deploy_backend/
+วางแผนระบบใหม่/
+AttachmentService.js
+AuditService.js
+Auth.js
+ClaimService.js
+Code.js
+Config.js
+DashboardService.js
+ExpenseService.js
+MasterDataService.js
+Setup.js
+SheetHelper.js
+SystemService.js
+UserService.js
