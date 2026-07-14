@@ -3,7 +3,7 @@
 // Master Data + Full Expense Schema
 // ==========================================================================
 
-const API_URL = '<YOUR_APPS_SCRIPT_WEB_APP_URL>';
+const API_URL = 'https://script.google.com/macros/s/AKfycbwxEEhfMfU8hjiR-iijOqcdPbRR-UOQOf4CMD34B0qVlhjgJYEpFXzGkopJ4inI5RyRnA/exec';
 
 // API request router (CORS friendly via text/plain payload)
 async function apiCall(action, data = null, filters = null, pagination = null) {
