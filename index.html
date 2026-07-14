@@ -122,6 +122,9 @@
             <li class="nav-item" data-tab="summary-view">
                 <a><i data-lucide="calendar-days"></i> รายงานสรุปรายปี</a>
             </li>
+            <li class="nav-item" data-tab="user-management" id="nav-user-management" style="display:none;">
+                <a><i data-lucide="users"></i> จัดการผู้ใช้งาน</a>
+            </li>
             <!-- Logout Button -->
             <li class="nav-item" data-tab="settings-view" id="nav-settings">
                 <a><i data-lucide="settings"></i> ตั้งค่าระบบ</a>
@@ -152,7 +155,8 @@
                 </button>
                 <div>
                     <h1 class="page-title" id="page-title-display">แดชบอร์ดรายจ่าย</h1>
-                <p class="page-subtitle" id="page-subtitle-display">ภาพรวมการเงินแยกตามเดือน โครงการ และแหล่งเงิน</p>
+                    <p class="page-subtitle" id="page-subtitle-display">ภาพรวมการเงินแยกตามเดือน โครงการ และแหล่งเงิน</p>
+                </div>
             </div>
             <div class="header-actions">
 
@@ -555,11 +559,82 @@
             </div>
         </div>
 
-        <!-- ===== TAB: Food Entry ===== -->
+        <!-- TAB: Annual Summary -->
+        <div id="tab-summary-view" class="tab-content">
+            <div class="header-filters" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:16px;">
+                <h2 class="widget-title" style="margin-bottom:0;">รายงานสรุปรายปี</h2>
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <label>ปีงบประมาณ:</label>
+                    <select id="summary-year-select" class="form-input" onchange="renderSummaryView()"></select>
+                </div>
+            </div>
 
+            <div style="display:grid; grid-template-columns: 1fr; gap:24px; margin-top:24px;">
+                <div class="widget">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                        <h3 class="widget-title">สรุปยอดแยกตามเดือน</h3>
+                        <div class="kpi-value" style="color:var(--primary); font-size:24px;" id="summary-year-total">0.00 บาท</div>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>เดือน</th>
+                                    <th class="text-right">จำนวนบิล</th>
+                                    <th class="text-right">ยอดรวม</th>
+                                </tr>
+                            </thead>
+                            <tbody id="summary-by-month-tbody">
+                                <!-- Data will be loaded here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="widget">
+                    <h3 class="widget-title" style="margin-bottom:16px;">สรุปยอดแยกตามโครงการ</h3>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>โครงการ</th>
+                                    <th class="text-right">จำนวนบิล</th>
+                                    <th class="text-right">ยอดรวม</th>
+                                </tr>
+                            </thead>
+                            <tbody id="summary-by-project-tbody">
+                                <!-- Data will be loaded here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <!-- TAB: User Management -->
-        <!-- JS will populate -->
+        <div class="tab-content" id="tab-user-management">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <h3 style="margin:0;">จัดการผู้ใช้งาน</h3>
+                <button class="btn btn-primary" onclick="openCreateUserModal()"><i data-lucide="user-plus"></i> เพิ่มผู้ใช้งาน</button>
+            </div>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th style="width:48px;"></th>
+                            <th>Username</th>
+                            <th>อีเมล</th>
+                            <th>สิทธิ์</th>
+                            <th style="text-align:center;">สถานะ</th>
+                            <th style="text-align:center; width:100px;">จัดการ</th>
+                        </tr>
+                    </thead>
+                    <tbody id="user-management-tbody">
+                        <tr><td colspan="6" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
 
     <!-- TAB: Settings -->
     <div class="tab-content" id="tab-settings-view">
@@ -683,7 +758,7 @@
                     <label class="form-label">ขนาดไฟล์แนบสูงสุด (MB)</label>
                     <div style="display:flex; gap:8px;">
                         <input type="number" id="setting-max-upload-size" class="form-input" min="1" max="20" placeholder="2">
-                        <button class="btn btn-primary" onclick="saveSystemSetting('MAX_UPLOAD_SIZE_MB', document.getElementById('setting-max-upload-size').value)" style="white-space:nowrap; padding:0 16px;">บันทึก</button>
+                        <button class="btn btn-primary" onclick="saveSystemSetting('maxUploadSizeMb', document.getElementById('setting-max-upload-size').value)" style="white-space:nowrap; padding:0 16px;">บันทึก</button>
                     </div>
                 </div>
             </div>
@@ -732,7 +807,7 @@
                     </div>
                     <div style="margin-left:auto;display:flex;align-items:center;gap:10px;">
                         <label class="toggle-switch">
-                            <input type="checkbox" id="setting-google-login-enabled" onchange="saveSystemSetting('GOOGLE_LOGIN_ENABLED', this.checked)">
+                            <input type="checkbox" id="setting-google-login-enabled" onchange="saveSystemSetting('googleLoginEnabled', this.checked)">
                             <span class="toggle-slider"></span>
                         </label>
                         <span id="setting-google-login-status" style="font-size:12px;color:var(--text-secondary);">ปิดอยู่</span>
@@ -742,7 +817,7 @@
                     <label class="form-label">Google OAuth Client ID</label>
                     <div style="display:flex; gap:8px;">
                         <input type="text" id="setting-google-client-id" class="form-input" placeholder="xxxxxxxx.apps.googleusercontent.com" style="font-size:12px; font-family:monospace;">
-                        <button class="btn btn-primary" onclick="saveSecureSetting('GOOGLE_OAUTH_CLIENT_ID', document.getElementById('setting-google-client-id').value)" style="white-space:nowrap; padding:0 16px;">
+                        <button class="btn btn-primary" onclick="saveSecureSetting('googleOauthClientId', document.getElementById('setting-google-client-id').value)" style="white-space:nowrap; padding:0 16px;">
                             <i data-lucide="save"></i> บันทึก
                         </button>
                     </div>
@@ -767,7 +842,7 @@
                     <label class="form-label">Drive Folder ID (โฟลเดอร์หลัก)</label>
                     <div style="display:flex; gap:8px;">
                         <input type="text" id="setting-drive-folder-id" class="form-input" placeholder="1AbcXxxx... (จาก URL ของ Google Drive Folder)" style="font-size:12px; font-family:monospace;">
-                        <button class="btn btn-primary" onclick="saveSecureSetting('DRIVE_FOLDER_ID', document.getElementById('setting-drive-folder-id').value)" style="white-space:nowrap; padding:0 16px;">
+                        <button class="btn btn-primary" onclick="saveSecureSetting('driveFolderId', document.getElementById('setting-drive-folder-id').value)" style="white-space:nowrap; padding:0 16px;">
                             <i data-lucide="save"></i> บันทึก
                         </button>
                     </div>
@@ -825,35 +900,6 @@
             </div>
 
             <!-- Section: Login Logs -->
-            <div class="card" id="card-login-logs" style="margin-bottom:20px; display:none;">
-                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
-                    <div style="display:flex; align-items:center; gap:12px;">
-                        <div style="width:40px;height:40px;background:linear-gradient(135deg,#f093fb,#f5576c);border-radius:10px;display:flex;align-items:center;justify-content:center;">
-                            <i data-lucide="activity" style="width:20px;height:20px;color:white;"></i>
-                        </div>
-                        <h3 style="font-size:15px;font-weight:700;margin:0;">ประวัติการเข้าสู่ระบบ</h3>
-                    </div>
-                    <button class="btn btn-outline" style="font-size:12px;padding:6px 12px;" onclick="loadLoginLogs()">
-                        <i data-lucide="refresh-cw"></i> รีเฟรช
-                    </button>
-                </div>
-                <div class="table-container">
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th>เวลา</th>
-                                <th>ผู้ใช้งาน</th>
-                                <th>การกระทำ</th>
-                                <th>รายละเอียด</th>
-                            </tr>
-                        </thead>
-                        <tbody id="login-logs-tbody">
-                            <tr><td colspan="4" style="text-align:center;color:var(--text-secondary);">กำลังโหลด...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
         </div>
     </div>
     </main>
@@ -890,7 +936,7 @@
         </a>
 
         <!-- 4. Reports -->
-        <a class="bottom-nav-item" data-tab="report-year">
+        <a class="bottom-nav-item" data-tab="summary-view">
             <i data-lucide="calendar-days"></i>
             <span>รายงาน</span>
         </a>
@@ -1173,91 +1219,6 @@
         </footer>
     </div>
 </div>
-<!-- ===================================================
-     MODAL: Add / Edit Food Expense
-===================================================== -->
-<div class="modal-overlay" id="modal-food-expense">
-    <div class="modal-card" style="max-width: 900px;">
-        <header class="modal-header">
-            <h3 class="modal-title" id="food-modal-title">บันทึกค่าอาหารประจำเดือน</h3>
-            <button class="btn btn-icon" id="modal-food-close"><i data-lucide="x"></i></button>
-        </header>
-        <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
-            <input type="hidden" id="food-edit-index" value="">
-            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px;">
-                <div class="form-group">
-                    <label class="form-label required">เดือน</label>
-                    <select id="food-month" class="form-input" required>
-                        <option value="1">มกราคม</option><option value="2">กุมภาพันธ์</option><option value="3">มีนาคม</option>
-                        <option value="4">เมษายน</option><option value="5">พฤษภาคม</option><option value="6">มิถุนายน</option>
-                        <option value="7">กรกฎาคม</option><option value="8">สิงหาคม</option><option value="9">กันยายน</option>
-                        <option value="10">ตุลาคม</option><option value="11">พฤศจิกายน</option><option value="12">ธันวาคม</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="form-label required">ปี (..)</label>
-                    <input type="number" id="food-year" class="form-input" required>
-                </div>
-                <div class="form-group">
-                    <label class="form-label required">หอพัก</label>
-                    <select id="food-dormitory" class="form-input" required>
-                        <option value="ชาย">ชาย</option>
-                        <option value="หญิง">หญิง</option>
-                        <option value="อื่น">อื่น</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="form-label required">ผู้รับผิดชอบ (ครูหัก)</label>
-                    <input type="text" id="food-responsible" class="form-input" required>
-                </div>
-                <div class="form-group" style="grid-column: 1 / -1;">
-                    <label class="form-label">ายเ</label>
-                    <textarea id="food-note" class="form-input" rows="2"></textarea>
-                </div>
-            </div>
-
-            <!-- Food Items Sub-table -->
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                <h4 style="margin:0;">รายการวัตถุดิบ</h4>
-                <button type="button" class="btn btn-outline btn-sm" onclick="addFoodItemRow()">
-                    <i data-lucide="plus"></i> เพิ่มรายการ
-                </button>
-            </div>
-            <div class="table-container" style="margin-bottom: 24px;">
-                <table class="data-table" id="food-items-table">
-                    <thead>
-                        <tr>
-                            <th style="width:50px;">ลำดับ</th>
-                            <th style="width:120px;">วันที่</th>
-                            <th>รายการวัตถุดิบ</th>
-                            <th style="width:100px;">จำนวน</th>
-                            <th style="width:80px;">หน่วย</th>
-                            <th style="width:120px;">ราคา/หน่วย</th>
-                            <th style="width:120px;">รวมเงิน</th>
-                            <th style="width:80px;">แนบหลักฐาน</th>
-                            <th style="width:50px;"></th>
-                        </tr>
-                    </thead>
-                    <tbody id="food-items-tbody">
-                        <!-- Dynamic rows -->
-                    </tbody>
-                    <tfoot>
-                        <tr>
-                            <td colspan="6" style="text-align:right; font-weight:bold;">ยอดรวมทั้งสิ้น</td>
-                            <td id="food-total-display" style="font-weight:bold; color:var(--primary);">0.00</td>
-                            <td colspan="2"></td>
-                        </tr>
-                    </tfoot>
-                </table>
-            </div>
-        </div>
-        <footer class="modal-footer">
-            <button type="button" class="btn btn-secondary" id="btn-food-cancel">ยกเลิก</button>
-            <button type="button" class="btn btn-primary" onclick="handleFoodExpenseSubmit()">บันทึกข้อมูล</button>
-        </footer>
-    </div>
-</div>
-
 <!-- ===================================================
      MODAL: Export Report (Full Featured)
 ===================================================== -->

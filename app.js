@@ -309,6 +309,7 @@ async function handleLoginSubmit(e) {
         if (result.status === 'success' || result.success) {
             localStorage.setItem('rdf_session_token', result.data.token);
             localStorage.setItem('rdf_current_user', JSON.stringify(result.data.user));
+            localStorage.setItem('rdf_login_time', new Date().toISOString());
             
             // ซ่อน Overlay ล็อกอิน
             const loginOverlay = document.getElementById('login-overlay');
@@ -761,6 +762,106 @@ function updateMonthStatusCheckboxUI() {
 }
 
 // ==========================================================================
+// Annual Summary Report
+// ==========================================================================
+function setupSummaryYearDropdown() {
+    const yearSelect = document.getElementById('summary-year-select');
+    if (!yearSelect || yearSelect.options.length) return;
+    const currentYear = new Date().getFullYear() + 543;
+    const startYear = 2566; // ปีเริ่มโครงการ
+    for (let y = startYear; y <= currentYear + 1; y++) {
+        const opt = document.createElement('option');
+        opt.value = y;
+        opt.textContent = y;
+        yearSelect.appendChild(opt);
+    }
+    yearSelect.value = state.selectedYear;
+}
+
+async function fetchAllExpensesForSummary() {
+    let all = [];
+    let page = 1;
+    const limit = 200;
+    while (true) {
+        const res = await apiCall('getExpenses', null, {}, { page, limit });
+        const batch = res.expenses || [];
+        all = all.concat(batch);
+        if (batch.length < limit) break;
+        page++;
+    }
+    return all;
+}
+
+async function renderSummaryView() {
+    setupSummaryYearDropdown();
+    const yearSelect = document.getElementById('summary-year-select');
+    const selectedYear = parseInt((yearSelect && yearSelect.value) || state.selectedYear, 10);
+    const ceYear = selectedYear - 543;
+
+    const monthTbody = document.getElementById('summary-by-month-tbody');
+    const projectTbody = document.getElementById('summary-by-project-tbody');
+    const totalEl = document.getElementById('summary-year-total');
+    if (!monthTbody || !projectTbody) return;
+
+    monthTbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>';
+    projectTbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>';
+
+    let allExpenses;
+    try {
+        allExpenses = await fetchAllExpensesForSummary();
+    } catch (err) {
+        appAlert('ไม่สามารถโหลดข้อมูลรายงานสรุปได้: ' + err.message, 'error');
+        monthTbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:var(--danger);">โหลดข้อมูลไม่สำเร็จ</td></tr>';
+        projectTbody.innerHTML = '';
+        return;
+    }
+
+    const yearExpenses = allExpenses.filter(e => e.expenseDate && e.expenseDate.startsWith(String(ceYear)));
+
+    const thMonths = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
+    const byMonth = Array.from({ length: 12 }, () => ({ count: 0, amount: 0 }));
+    const byProject = {};
+    let yearTotal = 0;
+
+    yearExpenses.forEach(e => {
+        const amount = parseFloat(e.amount) || 0;
+        yearTotal += amount;
+
+        const monthIdx = new Date(e.expenseDate).getMonth();
+        if (monthIdx >= 0 && monthIdx < 12) {
+            byMonth[monthIdx].count++;
+            byMonth[monthIdx].amount += amount;
+        }
+
+        const projectId = e.projectId || '-';
+        if (!byProject[projectId]) byProject[projectId] = { count: 0, amount: 0 };
+        byProject[projectId].count++;
+        byProject[projectId].amount += amount;
+    });
+
+    if (totalEl) totalEl.textContent = yearTotal.toLocaleString('th-TH', { minimumFractionDigits: 2 }) + ' บาท';
+
+    monthTbody.innerHTML = byMonth.map((m, idx) => `
+        <tr>
+            <td>${thMonths[idx]}</td>
+            <td class="text-right">${m.count}</td>
+            <td class="text-right">${m.amount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+        </tr>
+    `).join('');
+
+    const projectRows = Object.entries(byProject).sort((a, b) => b[1].amount - a[1].amount);
+    projectTbody.innerHTML = projectRows.length
+        ? projectRows.map(([projectId, v]) => `
+            <tr>
+                <td>${escapeHTML(getProjectName(projectId))}</td>
+                <td class="text-right">${v.count}</td>
+                <td class="text-right">${v.amount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+            </tr>
+        `).join('')
+        : '<tr><td colspan="3" style="text-align:center; color:var(--text-muted);">ไม่มีข้อมูลในปีงบประมาณนี้</td></tr>';
+}
+
+// ==========================================================================
 // Tab Navigation
 // ==========================================================================
 function switchTab(tabName) {
@@ -782,16 +883,14 @@ function switchTab(tabName) {
     });
 
     const titles = {
-        'user-management': ['จัดการผู้ใช้งาน', 'ตั้งค่าสิทธิ์ กำหนดรหัสผ่าน และดูประวัติการล็อกอิน'],
+        'user-management': ['จัดการผู้ใช้งาน', 'เพิ่ม/แก้ไขผู้ใช้งาน กำหนดสิทธิ์ และเปิด-ปิดการใช้งานบัญชี'],
         'settings-view': ['ตั้งค่าระบบ', 'จัดการ Google Login, Google Drive และการตั้งค่าความปลอดภัย'],
         'dashboard': ['แดชบอร์ดรายจ่าย', 'ภาพรวมการเงินแยกตามเดือน โครงการ และแหล่งเงิน'],
         'bills-table': ['บันทึกบิลประจำเดือน', 'ดูและจัดการรายการบิลทั้งหมดของเดือนที่เลือก'],
         'claims-view': ['จัดกลุ่มส่งเบิก (Claims)', 'รวมกลุ่มและบริหารรายการบิลส่งเบิกมูลนิธิ'],
         'spreadsheet-view': ['สเปรดชีตส่งเบิก', 'ใบขอเบิกเงินรูปแบบตาราง Excel'],
         'food-overview': ['ค่าอาหารประจำเดือน', 'ภาพรวมรายการค่าอาหารและสรุปยอด'],
-        'food-entry': ['บันทึกค่าอาหาร', 'บันทึกบิลและอัปโหลดหลักฐานการซื้อ'],
-        'summary-view': ['รายงานสรุปรายปี', 'สรุปยอดเงินแยกตามเดือน โครงการ และปีงบประมาณ'],
-        'master-data': ['จัดการข้อมูลหลัก (Master Data)', 'เพิ่ม/แก้ไขโครงการ หมวดหมู่ ผู้ขาย และแหล่งเงิน']
+        'summary-view': ['รายงานสรุปรายปี', 'สรุปยอดเงินแยกตามเดือน โครงการ และปีงบประมาณ']
     };
 
     const [title, subtitle] = titles[tabName] || ['ระบบบันทึกรายจ่าย', ''];
@@ -799,7 +898,7 @@ function switchTab(tabName) {
     (document.getElementById('page-subtitle-display') || {}).textContent = subtitle;
 
     // Hide global headers (filter bar, metrics) for admin/settings tabs
-    const isSettingsTab = (tabName === 'settings-view' || tabName === 'user-management' || tabName === 'master-data' || tabName === 'summary-view');
+    const isSettingsTab = (tabName === 'settings-view' || tabName === 'user-management' || tabName === 'summary-view');
     const filterBar = document.querySelector('.header-filters');
     const metricsBar = document.getElementById('metrics-bar');
     const carryOver = document.getElementById('carry-over-banner');
@@ -815,18 +914,13 @@ function switchTab(tabName) {
     
     const exportBtnMain = document.getElementById('btn-export-main');
     if (exportBtnMain) {
-        if (tabName === 'master-data' || tabName === 'settings-view' || tabName === 'user-management') {
+        if (tabName === 'settings-view' || tabName === 'user-management') {
             exportBtnMain.style.display = 'none';
         } else {
             exportBtnMain.style.display = 'flex';
         }
     }
 
-    if (tabName === 'master-data') {
-        renderMasterData();
-        renderSignaturePreviews();
-        renderColumnSettingsUI();
-    }
     if (tabName === 'spreadsheet-view') renderSpreadsheet();
     if (tabName === 'claims-view') renderClaims();
     if (tabName === 'food-overview') {
@@ -836,15 +930,15 @@ function switchTab(tabName) {
         if (monthInput && !monthInput.value) monthInput.value = `${d.getFullYear()}-${mStr}`;
         loadFoodOverview();
     }
-    if (tabName === 'food-entry') {
-        const d = new Date();
-        const mStr = String(d.getMonth() + 1).padStart(2, '0');
-        (document.getElementById('food-entry-month') || {}).value = `${d.getFullYear()}-${mStr}`;
-        loadFoodEntryList();
-    }
     if (tabName === 'user-management') renderUserManagement();
-    if (tabName === 'settings-view') renderSettingsTab();
-    
+    if (tabName === 'settings-view') {
+        renderSettingsTab();
+        renderMasterData();
+        renderSignaturePreviews();
+        renderColumnSettingsUI();
+    }
+    if (tabName === 'summary-view') renderSummaryView();
+
     initializeLucide();
 }
 
@@ -1008,7 +1102,7 @@ function renderAll() {
     renderSpreadsheet();
     renderSummaries();
     renderProjectFilterDropdown();
-    if (state.activeTab === 'master-data') {
+    if (state.activeTab === 'settings-view') {
         renderMasterData();
         renderSignaturePreviews();
         renderColumnSettingsUI();
@@ -5719,6 +5813,17 @@ function closeUserProfileModal() {
     modal.classList.remove('active');
 }
 
+function previewProfileAvatar(input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const preview = document.getElementById('profile-modal-avatar-preview');
+        if (preview) preview.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
 async function saveUserProfile() {
     const userJson = localStorage.getItem('rdf_current_user');
     if (!userJson) return;
@@ -5810,37 +5915,39 @@ async function renderUserManagement() {
     if (!tbody) return;
     tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>';
     try {
-        const resp = await fetch(API_URL, {
-            method: 'POST',
-            body: JSON.stringify({ action: 'getUsers', token: getToken(), data: {} })
-        });
-        const result = await resp.json();
-        if (result.status === 'success') {
-            adminUserList = result.data || [];
-            tbody.innerHTML = '';
-            adminUserList.forEach((u, idx) => {
-                const roleColors = { admin: '#f59e0b', superadmin: '#ef4444', manager: '#3b82f6', user: '#10b981' };
-                const color = roleColors[(u.Role||u.role||'user').toLowerCase()] || '#6b7280';
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td><img src="${u.AvatarURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.Username || u.username)}&background=random`}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:2px solid var(--border-color);"></td>
-                    <td style="font-weight:600;">${escapeHTML(u.Username || u.username || '-')}</td>
-                    <td style="color:var(--text-secondary);font-size:13px;">${escapeHTML(u.Email || u.email || '-')}</td>
-                    <td><span style="background:${color}22;color:${color};padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">${(u.Role||u.role||'user').toUpperCase()}</span></td>
-                    <td style="text-align:center;font-weight:600;">${u.LoginCount||0}</td>
+        const res = await apiCall('getUsers');
+        adminUserList = res.users || [];
+
+        if (!adminUserList.length) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">ยังไม่มีผู้ใช้งาน</td></tr>';
+            return;
+        }
+
+        const roleColors = { admin: '#f59e0b', superadmin: '#ef4444', manager: '#3b82f6', user: '#10b981' };
+        tbody.innerHTML = adminUserList.map((u, idx) => {
+            const color = roleColors[(u.role || 'user').toLowerCase()] || '#6b7280';
+            const activeBadge = u.active
+                ? '<span style="background:#10b98122;color:#10b981;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">ใช้งาน</span>'
+                : '<span style="background:#ef444422;color:#ef4444;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">ปิดใช้งาน</span>';
+            return `
+                <tr>
+                    <td><img src="https://ui-avatars.com/api/?name=${encodeURIComponent(u.username || '')}&background=random" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:2px solid var(--border-color);"></td>
+                    <td style="font-weight:600;">${escapeHTML(u.username || '-')}</td>
+                    <td style="color:var(--text-secondary);font-size:13px;">${escapeHTML(u.email || '-')}</td>
+                    <td><span style="background:${color}22;color:${color};padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">${(u.role || 'user').toUpperCase()}</span></td>
+                    <td style="text-align:center;">${activeBadge}</td>
                     <td style="text-align:center;">
                         <button class="btn btn-outline" style="padding:4px 10px;font-size:12px;margin-right:4px;" onclick="openEditUserModal(${idx})"><i data-lucide="edit-2"></i></button>
-                        <button class="btn" style="padding:4px 10px;font-size:12px;background:var(--danger-light);color:var(--danger);border:none;" onclick="confirmDeleteUser('${escapeHTML(u.Username||u.username||'')}')"><i data-lucide="trash-2"></i></button>
+                        <button class="btn" style="padding:4px 10px;font-size:12px;background:var(--danger-light);color:var(--danger);border:none;" onclick="confirmToggleUserActive('${escapeHTML(u.id)}', ${!!u.active})" title="${u.active ? 'ปิดการใช้งาน' : 'เปิดการใช้งาน'}">
+                            <i data-lucide="${u.active ? 'user-x' : 'user-check'}"></i>
+                        </button>
                     </td>
-                `;
-                tbody.appendChild(tr);
-            });
-            lucide.createIcons();
-        } else {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--danger);">โหลดข้อมูลไม่ได้: ' + (result.message||'') + '</td></tr>';
-        }
-    } catch(e) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--danger);">ข้อผิดพลาดในการเชื่อมต่อ</td></tr>';
+                </tr>
+            `;
+        }).join('');
+        if (window.lucide) lucide.createIcons();
+    } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--danger);">โหลดข้อมูลไม่สำเร็จ: ' + escapeHTML(err.message) + '</td></tr>';
     }
 }
 
@@ -5862,16 +5969,15 @@ function openCreateUserModal() {
 function openEditUserModal(index) {
     const u = adminUserList[index];
     if (!u) return;
-    const username = u.Username || u.username || '';
-    (document.getElementById('admin-user-modal-title') || {}).textContent = 'แก้ไขผู้ใช้งาน: ' + username;
+    (document.getElementById('admin-user-modal-title') || {}).textContent = 'แก้ไขผู้ใช้งาน: ' + u.username;
     (document.getElementById('admin-user-mode') || {}).value = 'edit';
-    (document.getElementById('admin-user-username') || {}).value = username;
+    (document.getElementById('admin-user-username') || {}).value = u.username || '';
     document.getElementById('admin-user-username').disabled = true;
-    (document.getElementById('admin-user-firstname') || {}).value = u.FirstName || u.firstName || '';
-    (document.getElementById('admin-user-lastname') || {}).value = u.LastName || u.lastName || '';
-    (document.getElementById('admin-user-email') || {}).value = u.Email || u.email || '';
+    (document.getElementById('admin-user-firstname') || {}).value = u.fullName || '';
+    (document.getElementById('admin-user-lastname') || {}).value = '';
+    (document.getElementById('admin-user-email') || {}).value = u.email || '';
     (document.getElementById('admin-user-password') || {}).value = '';
-    (document.getElementById('admin-user-role') || {}).value = (u.Role || u.role || 'user').toLowerCase();
+    (document.getElementById('admin-user-role') || {}).value = (u.role || 'user').toLowerCase();
     (document.getElementById('admin-user-pw-hint') || {}).textContent = '(เว้นว่างถ้าไม่ต้องการเปลี่ยน)';
     const modal = document.getElementById('modal-admin-user');
     modal.style.display = 'flex'; modal.classList.add('active');
@@ -5883,63 +5989,62 @@ function closeAdminUserModal() {
 }
 
 async function saveAdminUser() {
-    const mode     = document.getElementById('admin-user-mode').value;
-    const username = document.getElementById('admin-user-username').value.trim();
-    const password = document.getElementById('admin-user-password').value.trim();
-    const email    = document.getElementById('admin-user-email').value.trim();
-    const role     = document.getElementById('admin-user-role').value;
-    const firstName= document.getElementById('admin-user-firstname').value.trim();
-    const lastName = document.getElementById('admin-user-lastname').value.trim();
-    
+    const mode      = document.getElementById('admin-user-mode').value;
+    const username  = document.getElementById('admin-user-username').value.trim();
+    const password  = document.getElementById('admin-user-password').value.trim();
+    const email     = document.getElementById('admin-user-email').value.trim();
+    const role      = document.getElementById('admin-user-role').value;
+    const firstName = document.getElementById('admin-user-firstname').value.trim();
+    const lastName  = document.getElementById('admin-user-lastname').value.trim();
+    const fullName  = [firstName, lastName].filter(Boolean).join(' ');
+
     if (!username) { appAlert('กรุณาระบุ Username', 'error'); return; }
+    if (!fullName) { appAlert('กรุณาระบุชื่อ-นามสกุล', 'error'); return; }
     if (mode === 'create' && !password) { appAlert('กรุณาตั้งรหัสผ่านสำหรับผู้ใช้ใหม่', 'error'); return; }
-    
-    const data = { Username: username, Email: email, Role: role, FirstName: firstName, LastName: lastName, Status: 'Active' };
-    if (password) data.Password = password;
-    
+
     try {
-        const resp = await fetch(API_URL, {
-            method: 'POST',
-            body: JSON.stringify({ action: 'saveUser', token: getToken(), data })
-        });
-        const result = await resp.json();
-        if (result.status === 'success') {
-            appAlert(result.message || 'บันทึกสำเร็จ!', 'success');
-            closeAdminUserModal();
-            renderUserManagement();
+        if (mode === 'create') {
+            const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
+            const passwordHash = await sha256(password);
+            await apiCall('createUser', {
+                username, passwordHash, fullName, role, email,
+                organizationId: currentUser && currentUser.organizationId
+            });
         } else {
-            appAlert(result.message || 'เกิดข้อผิดพลาด', 'error');
+            const editingUser = adminUserList.find(u => u.username === username);
+            if (!editingUser) throw new Error('ไม่พบผู้ใช้งานนี้ในระบบ');
+            await apiCall('updateUser', { id: editingUser.id, fullName, role, email });
+            if (password) {
+                const passwordHash = await sha256(password);
+                await apiCall('changePassword', { id: editingUser.id, passwordHash });
+            }
         }
-    } catch(e) {
-        appAlert('ไม่สามารถเชื่อมต่อ API ได้', 'error');
+        appAlert('บันทึกสำเร็จ!', 'success');
+        closeAdminUserModal();
+        renderUserManagement();
+    } catch (err) {
+        appAlert(err.message || 'เกิดข้อผิดพลาด', 'error');
     }
 }
 
-function confirmDeleteUser(username) {
-    if (!username) return;
-    const currentUser = getCurrentUser();
-    if (currentUser && currentUser.username === username) {
-        appAlert('ไม่สามารถลบบัญชีตัวเองได้', 'error'); return;
+function confirmToggleUserActive(id, isCurrentlyActive) {
+    if (!id) return;
+    const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
+    if (currentUser && currentUser.id === id && isCurrentlyActive) {
+        appAlert('ไม่สามารถปิดการใช้งานบัญชีตัวเองได้', 'error'); return;
     }
-    if (!confirm('ยืนยันการลบผู้ใช้งาน: ' + username + ' ?\n\nการกระทำนี้ไม่สามารถยกเลิกได้')) return;
-    deleteUserAccount(username);
+    const actionLabel = isCurrentlyActive ? 'ปิดการใช้งาน' : 'เปิดการใช้งาน';
+    if (!confirm(`ยืนยันการ${actionLabel}บัญชีนี้?`)) return;
+    toggleUserActive(id, !isCurrentlyActive);
 }
 
-async function deleteUserAccount(username) {
+async function toggleUserActive(id, newActiveState) {
     try {
-        const resp = await fetch(API_URL, {
-            method: 'POST',
-            body: JSON.stringify({ action: 'deleteUser', token: getToken(), username })
-        });
-        const result = await resp.json();
-        if (result.status === 'success') {
-            appAlert('ลบผู้ใช้งาน ' + username + ' สำเร็จ', 'success');
-            renderUserManagement();
-        } else {
-            appAlert(result.message || 'เกิดข้อผิดพลาด', 'error');
-        }
-    } catch(e) {
-        appAlert('ไม่สามารถเชื่อมต่อ API ได้', 'error');
+        await apiCall('updateUser', { id, active: newActiveState });
+        appAlert((newActiveState ? 'เปิด' : 'ปิด') + 'การใช้งานบัญชีสำเร็จ', 'success');
+        renderUserManagement();
+    } catch (err) {
+        appAlert(err.message || 'เกิดข้อผิดพลาด', 'error');
     }
 }
 
@@ -5969,29 +6074,6 @@ async function deleteUserAccount(username) {
         setTimeout(tryInit, 1500);
     }
 })();
-
-// ==========================================
-// Settings Layout Navigation
-// ==========================================
-window.showSettingsTab = function(tabName) {
-    document.querySelectorAll('.settings-section').forEach(sec => {
-        sec.classList.toggle('active', sec.id === "settings-sec-${tabName}");
-    });
-    document.querySelectorAll('.settings-sidebar .sbar-item').forEach(btn => {
-        btn.classList.toggle('active', btn.getAttribute('onclick').includes("showSettingsTab('${tabName}')"));
-    });
-    
-    // Auto load data if needed
-    if(tabName === 'projects' || tabName === 'categories' || tabName === 'vendors' || tabName === 'fundsources') {
-        if(typeof loadMasterData === 'function') loadMasterData();
-    }
-    if(tabName === 'users') {
-        if(typeof loadAdminUsers === 'function') loadAdminUsers();
-    }
-};
-
-// ==========================================
-
 
 
 
@@ -6057,6 +6139,84 @@ window.renderFoodOverview = function() {
     if (totalEl) totalEl.textContent = total.toLocaleString('th-TH', {minimumFractionDigits:2}) + ' บาท';
 };
 
+window.exportFoodPDF = function() {
+    const selectedMonth = (document.getElementById('food-overview-month') || {}).value; // YYYY-MM
+    let data = state.foodExpenses || [];
+    if (selectedMonth) {
+        data = data.filter(item => item.date && item.date.startsWith(selectedMonth));
+    }
+    data.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    let total = 0;
+    const rows = data.length
+        ? data.map((item, idx) => {
+            const amount = parseFloat(item.totalAmount) || 0;
+            total += amount;
+            return `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td>${formatThaiDate(item.date)}</td>
+                    <td>${escapeHTML(item.name)}</td>
+                    <td>${escapeHTML(item.category)}</td>
+                    <td style="text-align:right;">${escapeHTML(String(item.quantity))} ${escapeHTML(item.unit || '')}</td>
+                    <td style="text-align:right;">${parseFloat(item.price).toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
+                    <td style="text-align:right; font-weight:600;">${amount.toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
+                </tr>
+            `;
+        }).join('')
+        : '<tr><td colspan="7" style="text-align:center; padding:20px;">ไม่มีข้อมูลค่าอาหารในเดือนนี้</td></tr>';
+
+    const monthLabel = selectedMonth
+        ? formatThaiDate(selectedMonth + '-01').split(' ').slice(1).join(' ')
+        : '';
+
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>สรุปค่าอาหารประจำเดือน ${monthLabel}</title>
+<style>
+    body { font-family: 'Sarabun', sans-serif; padding: 24px; color: #111; }
+    h2 { margin-bottom: 4px; }
+    .subtitle { color: #555; margin-bottom: 20px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border: 1px solid #999; padding: 6px 8px; }
+    th { background: #f0f0f0; text-align: left; }
+    .total-row td { font-weight: bold; background: #fafafa; }
+    .doc-footer { margin-top: 24px; font-size: 11px; color: #777; text-align: right; }
+    @media print { button { display: none; } }
+</style>
+</head>
+<body onload="window.print();">
+    <h2>สรุปค่าอาหารประจำเดือน</h2>
+    <div class="subtitle">${monthLabel || 'ทุกเดือน'}</div>
+    <table>
+        <thead>
+            <tr>
+                <th>#</th><th>วันที่</th><th>รายการ</th><th>หมวดหมู่</th>
+                <th style="text-align:right;">จำนวน</th><th style="text-align:right;">ราคา/หน่วย</th><th style="text-align:right;">รวมเป็นเงิน</th>
+            </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+            <tr class="total-row">
+                <td colspan="6" style="text-align:right;">ยอดรวมทั้งสิ้น</td>
+                <td style="text-align:right;">${total.toLocaleString('th-TH', {minimumFractionDigits:2})} บาท</td>
+            </tr>
+        </tfoot>
+    </table>
+    <div class="doc-footer">
+        สร้างโดย: ระบบบันทึกรายจ่าย RDF &bull; พิมพ์เมื่อ: ${new Date().toLocaleDateString('th-TH', {year:'numeric',month:'long',day:'numeric'})}
+    </div>
+</body></html>`;
+
+    const printWin = window.open('', '_blank', 'width=960,height=720');
+    if (!printWin) {
+        appAlert('กรุณาอนุญาต Popup ในเบราว์เซอร์ก่อนใช้งาน Export PDF');
+        return;
+    }
+    printWin.document.write(html);
+    printWin.document.close();
+};
+
 window.loadFoodEntryList = async function() {
     try {
         const res = await apiCall('getFoodExpenses');
@@ -6071,18 +6231,18 @@ window.renderFoodEntryList = function() {
     const tbody = document.getElementById('food-entry-tbody');
     if (!tbody) return;
 
-    const selectedMonth = document.getElementById('food-entry-month').value; // YYYY-MM
+    const selectedMonth = (document.getElementById('food-modal-month') || {}).value; // YYYY-MM
     let data = state.foodExpenses || [];
-    
+
     if (selectedMonth) {
         data = data.filter(item => item.date && item.date.startsWith(selectedMonth));
     }
-    
+
     data.sort((a, b) => new Date(b.date) - new Date(a.date));
 
     let html = '';
     if (data.length === 0) {
-        html = '<tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:20px;">ไม่มีข้อมูลที่บันทึกไว้</td></tr>';
+        html = '<tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:20px;">ไม่มีข้อมูลที่บันทึกไว้</td></tr>';
     } else {
         data.forEach(item => {
             const amount = parseFloat(item.totalAmount) || 0;
@@ -6091,12 +6251,9 @@ window.renderFoodEntryList = function() {
             html += `
                 <tr>
                     <td>${formatThaiDate(item.date)}</td>
-                    <td>${item.name}</td>
-                    <td><span class="badge">${item.category}</span></td>
+                    <td>${escapeHTML(item.name)} ${hasFiles ? '<i data-lucide="paperclip" style="color:var(--primary); width:13px; vertical-align:middle;"></i>' : ''}</td>
+                    <td><span class="badge">${escapeHTML(item.category)}</span></td>
                     <td class="text-right" style="font-weight:600;">${amount.toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
-                    <td class="text-center">
-                        ${hasFiles ? '<i data-lucide="image" style="color:var(--primary); width:16px;"></i>' : '-'}
-                    </td>
                     <td class="text-center">
                         <button type="button" class="btn btn-icon btn-sm text-danger" onclick="deleteFoodExpense('${item.id}')" title="ลบรายการ">
                             <i data-lucide="trash-2"></i>
@@ -6109,6 +6266,54 @@ window.renderFoodEntryList = function() {
 
     if (tbody) tbody.innerHTML = html;
     if (window.lucide) window.lucide.createIcons();
+};
+
+window.calcFoodEntryTotal = function() {
+    const qty = parseFloat(document.getElementById('food-entry-qty').value) || 0;
+    const price = parseFloat(document.getElementById('food-entry-price').value) || 0;
+    const total = qty * price;
+    const totalEl = document.getElementById('food-entry-total-display');
+    if (totalEl) totalEl.textContent = total.toLocaleString('th-TH', {minimumFractionDigits: 2}) + ' บาท';
+};
+
+window.handleFoodFiles = async function(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const maxMb = state.maxUploadSizeMb || 2;
+    try {
+        const processed = await processUploadFile(file, maxMb);
+        foodFiles.push(processed);
+        renderFoodFileList();
+    } catch (err) {
+        console.error(err);
+        appAlert('ไม่สามารถแนบไฟล์นี้ได้: ' + err.message, 'error');
+    } finally {
+        event.target.value = '';
+    }
+};
+
+window.renderFoodFileList = function() {
+    const container = document.getElementById('food-file-list');
+    if (!container) return;
+
+    if (!foodFiles.length) {
+        container.innerHTML = '';
+        return;
+    }
+
+    container.innerHTML = foodFiles.map((f, idx) => `
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:6px 10px; background:var(--bg-secondary); border-radius:6px; font-size:12px;">
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHTML(f.filename)}</span>
+            <button type="button" class="btn-icon btn-icon-delete" style="padding:2px;" onclick="removeFoodFile(${idx})"><i data-lucide="x" style="width:14px;height:14px;"></i></button>
+        </div>
+    `).join('');
+    if (window.lucide) window.lucide.createIcons();
+};
+
+window.removeFoodFile = function(idx) {
+    foodFiles.splice(idx, 1);
+    renderFoodFileList();
 };
 
 window.submitFoodEntry = async function(e) {
@@ -7183,30 +7388,29 @@ window.closeFoodExpenseModal = function() {
     }
 };
 
-window.closeBillsExportModal = function() {
-    const overlay = document.getElementById('modal-export-bills');
-    if (overlay) overlay.classList.remove('active');
-};
-
-window.saveSecureSetting = function(key, value) {
+window.saveSecureSetting = async function(key, value) {
     if (!value) return;
-    localStorage.setItem(key, value);
-    alert('บันทึกการตั้งค่า ' + key + ' เรียบร้อยแล้ว');
-};
-
-window.saveSystemSetting = function(key, value) {
-    localStorage.setItem(key, value);
-    if (key === 'MAX_UPLOAD_SIZE_MB') {
-        alert('บันทึกขนาดอัปโหลดสูงสุดเป็น ' + value + ' MB เรียบร้อยแล้ว');
+    try {
+        await apiCall('updateSystemConfig', { [key]: value });
+        appAlert('บันทึกการตั้งค่าเรียบร้อยแล้ว', 'success');
+        renderSettingsTab();
+    } catch (err) {
+        appAlert('บันทึกการตั้งค่าไม่สำเร็จ: ' + err.message, 'error');
     }
 };
 
-window.renderSettingsTab = function() {
-    const uploadInput = document.getElementById('setting-max-upload-size');
-    if (uploadInput) {
-        uploadInput.value = localStorage.getItem('MAX_UPLOAD_SIZE_MB') || 2;
+window.saveSystemSetting = async function(key, value) {
+    try {
+        await apiCall('updateSystemConfig', { [key]: value });
+        appAlert('บันทึกการตั้งค่าเรียบร้อยแล้ว', 'success');
+        renderSettingsTab();
+    } catch (err) {
+        appAlert('บันทึกการตั้งค่าไม่สำเร็จ: ' + err.message, 'error');
     }
-    
+};
+
+window.renderSettingsTab = async function() {
+    // ค่า preference ส่วนตัวของอุปกรณ์ ไม่ใช่ค่าระบบ ยังเก็บที่ localStorage เหมือนเดิม
     const opacityInput = document.getElementById('setting-bottom-nav-opacity');
     if (opacityInput) {
         const op = localStorage.getItem('BOTTOM_NAV_OPACITY') || 0.85;
@@ -7214,26 +7418,50 @@ window.renderSettingsTab = function() {
         const valDisp = document.getElementById('bottom-nav-opacity-value');
         if (valDisp) valDisp.textContent = Math.round(op * 100) + '%';
     }
-    
+
+    const apiStatusEl = document.getElementById('setting-api-status');
+    let config = {};
+    try {
+        const res = await apiCall('getSystemConfig');
+        config = res.config || {};
+        if (apiStatusEl) apiStatusEl.textContent = 'เชื่อมต่อสำเร็จ';
+    } catch (err) {
+        console.error('โหลดการตั้งค่าระบบไม่สำเร็จ:', err);
+        if (apiStatusEl) apiStatusEl.textContent = 'เชื่อมต่อไม่สำเร็จ';
+    }
+
+    const uploadInput = document.getElementById('setting-max-upload-size');
+    if (uploadInput) uploadInput.value = config.maxUploadSizeMb || 2;
+
     const googleLogin = document.getElementById('setting-google-login-enabled');
-    if (googleLogin) {
-        googleLogin.checked = localStorage.getItem('GOOGLE_LOGIN_ENABLED') === 'true';
-    }
-    
+    const googleLoginStatus = document.getElementById('setting-google-login-status');
+    const isGoogleLoginOn = config.googleLoginEnabled === 'true';
+    if (googleLogin) googleLogin.checked = isGoogleLoginOn;
+    if (googleLoginStatus) googleLoginStatus.textContent = isGoogleLoginOn ? 'เปิดอยู่' : 'ปิดอยู่';
+
     const clientId = document.getElementById('setting-google-client-id');
-    if (clientId) {
-        clientId.value = localStorage.getItem('GOOGLE_OAUTH_CLIENT_ID') || '';
-    }
-    
+    if (clientId) clientId.value = config.googleOauthClientId || '';
+
     const driveFolderId = document.getElementById('setting-drive-folder-id');
-    if (driveFolderId) {
-        driveFolderId.value = localStorage.getItem('DRIVE_FOLDER_ID') || '';
+    if (driveFolderId) driveFolderId.value = config.driveFolderId || '';
+
+    const driveFolderStatus = document.getElementById('drive-folder-status');
+    if (driveFolderStatus) {
+        const span = driveFolderStatus.querySelector('span');
+        if (span) {
+            span.textContent = config.driveFolderId
+                ? 'ตั้งค่า Folder ID แล้ว: ' + config.driveFolderId
+                : 'ยังไม่ได้ตั้งค่า Folder ID ระบบจะสร้างโฟลเดอร์ใหม่อัตโนมัติหลังจากกำหนด';
+        }
+    }
+
+    const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
+    const adminInfoEl = document.getElementById('setting-admin-info');
+    if (adminInfoEl) adminInfoEl.textContent = (currentUser && currentUser.name) || '-';
+
+    const lastLoginEl = document.getElementById('setting-last-login');
+    if (lastLoginEl) {
+        const loginTime = localStorage.getItem('rdf_login_time');
+        lastLoginEl.textContent = loginTime ? formatThaiDate(loginTime) : '-';
     }
 };
-
-// Also attach event listener for rendering settings when tab changes
-document.addEventListener('DOMContentLoaded', () => {
-    document.querySelectorAll('[data-tab="settings-view"]').forEach(btn => {
-        btn.addEventListener('click', renderSettingsTab);
-    });
-});
