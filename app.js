@@ -370,8 +370,8 @@ async function initAppWithAPI() {
         showLoading(true);
         
         // 1. ดึงข้อมูล Master Data
-        const settingsRes = await apiCall('getSettings');
-          state.maxUploadSizeMb = (settingsRes.data && settingsRes.data['MAX_UPLOAD_SIZE_MB']) ? parseFloat(settingsRes.data['MAX_UPLOAD_SIZE_MB']) : 2;
+        const settingsRes = await apiCall('getSystemConfig');
+          state.maxUploadSizeMb = (settingsRes.config && settingsRes.config.maxUploadSizeMb) ? parseFloat(settingsRes.config.maxUploadSizeMb) : 2;
           const master = await apiCall('getMasterData');
         state.projects = (master.projects || []).map(p => ({ ...p, name: p.projectName || p.name }));
         state.categories = (master.categories || []).map(c => ({ ...c, name: c.categoryName || c.name }));
@@ -6055,11 +6055,11 @@ async function toggleUserActive(id, newActiveState) {
         if (window.google && window.google.accounts) {
             fetch(API_URL, {
                 method: 'POST',
-                body: JSON.stringify({ action: 'getSettings', token: '' })
+                body: JSON.stringify({ action: 'getSystemConfig', token: '' })
             }).then(r => r.json()).then(result => {
-                if (result.status === 'success' && result.data) {
-                    const enabled = result.data['GOOGLE_LOGIN_ENABLED'];
-                    const clientId = result.data['GOOGLE_OAUTH_CLIENT_ID'];
+                if ((result.status === 'success' || result.success) && result.data && result.data.config) {
+                    const enabled = result.data.config.googleLoginEnabled === 'true';
+                    const clientId = result.data.config.googleOauthClientId;
                     if (enabled && clientId) {
                         initGoogleLogin(clientId);
                     }
@@ -6855,6 +6855,45 @@ window.executeBillsExport = function () {
     }
 };
 
+// closeExportModal — single source of truth. Defined at top level (not inside a
+// DOMContentLoaded wrapper) because other DOMContentLoaded listeners registered
+// earlier in this file reference it directly and would fire before a later
+// wrapper's assignment ran, throwing "closeBillsExportModal is not defined".
+window.closeExportModal = function() {
+    const modal = document.getElementById('modal-export-pdf');
+    if (modal) {
+        modal.classList.remove('active');
+        modal.style.display = '';   // ← always clear inline style
+    }
+};
+
+// closeBillsExportModal — fix to close the correct modal
+window.closeBillsExportModal = function() {
+    const m1 = document.getElementById('modal-export-bills');
+    const m2 = document.getElementById('modal-export-pdf');
+    if (m1) { m1.classList.remove('active'); m1.style.display = ''; }
+    if (m2) { m2.classList.remove('active'); m2.style.display = ''; }
+};
+
+// updateExportSectionBadges helper
+window.updateExportSectionBadges = function() {
+    const countRows = id => {
+        const t = document.getElementById(id);
+        if (!t) return 0;
+        return Array.from(t.querySelectorAll('tbody tr'))
+            .filter(r => !r.querySelector('td[colspan]')).length;
+    };
+    const badges = {
+        'export-bills-badge': countRows('full-bills-table'),
+        'export-food-badge':  countRows('food-bills-table'),
+        'export-attach-badge': countRows('attached-bills-table')
+    };
+    Object.entries(badges).forEach(([id, n]) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = n + ' รายการ';
+    });
+};
+
 // Style section toggle rows
 document.addEventListener('DOMContentLoaded', () => {
     // Close modal-export-bills
@@ -7338,41 +7377,6 @@ document.addEventListener('DOMContentLoaded', function() {
         if (sidebarOv) { sidebarOv.classList.remove('active'); sidebarOv.style.display = ''; }
     };
 
-    // closeExportModal — single source of truth
-    window.closeExportModal = function() {
-        const modal = document.getElementById('modal-export-pdf');
-        if (modal) {
-            modal.classList.remove('active');
-            modal.style.display = '';   // ← always clear inline style
-        }
-    };
-
-    // closeBillsExportModal — fix to close the correct modal
-    window.closeBillsExportModal = function() {
-        const m1 = document.getElementById('modal-export-bills');
-        const m2 = document.getElementById('modal-export-pdf');
-        if (m1) { m1.classList.remove('active'); m1.style.display = ''; }
-        if (m2) { m2.classList.remove('active'); m2.style.display = ''; }
-    };
-
-    // updateExportSectionBadges helper
-    window.updateExportSectionBadges = function() {
-        const countRows = id => {
-            const t = document.getElementById(id);
-            if (!t) return 0;
-            return Array.from(t.querySelectorAll('tbody tr'))
-                .filter(r => !r.querySelector('td[colspan]')).length;
-        };
-        const badges = {
-            'export-bills-badge': countRows('full-bills-table'),
-            'export-food-badge':  countRows('food-bills-table'),
-            'export-attach-badge': countRows('attached-bills-table')
-        };
-        Object.entries(badges).forEach(([id, n]) => {
-            const el = document.getElementById(id);
-            if (el) el.textContent = n + ' รายการ';
-        });
-    };
 });
 
 
