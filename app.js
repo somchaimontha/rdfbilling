@@ -4490,9 +4490,7 @@ function renderClaims() {
             <td class="text-right">${projName}</td>
             <td class="text-right font-bold text-primary">${formatMoney(exp.amount)}</td>
             <td class="text-center"><span class="status-badge ${statusClass}">${statusText}</span></td>
-            <td class="text-center">
-                ${isGrouped ? '<button class="btn btn-secondary btn-sm" onclick="viewBillForClaim(\''+exp.id+'\')">ดูบิล</button>' : '-'}
-            </td>
+            <td class="text-center">-</td>
         `;
         tbody.appendChild(tr);
     });
@@ -4527,134 +4525,6 @@ function toggleMasterClaimCheckbox() {
     updateClaimSelection();
 }
 
-function openBillUploadModal() {
-    const checkboxes = document.querySelectorAll('.claim-group-cb:checked');
-    if (checkboxes.length === 0) return;
-    
-    document.getElementById('bill-claim-count').textContent = checkboxes.length;
-    
-    let listHtml = '';
-    let total = 0;
-    checkboxes.forEach(cb => {
-        const id = cb.value;
-        const exp = state.expenses.find(e => e.id === id);
-        if (exp) {
-            listHtml += `<div style="display:flex; justify-content:space-between; border-bottom:1px solid #eee; padding-bottom:4px; margin-bottom:4px;"><span>${exp.id}: ${exp.description}</span><span class="font-bold">${formatMoney(exp.amount)}</span></div>`;
-            total += parseFloat(exp.amount || 0);
-        }
-    });
-    
-    document.getElementById('bill-claim-list').innerHTML = listHtml;
-    document.getElementById('bill-claim-total').textContent = formatMoney(total);
-    
-    document.getElementById('bill-upload-form').reset();
-    document.getElementById('bill-upload-modal').classList.add('active');
-}
-
-function closeBillUploadModal() {
-    document.getElementById('bill-upload-modal').classList.remove('active');
-}
-
-async function saveBillGroup(e) {
-    e.preventDefault();
-    const billNo = document.getElementById('bill-no').value.trim();
-    const billDate = document.getElementById('bill-date').value;
-    const vendor = document.getElementById('bill-vendor').value.trim();
-    const fileInput = document.getElementById('bill-file');
-    
-    if (!billNo || !billDate || !vendor || !fileInput.files[0]) {
-        appAlert('กรุณากรอกข้อมูลให้ครบถ้วน');
-        return;
-    }
-    
-    const checkboxes = document.querySelectorAll('.claim-group-cb:checked');
-    const claimIds = Array.from(checkboxes).map(cb => cb.value);
-    
-    let totalAmount = 0;
-    claimIds.forEach(id => {
-        const exp = state.expenses.find(e => e.id === id);
-        if (exp) totalAmount += parseFloat(exp.amount || 0);
-    });
-    
-    const file = fileInput.files[0];
-    showLoading(true);
-    try {
-        const maxMb = state.maxUploadSizeMb || 2;
-        const processed = await processUploadFile(file, maxMb);
-        
-        if (processed.sizeBytes > maxMb * 1024 * 1024 && !file.type.startsWith('image/')) {
-            throw new Error(`ขนาดไฟล์เกิน ${maxMb} MB กรุณาลดขนาดไฟล์ก่อนทำการอัปโหลด`);
-        }
-        
-        const payload = {
-            billNo, billDate, vendor, totalAmount, claimIds,
-            fileData: {
-                base64: processed.base64,
-                filename: processed.filename,
-                mimeType: processed.mimeType
-            }
-        };
-        await apiCall('createBillGroup', payload);
-        appAlert('จัดกลุ่มและบันทึกบิลสำเร็จ!');
-        closeBillUploadModal();
-        clearClaimSelection();
-        await initAppWithAPI(); // reload data
-    } catch (err) {
-        appAlert('บันทึกไม่สำเร็จ: ' + err.message);
-    } finally {
-        showLoading(false);
-    }
-}
-
-window.viewBillForClaim = function(claimId) {
-    const map = state.claimBillMap.find(m => m.claimId === claimId);
-    if (map) {
-        openBillDetailsModal(map.billId);
-    } else {
-        appAlert('ไม่พบบิลที่ผูกกับรายการนี้');
-    }
-}
-
-function openBillDetailsModal(billId) {
-    const bill = state.bills.find(b => b.id === billId);
-    if (!bill) return;
-    
-    document.getElementById('view-bill-no').textContent = bill.billNo || '-';
-    document.getElementById('view-bill-date').textContent = formatDateThai(bill.billDate);
-    document.getElementById('view-bill-vendor').textContent = bill.vendor || '-';
-    document.getElementById('view-bill-total').textContent = formatMoney(bill.totalAmount || 0);
-    
-    const maps = state.claimBillMap.filter(m => m.billId === billId);
-    document.getElementById('view-bill-claim-count').textContent = maps.length;
-    
-    let claimsHtml = '';
-    maps.forEach(m => {
-        const exp = state.expenses.find(e => e.id === m.claimId) || state.claims.find(c => c.id === m.claimId);
-        if (exp) {
-            claimsHtml += `<div style="display:flex; justify-content:space-between; border-bottom:1px solid #eee; padding-bottom:4px; margin-bottom:4px;"><span>${exp.id}: ${exp.description || '-'}</span><span>${formatMoney(exp.amount || exp.totalAmount || 0)}</span></div>`;
-        }
-    });
-    document.getElementById('view-bill-claim-list').innerHTML = claimsHtml;
-    
-    const urlEl = document.getElementById('view-bill-url');
-    if (bill.driveFileUrl) {
-        urlEl.href = bill.driveFileUrl;
-        urlEl.style.display = 'inline-block';
-        
-        let iframeHtml = `<iframe src="${bill.driveFileUrl.replace('/view', '/preview')}" width="100%" height="100%" frameborder="0"></iframe>`;
-        document.getElementById('bill-preview-container').innerHTML = iframeHtml;
-    } else {
-        urlEl.style.display = 'none';
-        document.getElementById('bill-preview-container').innerHTML = '<span class="text-muted">ไม่พบไฟล์แนบ</span>';
-    }
-    
-    document.getElementById('bill-details-modal').classList.add('active');
-}
-
-function closeBillDetailsModal() {
-    document.getElementById('bill-details-modal').classList.remove('active');
-    document.getElementById('bill-preview-container').innerHTML = '<span class="text-muted">กำลังโหลด Preview...</span>';
-}
 
 async function changeClaimStatus(claimId, newStatus) {
     const claim = state.claims.find(c => c.id === claimId);
@@ -5824,86 +5694,31 @@ function previewProfileAvatar(input) {
     reader.readAsDataURL(file);
 }
 
+// หมายเหตุ: ยังไม่รองรับอัปโหลดรูปโปรไฟล์ขึ้น Drive เพราะ users sheet ไม่มีคอลัมน์ avatar
+// (เดิมเรียก action 'upload_file'/'update_profile' ที่ไม่มีอยู่จริงใน backend เลย) —
+// ตอนนี้แก้ให้ใช้ action 'updateUser'/'changePassword' ที่มีอยู่แล้วจริงแทน จำกัดแค่แก้อีเมล/รหัสผ่าน
 async function saveUserProfile() {
     const userJson = localStorage.getItem('rdf_current_user');
     if (!userJson) return;
-    let user = JSON.parse(userJson);
-    
+    const user = JSON.parse(userJson);
+
     const email = document.getElementById('profile-modal-email').value.trim();
     const password = document.getElementById('profile-modal-password').value.trim();
-    const fileInput = document.getElementById('profile-modal-avatar');
-    
-    let newPasswordHash = null;
-    if (password) {
-        newPasswordHash = await sha256(password);
-    }
-    
-    let avatarUrl = user.avatar;
-    if (fileInput.files && fileInput.files.length > 0) {
-        // Upload Avatar to Drive
-        const file = fileInput.files[0];
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-            const base64 = e.target.result;
-            try {
-                const uploadRes = await fetch(API_URL, {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        action: 'upload_file',
-                        data: {
-                            base64: base64,
-                            filename: 'avatar_' + user.username + '.' + file.name.split('.').pop(),
-                            mimeType: file.type,
-                            category: 'Avatars'
-                        }
-                    })
-                }).then(r => r.json());
-                
-                if(uploadRes.success) {
-                    avatarUrl = uploadRes.data.url;
-                    sendProfileUpdate(user.username, email, newPasswordHash, avatarUrl, user);
-                } else {
-                    appAlert('อัปโหลดรูปโปรไฟล์ไม่สำเร็จ', 'error');
-                }
-            } catch(err) {
-                console.error(err);
-                appAlert('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้', 'error');
-            }
-        };
-        reader.readAsDataURL(file);
-    } else {
-        sendProfileUpdate(user.username, email, newPasswordHash, avatarUrl, user);
-    }
-}
 
-async function sendProfileUpdate(username, email, newPasswordHash, avatarUrl, oldUser) {
-    appAlert('กำลังบันทึกข้อมูล...', 'success');
+    appAlert('กำลังบันทึกข้อมูล...', 'info');
     try {
-        const response = await fetch(API_URL, {
-            method: 'POST',
-            body: JSON.stringify({
-                action: 'update_profile',
-                data: {
-                    username: username,
-                    email: email,
-                    newPasswordHash: newPasswordHash,
-                    avatar: avatarUrl
-                }
-            })
-        }).then(r => r.json());
-        
-        if (response.success) {
-            appAlert('อัปเดตข้อมูลส่วนตัวสำเร็จ!', 'success');
-            oldUser.email = email;
-            if(avatarUrl) oldUser.avatar = avatarUrl;
-            localStorage.setItem('rdf_current_user', JSON.stringify(oldUser));
-            showUserProfile(oldUser);
-            closeUserProfileModal();
-        } else {
-            appAlert('เกิดข้อผิดพลาดในการอัปเดตข้อมูล', 'error');
+        await apiCall('updateUser', { id: user.id, email });
+        if (password) {
+            const passwordHash = await sha256(password);
+            await apiCall('changePassword', { id: user.id, passwordHash });
         }
-    } catch(err) {
-        appAlert('การเชื่อมต่อมีปัญหา', 'error');
+        user.email = email;
+        localStorage.setItem('rdf_current_user', JSON.stringify(user));
+        showUserProfile(user);
+        appAlert('อัปเดตข้อมูลส่วนตัวสำเร็จ!', 'success');
+        closeUserProfileModal();
+    } catch (err) {
+        appAlert('เกิดข้อผิดพลาดในการอัปเดตข้อมูล: ' + err.message, 'error');
     }
 }
 
@@ -6399,113 +6214,6 @@ window.deleteFoodExpense = async function(id) {
 };
 
 
-
-window.openFoodItemModal = function(id = null) {
-    const modal = document.getElementById('food-item-modal');
-    if (!modal) return;
-    
-    document.getElementById('food-item-form').reset();
-    document.getElementById('food-item-id').value = '';
-    
-    if (id) {
-        const item = (state.foodItems || []).find(f => f.id === id);
-        if (item) {
-            document.getElementById('modal-food-item-title').innerText = 'แก้ไขรายการอาหาร';
-            document.getElementById('food-item-id').value = item.id;
-            document.getElementById('food-item-name').value = item.name;
-            document.getElementById('food-item-price').value = item.defaultPrice;
-            document.getElementById('food-item-unit').value = item.unit || 'กก.';
-        }
-    } else {
-        document.getElementById('modal-food-item-title').innerText = 'เพิ่มรายการอาหาร';
-    }
-    
-    modal.classList.add('active');
-};
-
-window.closeFoodItemModal = function() {
-    const modal = document.getElementById('food-item-modal');
-    if (modal) modal.classList.remove('active');
-};
-
-window.saveFoodItem = async function(e) {
-    e.preventDefault();
-    const id = document.getElementById('food-item-id').value;
-    const name = document.getElementById('food-item-name').value;
-    const price = parseFloat(document.getElementById('food-item-price').value);
-    const unit = document.getElementById('food-item-unit').value;
-    
-    const data = {
-        name: name,
-        defaultPrice: price,
-        unit: unit
-    };
-    
-    appAlert('กำลังบันทึกข้อมูล...', 'info');
-    try {
-        if (id) {
-            data.id = id;
-            await apiCall('updateFoodItem', data);
-            const index = state.foodItems.findIndex(f => f.id === id);
-            if (index > -1) state.foodItems[index] = { ...state.foodItems[index], ...data };
-        } else {
-            data.id = 'FI_' + new Date().getTime();
-            await apiCall('createFoodItem', data);
-            state.foodItems.push(data);
-        }
-        appAlert('บันทึกสำเร็จ', 'success');
-        closeFoodItemModal();
-        renderMasterData();
-        if (window.populateFoodItemSuggestions) populateFoodItemSuggestions();
-    } catch (err) {
-        appAlert('เกิดข้อผิดพลาด: ' + err.message, 'error');
-    }
-};
-
-window.deleteFoodItem = async function(id) {
-    if (!confirm('ต้องการลบรายการอาหารนี้ใช่หรือไม่?')) return;
-    appAlert('กำลังลบ...', 'info');
-    try {
-        await apiCall('deleteFoodItem', { id: id });
-        state.foodItems = state.foodItems.filter(f => f.id !== id);
-        appAlert('ลบสำเร็จ', 'success');
-        renderMasterData();
-        if (window.populateFoodItemSuggestions) populateFoodItemSuggestions();
-    } catch (err) {
-        appAlert('ลบผิดพลาด: ' + err.message, 'error');
-    }
-};
-
-// Patch renderMasterData to render our new table
-const oldRenderMasterData = window.renderMasterData;
-window.renderMasterData = function() {
-    if (oldRenderMasterData) oldRenderMasterData();
-    
-    const tbody = document.getElementById('master-food-tbody');
-    if (tbody) {
-        let html = '';
-        if (!state.foodItems || state.foodItems.length === 0) {
-            html = '<tr><td colspan="5" class="empty-state">ไม่มีข้อมูลรายการอาหาร</td></tr>';
-        } else {
-            state.foodItems.forEach(item => {
-                html += `
-                <tr>
-                    <td><span class="badge" style="background:var(--bg-color); color:var(--text-secondary);">${item.id}</span></td>
-                    <td>${item.name}</td>
-                    <td class="text-right">${formatNumber(item.defaultPrice)}</td>
-                    <td>${item.unit || '-'}</td>
-                    <td class="text-center">
-                        <button class="btn btn-icon btn-sm" onclick="openFoodItemModal('${item.id}')"><i data-lucide="edit" style="width:14px;height:14px;"></i></button>
-                        <button class="btn btn-icon btn-sm text-danger" onclick="deleteFoodItem('${item.id}')"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
-                    </td>
-                </tr>
-                `;
-            });
-        }
-        tbody.innerHTML = html;
-        if (window.lucide) lucide.createIcons();
-    }
-};
 
 async function processUploadFile(file, maxMb) {
     const maxBytes = maxMb * 1024 * 1024;
