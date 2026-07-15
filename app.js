@@ -6089,7 +6089,7 @@ let foodFiles = [];
 window.loadFoodOverview = async function() {
     try {
         const res = await apiCall('getFoodExpenses');
-        state.foodExpenses = res.data || [];
+        state.foodExpenses = res.foodExpenses || [];
         renderFoodOverview();
     } catch (err) {
         console.error(err);
@@ -6220,7 +6220,7 @@ window.exportFoodPDF = function() {
 window.loadFoodEntryList = async function() {
     try {
         const res = await apiCall('getFoodExpenses');
-        state.foodExpenses = res.data || [];
+        state.foodExpenses = res.foodExpenses || [];
         renderFoodEntryList();
     } catch (err) {
         console.error(err);
@@ -6326,29 +6326,55 @@ window.submitFoodEntry = async function(e) {
         return;
     }
 
-    const newItem = {
-        id: 'FOOD_' + new Date().getTime(),
-        name: document.getElementById('food-entry-name').value,
-        quantity: qty,
-        unit: document.getElementById('food-entry-unit').value,
-        price: price,
-        totalAmount: qty * price,
-        category: document.getElementById('food-entry-category').value,
-        date: document.getElementById('food-entry-date').value,
-        files: JSON.stringify(foodFiles),
-        createdAt: new Date().toISOString()
+    const dateStr = document.getElementById('food-entry-date').value; // YYYY-MM-DD
+    const [y, m] = dateStr.split('-');
+    const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
+
+    // Backend stores food expenses as a document with a list of items; the
+    // quick-entry modal only ever submits one ingredient at a time, so we
+    // wrap it as a single-item document (no Sheet schema changes needed).
+    const payload = {
+        month: parseInt(m, 10),
+        year: parseInt(y, 10),
+        dormitory: '',
+        responsiblePerson: (currentUser && currentUser.name) || '',
+        note: document.getElementById('food-entry-category').value, // repurposed to carry category
+        items: [{
+            expenseDate: dateStr,
+            ingredientName: document.getElementById('food-entry-name').value,
+            quantity: qty,
+            unit: document.getElementById('food-entry-unit').value,
+            unitPrice: price
+        }]
     };
 
     appAlert('กำลังบันทึกข้อมูล...', 'info');
     try {
-        await apiCall('createFoodExpense', newItem);
+        const res = await apiCall('createFoodExpense', payload);
+        const assignedId = res.items && res.items[0] && res.items[0].assignedId;
+
+        if (assignedId && foodFiles.length > 0) {
+            for (const f of foodFiles) {
+                try {
+                    await apiCall('uploadFoodAttachment', {
+                        foodExpenseItemId: assignedId,
+                        fileName: f.filename,
+                        mimeType: f.mimeType,
+                        base64Data: (f.base64 || '').split(',')[1] || f.base64
+                    });
+                } catch (attErr) {
+                    console.error('Food attachment upload failed:', attErr);
+                }
+            }
+        }
+
         appAlert('บันทึกข้อมูลค่าอาหารลงระบบสำเร็จ!', 'success');
-        
+
         document.getElementById('food-entry-form').reset();
         foodFiles = [];
         renderFoodFileList();
         calcFoodEntryTotal();
-        
+
         await loadFoodEntryList();
         if (document.getElementById('tab-food-overview').classList.contains('active')) {
             await loadFoodOverview();
