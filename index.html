@@ -475,7 +475,6 @@
                     <table class="data-table" id="claims-list-table">
                           <thead>
                               <tr>
-                                  <th style="width:40px; text-align:center;"><input type="checkbox" id="claim-master-checkbox" onchange="toggleMasterClaimCheckbox()"></th>
                                 <th>รหัสชุด</th>
                                 <th>ชื่อชุดส่งเบิก</th>
                                 <th>ประจำเดือน</th>
@@ -1219,6 +1218,69 @@
         </footer>
     </div>
 </div>
+
+<!-- ===================================================
+     MODAL: Claim Action (Submit / Approve / Reject)
+===================================================== -->
+<div class="modal-overlay" id="modal-claim-action">
+    <div class="modal-card" style="max-width: 480px;">
+        <header class="modal-header">
+            <h3 class="modal-title" id="claim-action-title">ยืนยันการดำเนินการ</h3>
+            <button class="modal-close" id="modal-claim-action-close" onclick="closeClaimActionModal()"><i data-lucide="x"></i></button>
+        </header>
+        <div class="modal-body">
+            <div id="claim-action-warning" style="display:none; background:var(--danger-light); color:var(--danger); border-radius:8px; padding:12px; font-size:13px; margin-bottom:14px;">
+                การปฏิเสธจะลบชุดส่งเบิกนี้ทิ้งถาวร ไม่สามารถกู้คืนได้ รายการบิลในชุดนี้จะกลับไปเป็นสถานะร่างเพื่อนำไปรวมกลุ่มใหม่ได้
+            </div>
+            <input type="hidden" id="claim-action-id" value="">
+            <input type="hidden" id="claim-action-type" value="">
+            <div class="form-group">
+                <label class="form-label" id="claim-action-remark-label">หมายเหตุ (ถ้ามี)</label>
+                <textarea id="claim-action-remark" class="form-input" rows="3"></textarea>
+            </div>
+        </div>
+        <footer class="modal-footer">
+            <button class="btn btn-outline" id="btn-claim-action-cancel" onclick="closeClaimActionModal()">ยกเลิก</button>
+            <button class="btn btn-primary" id="btn-claim-action-confirm" onclick="confirmClaimAction()">ยืนยัน</button>
+        </footer>
+    </div>
+</div>
+
+<!-- ===================================================
+     MODAL: Record Claim Payment
+===================================================== -->
+<div class="modal-overlay" id="modal-record-payment">
+    <div class="modal-card" style="max-width: 480px;">
+        <header class="modal-header">
+            <h3 class="modal-title">บันทึกการรับเงิน</h3>
+            <button class="modal-close" id="modal-record-payment-close" onclick="closeRecordPaymentModal()"><i data-lucide="x"></i></button>
+        </header>
+        <div class="modal-body">
+            <input type="hidden" id="payment-claim-id" value="">
+            <div class="form-group">
+                <label class="form-label">วันที่รับเงิน *</label>
+                <input type="date" id="payment-received-date" class="form-input" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">จำนวนเงิน (บาท) *</label>
+                <input type="number" id="payment-amount" class="form-input" step="0.01" min="0" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">เลขที่อ้างอิงการโอน/รับเงิน</label>
+                <input type="text" id="payment-transfer-ref" class="form-input" placeholder="เช่น เลขที่ใบนำฝาก">
+            </div>
+            <div class="form-group">
+                <label class="form-label">หมายเหตุ</label>
+                <textarea id="payment-note" class="form-input" rows="2"></textarea>
+            </div>
+        </div>
+        <footer class="modal-footer">
+            <button class="btn btn-outline" id="btn-record-payment-cancel" onclick="closeRecordPaymentModal()">ยกเลิก</button>
+            <button class="btn btn-primary" id="btn-record-payment-save" onclick="saveRecordPayment()">บันทึก</button>
+        </footer>
+    </div>
+</div>
+
 <!-- ===================================================
      MODAL: Export Report (Full Featured)
 ===================================================== -->

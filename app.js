@@ -4445,145 +4445,189 @@ async function saveClaimPackage() {
     }
 }
 
-function getClaimTotal(claim) {
-    return claim.expenseIds.reduce((sum, id) => {
-        const exp = state.expenses.find(e => e.id === id);
-        return sum + (exp ? exp.amount : 0);
-    }, 0);
+const CLAIM_STATUS_LABELS = {
+    draft: 'ร่าง', submitted: 'ส่งอนุมัติแล้ว', approved: 'อนุมัติแล้ว', paid: 'จ่ายเงินแล้ว', rejected: 'ถูกปฏิเสธ'
+};
+
+function getCurrentUserRole() {
+    const user = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
+    return (user && user.role) ? user.role.toLowerCase() : '';
+}
+
+function parseClaimMonth(claimMonth) {
+    // claimMonth เก็บเป็น "YYYY-MM" (ปี ค.ศ.)
+    const [yCE, m] = (claimMonth || '').split('-').map(Number);
+    if (!yCE || !m) return { label: '-', yearBE: null, monthNum: null };
+    return { label: `${THAI_MONTH_NAMES[m - 1] || ''} ${yCE + 543}`, yearBE: yCE + 543, monthNum: m };
+}
+
+function claimToolsButtons(claim, role) {
+    const canManage = role === 'admin' || role === 'manager';
+    const canStaff = canManage || role === 'staff';
+    let html = `<button class="btn btn-icon btn-sm" title="พิมพ์ใบเบิก" onclick="exportClaimPDF('${claim.id}')"><i data-lucide="printer" style="width:14px;height:14px;"></i></button> `;
+
+    if (claim.status === 'draft') {
+        if (canStaff) html += `<button class="btn btn-outline btn-sm" onclick="openClaimActionModal('${claim.id}','submit')">ส่งอนุมัติ</button> `;
+        if (canStaff) html += `<button class="btn btn-icon btn-sm text-danger" title="ยกเลิกชุดนี้" onclick="deleteClaimPackage('${claim.id}')"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>`;
+    } else if (claim.status === 'submitted') {
+        if (canManage) {
+            html += `<button class="btn btn-sm" style="background:var(--success); border-color:var(--success); color:#fff;" onclick="openClaimActionModal('${claim.id}','approve')">อนุมัติ</button> `;
+            html += `<button class="btn btn-outline btn-sm" style="color:var(--danger); border-color:var(--danger);" onclick="openClaimActionModal('${claim.id}','reject')">ปฏิเสธ</button>`;
+        }
+    } else if (claim.status === 'approved') {
+        if (canManage) html += `<button class="btn btn-primary btn-sm" onclick="openRecordPaymentModal('${claim.id}')">บันทึกรับเงิน</button>`;
+    }
+    return html;
 }
 
 function renderClaims() {
     const tbody = document.getElementById('claims-list-tbody');
     if (!tbody) return;
     tbody.innerHTML = '';
-    
-    // Using state.expenses (which act as claims in the UI according to user) that are claimable
-    const claimableExpenses = state.expenses.filter(e => e.claimable);
-    
-    (document.getElementById('claims-count-display') || {}).textContent = `จำนวนรายการเคลมทั้งหมด: ${claimableExpenses.length} รายการ`;
-    
-    if (claimableExpenses.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="text-center" style="padding:24px; color:var(--text-muted);">ยังไม่มีรายการที่สามารถส่งเบิกได้</td></tr>`;
+
+    const claims = state.claims || [];
+    (document.getElementById('claims-count-display') || {}).textContent = `จำนวนชุดส่งเบิกทั้งหมด: ${claims.length} รายการ`;
+
+    if (claims.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="text-center" style="padding:24px; color:var(--text-muted);">ยังไม่มีชุดส่งเบิก — กด "สร้างชุดส่งเบิกใหม่" เพื่อเริ่มต้น</td></tr>`;
         return;
     }
-    
-    claimableExpenses.forEach(exp => {
+
+    const role = getCurrentUserRole();
+    claims.forEach(claim => {
         const tr = document.createElement('tr');
-        
-        // Find if this expense is already in a bill
-        const isGrouped = state.claimBillMap.some(m => m.claimId === exp.id);
-        
-        const thaiMonth = THAI_MONTH_NAMES[state.selectedMonth - 1] || '';
-        
-        let statusText = isGrouped ? 'จัดกลุ่มแล้ว' : 'รอส่งเบิก';
-        let statusClass = isGrouped ? 'badge-status-approved' : 'badge-status-draft';
-        
-        const projName = state.projects.find(p => p.id === exp.projectId)?.name || 'N/A';
-        
+        const monthInfo = parseClaimMonth(claim.claimMonth);
+        const statusDate = claim.paidDate || claim.approvedDate || claim.submittedDate || claim.createdAt;
+
         tr.innerHTML = `
-            <td class="text-center">
-                ${isGrouped ? '<i data-lucide="check-circle" class="text-primary"></i>' : `<input type="checkbox" class="claim-group-cb" value="${exp.id}" data-amount="${exp.amount}" onchange="updateClaimSelection()">`}
-            </td>
-            <td>${exp.id}</td>
-            <td>${exp.description}</td>
-            <td>${thaiMonth}</td>
-            <td class="text-right">${projName}</td>
-            <td class="text-right font-bold text-primary">${formatMoney(exp.amount)}</td>
-            <td class="text-center"><span class="status-badge ${statusClass}">${statusText}</span></td>
-            <td class="text-center">-</td>
+            <td>${escapeHTML(claim.id)}</td>
+            <td>${escapeHTML(claim.title)}</td>
+            <td>${monthInfo.label}</td>
+            <td class="text-right">${claim.itemCount || 0}</td>
+            <td class="text-right font-bold text-primary">${(claim.totalAmount || 0).toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
+            <td class="text-center"><span class="badge badge-status-${claim.status}">${CLAIM_STATUS_LABELS[claim.status] || claim.status}</span></td>
+            <td class="text-center" style="font-size:12px; color:var(--text-secondary);">${statusDate ? formatThaiDate(statusDate) : '-'}</td>
+            <td class="text-center" style="white-space:nowrap;">${claimToolsButtons(claim, role)}</td>
         `;
         tbody.appendChild(tr);
     });
     if (window.lucide) window.lucide.createIcons();
 }
 
-function updateClaimSelection() {
-    const checkboxes = document.querySelectorAll('.claim-group-cb:checked');
-    const floatBar = document.getElementById('claim-floating-bar');
-    const countDisplay = document.getElementById('claim-selected-count');
-    
-    if (checkboxes.length > 0) {
-        floatBar.style.display = 'block';
-        let total = 0;
-        checkboxes.forEach(cb => total += parseFloat(cb.getAttribute('data-amount') || 0));
-        countDisplay.innerHTML = `เลือก ${checkboxes.length} รายการ (รวม ${formatMoney(total)} บาท)`;
+// ---- Claim workflow: submit / approve / reject ----
+function openClaimActionModal(claimId, actionType) {
+    document.getElementById('claim-action-id').value = claimId;
+    document.getElementById('claim-action-type').value = actionType;
+    document.getElementById('claim-action-remark').value = '';
+
+    const titles = { submit: 'ส่งอนุมัติชุดส่งเบิก', approve: 'อนุมัติชุดส่งเบิก', reject: 'ปฏิเสธชุดส่งเบิก' };
+    const remarkLabels = { submit: 'หมายเหตุ (ถ้ามี)', approve: 'หมายเหตุ (ถ้ามี)', reject: 'เหตุผลการปฏิเสธ *' };
+    const confirmLabels = { submit: 'ส่งอนุมัติ', approve: 'อนุมัติ', reject: 'ยืนยันปฏิเสธ (ลบถาวร)' };
+
+    document.getElementById('claim-action-title').textContent = titles[actionType] || 'ยืนยันการดำเนินการ';
+    document.getElementById('claim-action-remark-label').textContent = remarkLabels[actionType] || 'หมายเหตุ';
+    document.getElementById('claim-action-warning').style.display = actionType === 'reject' ? 'block' : 'none';
+
+    const confirmBtn = document.getElementById('btn-claim-action-confirm');
+    confirmBtn.textContent = confirmLabels[actionType] || 'ยืนยัน';
+    if (actionType === 'reject') {
+        confirmBtn.className = 'btn btn-outline';
+        confirmBtn.style.color = 'var(--danger)';
+        confirmBtn.style.borderColor = 'var(--danger)';
     } else {
-        floatBar.style.display = 'none';
+        confirmBtn.className = 'btn btn-primary';
+        confirmBtn.style.color = '';
+        confirmBtn.style.borderColor = '';
     }
+
+    document.getElementById('modal-claim-action').classList.add('active');
 }
 
-function clearClaimSelection() {
-    const checkboxes = document.querySelectorAll('.claim-group-cb');
-    checkboxes.forEach(cb => cb.checked = false);
-    updateClaimSelection();
+function closeClaimActionModal() {
+    document.getElementById('modal-claim-action').classList.remove('active');
 }
 
-function toggleMasterClaimCheckbox() {
-    const master = document.getElementById('claim-master-checkbox');
-    const checkboxes = document.querySelectorAll('.claim-group-cb');
-    checkboxes.forEach(cb => cb.checked = master.checked);
-    updateClaimSelection();
-}
+async function confirmClaimAction() {
+    const claimId = document.getElementById('claim-action-id').value;
+    const actionType = document.getElementById('claim-action-type').value;
+    const remark = document.getElementById('claim-action-remark').value.trim();
 
-
-async function changeClaimStatus(claimId, newStatus) {
-    const claim = state.claims.find(c => c.id === claimId);
-    if (!claim) return;
-    
-    let actionName = '';
-    let payload = { claimId };
-    
-    if (newStatus === 'submitted') {
-        actionName = 'submitClaim';
-    } else if (newStatus === 'approved') {
-        actionName = 'approveClaim';
-    } else if (newStatus === 'paid') {
-        actionName = 'recordReimbursement';
-        
-        const transferRef = prompt('กรุณาระบุเลขที่อ้างอิงการโอนเงิน/รับเงิน (Reference No.):', '');
-        if (transferRef === null) return; // ยกเลิก
-        
-        const receivedDate = new Date().toISOString().split('T')[0];
-        const totalAmount = getClaimTotal(claim);
-        payload = {
-            claimId,
-            receivedDate,
-            amount: totalAmount,
-            transferRef
-        };
-    } else if (newStatus === 'draft') {
-        // ในระบบหลังบ้าน การรีเจกต์เพื่อให้กลับมาดราฟต์ใหม่ ทำได้ผ่าน rejectClaim
-        const reason = prompt('กรุณาระบุเหตุผลในการปฏิเสธการอนุมัติ:', 'ข้อมูลบิลไม่ชัดเจน');
-        if (reason === null) return;
-        actionName = 'rejectClaim';
-        payload = { claimId, reason };
+    if (actionType === 'reject' && !remark) {
+        appAlert('กรุณาระบุเหตุผลการปฏิเสธ', 'error');
+        return;
     }
-    
-    if (!actionName) return;
+
+    const actionMap = { submit: 'submitClaim', approve: 'approveClaim', reject: 'rejectClaim' };
+    const apiAction = actionMap[actionType];
+    if (!apiAction) return;
+
+    const payload = actionType === 'reject' ? { claimId, reason: remark } : { claimId, remark };
 
     showLoading(true);
     try {
-        await apiCall(actionName, payload);
-        appAlert(`เปลี่ยนสถานะชุดส่งเบิก ${claimId} เรียบร้อยแล้ว!`);
+        await apiCall(apiAction, payload);
+        appAlert('ดำเนินการสำเร็จ!', 'success');
+        closeClaimActionModal();
         await initAppWithAPI();
     } catch (err) {
-        appAlert('เปลี่ยนสถานะชุดส่งเบิกไม่สำเร็จ: ' + err.message);
+        appAlert('ดำเนินการไม่สำเร็จ: ' + err.message, 'error');
     } finally {
         showLoading(false);
     }
 }
 
-async function deleteClaimPackage(claimId) {
-    if (!await appConfirm(`คุณต้องการยกเลิก/ลบชุดส่งเบิก ${claimId} ใช่หรือไม่? รายการบิลทั้งหมดจะถูกปลดออกกลับมาอยู่ในสถานะปกติ`)) return;
-    
+// ---- Claim workflow: record payment ----
+function openRecordPaymentModal(claimId) {
+    const claim = (state.claims || []).find(c => c.id === claimId);
+    if (!claim) return;
+    document.getElementById('payment-claim-id').value = claimId;
+    document.getElementById('payment-received-date').value = new Date().toISOString().split('T')[0];
+    document.getElementById('payment-amount').value = claim.totalAmount || 0;
+    document.getElementById('payment-transfer-ref').value = '';
+    document.getElementById('payment-note').value = '';
+    document.getElementById('modal-record-payment').classList.add('active');
+}
+
+function closeRecordPaymentModal() {
+    document.getElementById('modal-record-payment').classList.remove('active');
+}
+
+async function saveRecordPayment() {
+    const claimId = document.getElementById('payment-claim-id').value;
+    const receivedDate = document.getElementById('payment-received-date').value;
+    const amount = parseFloat(document.getElementById('payment-amount').value);
+    const transferRef = document.getElementById('payment-transfer-ref').value.trim();
+    const note = document.getElementById('payment-note').value.trim();
+
+    if (!receivedDate || !amount || amount <= 0) {
+        appAlert('กรุณากรอกวันที่และจำนวนเงินให้ถูกต้อง', 'error');
+        return;
+    }
+
     showLoading(true);
     try {
-        // หลังบ้าน การ rejectClaim แบบส่งเหตุผลเฉพาะ จะปลดบิลและลบชุดเคลม draft นั้นทิ้งอัตโนมัติ
-        await apiCall('rejectClaim', { claimId, reason: 'ยกเลิกชุดส่งเบิกโดยผู้ใช้' });
-        appAlert(`ลบชุดส่งเบิก ${claimId} เรียบร้อยแล้ว!`);
+        await apiCall('recordReimbursement', { claimId, receivedDate, amount, transferRef, note });
+        appAlert('บันทึกการรับเงินสำเร็จ!', 'success');
+        closeRecordPaymentModal();
         await initAppWithAPI();
     } catch (err) {
-        appAlert('ลบชุดส่งเบิกไม่สำเร็จ: ' + err.message);
+        appAlert('บันทึกไม่สำเร็จ: ' + err.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+// ---- Claim workflow: cancel a draft ----
+async function deleteClaimPackage(claimId) {
+    if (!await appConfirm(`คุณต้องการยกเลิกชุดส่งเบิก ${claimId} ใช่หรือไม่? รายการบิลทั้งหมดในชุดนี้จะถูกปลดออกกลับมาเป็นสถานะร่างตามปกติ`)) return;
+
+    showLoading(true);
+    try {
+        await apiCall('cancelClaimDraft', { claimId });
+        appAlert(`ยกเลิกชุดส่งเบิก ${claimId} เรียบร้อยแล้ว!`, 'success');
+        await initAppWithAPI();
+    } catch (err) {
+        appAlert('ยกเลิกชุดส่งเบิกไม่สำเร็จ: ' + err.message, 'error');
     } finally {
         showLoading(false);
     }
@@ -4592,14 +4636,23 @@ async function deleteClaimPackage(claimId) {
 function exportClaimPDF(claimId) {
     const claim = state.claims.find(c => c.id === claimId);
     if (!claim) return appAlert("ไม่พบชุดส่งเบิกนี้!");
-    
-    const claimExpenses = state.expenses.filter(e => (claim.expenseIds || '').includes(e.id));
-    const claimAttachments = state.attachments.filter(a => claimExpenses.some(e => e.id === a.expenseId) || (a.expenseDate && getBudDateInfo(a.expenseDate).month === claim.month && getBudDateInfo(a.expenseDate).year === claim.year && a.claimable));
+
+    const [claimYearCE, claimMonthNum] = (claim.claimMonth || '').split('-').map(Number);
+    const claimYearBE = claimYearCE + 543;
+
+    // หมายเหตุ: state.expenses/state.attachments โหลดมาแค่เดือน/ปีที่เลือกอยู่ในตัวกรองหลักตอนนี้
+    // ถ้า export ชุดของเดือนอื่น รายการจะว่างเปล่า — เตือนผู้ใช้แทนโชว์ตารางว่างเงียบๆ
+    const claimExpenses = state.expenses.filter(e => e.claimId === claim.id);
+    if (claimExpenses.length === 0) {
+        appAlert('ไม่พบรายการบิลของชุดนี้ในตัวกรองเดือน/ปีปัจจุบัน กรุณาเลือกเดือน/ปีของชุดส่งเบิกนี้ในตัวกรองหลักก่อน export', 'error');
+        return;
+    }
+    const claimAttachments = state.attachments.filter(a => claimExpenses.some(e => e.id === a.expenseId) || (a.expenseDate && getBudDateInfo(a.expenseDate).month === claimMonthNum && getBudDateInfo(a.expenseDate).year === claimYearBE && a.claimable));
     const claimActiveTotal = claimExpenses.reduce((sum, e) => sum + e.amount, 0);
     const claimAttachTotal = claimAttachments.reduce((sum, a) => sum + a.amount, 0);
     const claimGrandTotal = claimActiveTotal + claimAttachTotal;
-    
-    const monthName = THAI_MONTH_NAMES[claim.month - 1];
+
+    const monthName = THAI_MONTH_NAMES[claimMonthNum - 1];
     
     const expRows = claimExpenses.map(exp => `
         <tr>
@@ -4635,7 +4688,7 @@ function exportClaimPDF(claimId) {
 <html lang="th">
 <head>
 <meta charset="UTF-8">
-<title>ใบขอเบิกเงิน (ชุด: ${claim.title}) — ${monthName} ${claim.year}</title>
+<title>ใบขอเบิกเงิน (ชุด: ${claim.title}) — ${monthName} ${claimYearBE}</title>
 <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -4704,7 +4757,7 @@ tr:nth-child(even) td{background:#f8fafc;}
         <div class="thai-title">มูลนิธิ ดร. โรเบิร์ต ดีคเคอร์ฮอฟฟ์</div>
         <div class="sub-title">Reimbursement Package: ${claim.title} (รหัส: ${claim.id})</div>
         <div class="sub-title">วิทยาลัยการอาชีพแม่สะเรียง (Mae Sariang ICEC)</div>
-        <div class="month-badge">รอบเดือน ${monthName} พ.ศ. ${claim.year}</div>
+        <div class="month-badge">รอบเดือน ${monthName} พ.ศ. ${claimYearBE}</div>
     </div>
 
     <table>
@@ -5870,11 +5923,11 @@ async function toggleUserActive(id, newActiveState) {
         if (window.google && window.google.accounts) {
             fetch(API_URL, {
                 method: 'POST',
-                body: JSON.stringify({ action: 'getSystemConfig', token: '' })
+                body: JSON.stringify({ action: 'getPublicSettings' })
             }).then(r => r.json()).then(result => {
-                if ((result.status === 'success' || result.success) && result.data && result.data.config) {
-                    const enabled = result.data.config.googleLoginEnabled === 'true';
-                    const clientId = result.data.config.googleOauthClientId;
+                if (result.status === 'success' || result.success) {
+                    const enabled = result.data.googleLoginEnabled === 'true';
+                    const clientId = result.data.googleOauthClientId;
                     if (enabled && clientId) {
                         initGoogleLogin(clientId);
                     }
