@@ -114,6 +114,9 @@
             <li class="nav-item" data-tab="spreadsheet-view">
                 <a><i data-lucide="table-2"></i> สเปรดชีตส่งเบิก</a>
             </li>
+            <li class="nav-item" data-tab="fund-receipts">
+                <a><i data-lucide="graduation-cap"></i> เอกสารรับเงินทุน</a>
+            </li>
             <div class="sidebar-category" style="font-size: 11px; font-weight: 700; color: var(--text-muted); padding: 16px 16px 8px 16px; text-transform: uppercase; letter-spacing: 0.5px;">ค่าอาหาร (Food)</div>
             <li class="nav-item" data-tab="food-overview">
                   <a><i data-lucide="utensils"></i> ค่าอาหารประจำเดือน</a>
@@ -418,6 +421,22 @@
                 </div>
             </div>
 
+            <!-- Fund Receipt Document (เอกสารรับเงินทุนประจำเดือน) -->
+            <div class="widget" style="margin-bottom:24px;">
+                <div class="widget-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                    <div style="display:flex; align-items:center; gap:14px;">
+                        <h3 class="widget-title" style="margin-bottom:0;">เอกสารรับเงินทุนประจำเดือน</h3>
+                        <span id="fund-receipt-widget-month-badge" style="font-size:12px; color:var(--text-secondary); background:var(--bg-main); padding:3px 10px; border-radius:20px; border:1px solid var(--border-color);"></span>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="openFundReceiptModal()" style="display:flex; align-items:center; gap:6px;">
+                        <i data-lucide="graduation-cap" style="width:16px; height:16px;"></i> เพิ่ม/แก้ไขเอกสาร
+                    </button>
+                </div>
+                <div id="fund-receipt-widget-body" style="padding:16px;">
+                    <div style="color:var(--text-muted); font-size:13px;">กำลังโหลด...</div>
+                </div>
+            </div>
+
             <!-- Attachment Records Table -->
             <div class="widget">
                 <div class="widget-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
@@ -606,6 +625,39 @@
                             </tbody>
                         </table>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: Fund Receipt Documents (เอกสารรับเงินทุนประจำเดือน) -->
+        <div id="tab-fund-receipts" class="tab-content">
+            <div class="header-filters" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:16px;">
+                <h2 class="widget-title" style="margin-bottom:0;">เอกสารรับเงินทุนนักเรียน/นักศึกษา</h2>
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <label>ปีงบประมาณ:</label>
+                    <select id="fund-receipt-year-select" class="form-input" onchange="renderFundReceiptsOverview()"></select>
+                </div>
+            </div>
+
+            <div class="widget" style="margin-top:24px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <h3 class="widget-title">สรุปรายเดือน</h3>
+                    <div class="kpi-value" style="color:var(--primary); font-size:24px;" id="fund-receipts-year-total">0.00 บาท</div>
+                </div>
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>เดือน</th>
+                                <th class="text-right">จำนวนเงิน</th>
+                                <th class="text-center">ไฟล์แนบ</th>
+                                <th class="text-center">จัดการ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="fund-receipts-tbody">
+                            <!-- Data will be loaded here -->
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -1922,6 +1974,39 @@
         </div>
         <footer class="modal-footer">
             <button type="button" class="btn btn-secondary" onclick="closeFoodEntryModal()">ปิด</button>
+        </footer>
+    </div>
+</div>
+
+<!-- ===================================================
+     MODAL: Fund Receipt Document (เอกสารรับเงินทุนประจำเดือน)
+===================================================== -->
+<div class="modal-overlay" id="modal-fund-receipt">
+    <div class="modal-card" style="max-width:480px;">
+        <header class="modal-header">
+            <h3 class="modal-title">เอกสารรับเงินทุนประจำเดือน</h3>
+            <button class="modal-close" onclick="closeFundReceiptModal()"><i data-lucide="x"></i></button>
+        </header>
+        <div class="modal-body">
+            <input type="hidden" id="fund-receipt-id" value="">
+            <input type="hidden" id="fund-receipt-month" value="">
+            <div class="form-group">
+                <label class="form-label">จำนวนเงิน (บาท) *</label>
+                <input type="number" id="fund-receipt-amount" class="form-input" step="0.01" min="0" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">แนบไฟล์เอกสาร (รูปภาพ หรือ PDF) *</label>
+                <input type="file" id="fund-receipt-file" class="form-input" accept=".jpg,.jpeg,.png,.webp,.pdf" onchange="handleFundReceiptFile(event)">
+                <div id="fund-receipt-file-preview" style="margin-top:6px; font-size:12px; color:var(--text-secondary);"></div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">หมายเหตุ</label>
+                <textarea id="fund-receipt-note" class="form-input" rows="2"></textarea>
+            </div>
+        </div>
+        <footer class="modal-footer">
+            <button class="btn btn-outline" onclick="closeFundReceiptModal()">ยกเลิก</button>
+            <button class="btn btn-primary" onclick="saveFundReceipt()">บันทึก</button>
         </footer>
     </div>
 </div>

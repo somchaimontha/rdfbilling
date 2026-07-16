@@ -199,6 +199,7 @@ function getDefaultState() {
         claims: [],
         bills: [],
         claimBillMap: [],
+        fundReceipts: [],
         signatures: { prepared: null, checked: null, approved: null },
         columns: [
             { id: "documentNo", label: "เลขบิล", visible: true, custom: false },
@@ -393,10 +394,14 @@ async function initAppWithAPI() {
         // 3. ดึงกลุ่มชุดเคลมทั้งหมด
         const claimsRes = await apiCall('getClaims');
         state.claims = claimsRes.claims || [];
-        
+
+        // 4. ดึงเอกสารรับเงินทุนประจำเดือนทั้งหมด (โหลดทั้งหมดไว้ล่วงหน้าเหมือน claims เพราะหน้าสรุปต้องเห็นทุกเดือนพร้อมกัน)
+        const fundReceiptsRes = await apiCall('getFundReceipts');
+        state.fundReceipts = fundReceiptsRes.fundReceipts || [];
+
         // โหลดข้อมูลลายเซ็นจาก LocalStorage ท้องถิ่น (ตาม Phase 2 เดิม)
         loadAttachments();
-        
+
         renderAll();
     } catch (err) {
         appAlert('ไม่สามารถโหลดข้อมูลจาก Google Sheets ได้: ' + err.message);
@@ -862,6 +867,195 @@ async function renderSummaryView() {
 }
 
 // ==========================================================================
+// Fund Receipt Documents (เอกสารรับเงินทุนประจำเดือน)
+// ==========================================================================
+let fundReceiptFile = null; // {base64, mimeType, filename, sizeBytes} จาก processUploadFile ระหว่างรอบันทึก
+
+function selectedMonthKey() {
+    const gYear = state.selectedYear - 543;
+    const mStr = String(state.selectedMonth).padStart(2, '0');
+    return `${gYear}-${mStr}`;
+}
+
+function getFundReceiptByMonth(monthKey) {
+    return (state.fundReceipts || []).find(r => r.month === monthKey);
+}
+
+function updateFundReceiptWidget() {
+    const badge = document.getElementById('fund-receipt-widget-month-badge');
+    const body = document.getElementById('fund-receipt-widget-body');
+    if (!badge || !body) return;
+
+    const thShort = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+    badge.textContent = thShort[state.selectedMonth - 1] + ' ' + state.selectedYear;
+
+    const rec = getFundReceiptByMonth(selectedMonthKey());
+    if (rec) {
+        body.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                <div>
+                    <div style="font-size:20px; font-weight:700; color:var(--primary);">${(parseFloat(rec.amount) || 0).toLocaleString('th-TH', {minimumFractionDigits:2})} บาท</div>
+                    <a href="${rec.fileUrl}" target="_blank" style="font-size:13px;"><i data-lucide="paperclip" style="width:14px;height:14px;vertical-align:middle;"></i> ${escapeHTML(rec.fileName || 'ดูไฟล์แนบ')}</a>
+                </div>
+                <span class="badge" style="background:#10b98122;color:#10b981;">มีเอกสารแล้ว</span>
+            </div>`;
+    } else {
+        body.innerHTML = `<div style="color:var(--text-muted); font-size:13px;">ยังไม่มีเอกสารรับเงินทุนของเดือนนี้</div>`;
+    }
+    if (window.lucide) lucide.createIcons();
+}
+
+function renderFundReceiptFilePreview(existingRec) {
+    const el = document.getElementById('fund-receipt-file-preview');
+    if (!el) return;
+    if (fundReceiptFile) {
+        el.textContent = 'ไฟล์ที่เลือก: ' + fundReceiptFile.filename;
+    } else if (existingRec && existingRec.fileName) {
+        el.innerHTML = 'ไฟล์เดิม: <a href="' + existingRec.fileUrl + '" target="_blank">' + escapeHTML(existingRec.fileName) + '</a> (เลือกไฟล์ใหม่เพื่อแทนที่)';
+    } else {
+        el.textContent = '';
+    }
+}
+
+function openFundReceiptModal(monthKey) {
+    const month = monthKey || selectedMonthKey();
+    const rec = getFundReceiptByMonth(month);
+
+    document.getElementById('fund-receipt-id').value = rec ? rec.id : '';
+    document.getElementById('fund-receipt-month').value = month;
+    document.getElementById('fund-receipt-amount').value = rec ? rec.amount : '';
+    document.getElementById('fund-receipt-note').value = rec ? (rec.note || '') : '';
+    document.getElementById('fund-receipt-file').value = '';
+    fundReceiptFile = null;
+    renderFundReceiptFilePreview(rec);
+
+    document.getElementById('modal-fund-receipt').classList.add('active');
+    if (window.lucide) lucide.createIcons();
+}
+
+function closeFundReceiptModal() {
+    document.getElementById('modal-fund-receipt').classList.remove('active');
+}
+
+async function handleFundReceiptFile(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+        fundReceiptFile = await processUploadFile(file, state.maxUploadSizeMb || 2);
+        renderFundReceiptFilePreview(null);
+    } catch (err) {
+        appAlert('ไม่สามารถแนบไฟล์นี้ได้: ' + err.message, 'error');
+    }
+}
+
+async function saveFundReceipt() {
+    const month = document.getElementById('fund-receipt-month').value;
+    const amount = parseFloat(document.getElementById('fund-receipt-amount').value);
+    const note = document.getElementById('fund-receipt-note').value.trim();
+    const existingRec = getFundReceiptByMonth(month);
+
+    if (!amount || amount <= 0) {
+        appAlert('กรุณาระบุจำนวนเงินให้ถูกต้อง', 'error');
+        return;
+    }
+    if (!fundReceiptFile && !existingRec) {
+        appAlert('กรุณาแนบไฟล์เอกสาร', 'error');
+        return;
+    }
+
+    const payload = { month, amount, note };
+    if (fundReceiptFile) {
+        payload.fileData = {
+            base64: (fundReceiptFile.base64 || '').split(',')[1] || fundReceiptFile.base64,
+            mimeType: fundReceiptFile.mimeType,
+            filename: fundReceiptFile.filename
+        };
+    }
+
+    showLoading(true);
+    try {
+        await apiCall('saveFundReceipt', payload);
+        appAlert('บันทึกเอกสารรับเงินทุนสำเร็จ!', 'success');
+        closeFundReceiptModal();
+
+        const res = await apiCall('getFundReceipts');
+        state.fundReceipts = res.fundReceipts || [];
+        updateFundReceiptWidget();
+        if (state.activeTab === 'fund-receipts') renderFundReceiptsOverview();
+    } catch (err) {
+        appAlert('บันทึกไม่สำเร็จ: ' + err.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+async function deleteFundReceipt(id) {
+    if (!await appConfirm('ต้องการลบเอกสารรับเงินทุนนี้ใช่หรือไม่?')) return;
+
+    showLoading(true);
+    try {
+        await apiCall('deleteFundReceipt', { id });
+        appAlert('ลบเอกสารสำเร็จ', 'success');
+
+        const res = await apiCall('getFundReceipts');
+        state.fundReceipts = res.fundReceipts || [];
+        updateFundReceiptWidget();
+        renderFundReceiptsOverview();
+    } catch (err) {
+        appAlert('ลบไม่สำเร็จ: ' + err.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+function setupFundReceiptYearDropdown() {
+    const yearSelect = document.getElementById('fund-receipt-year-select');
+    if (!yearSelect || yearSelect.options.length) return;
+    const currentYear = new Date().getFullYear() + 543;
+    const startYear = 2566; // ปีเริ่มโครงการ
+    for (let y = startYear; y <= currentYear + 1; y++) {
+        const opt = document.createElement('option');
+        opt.value = y;
+        opt.textContent = y;
+        yearSelect.appendChild(opt);
+    }
+    yearSelect.value = state.selectedYear;
+}
+
+function renderFundReceiptsOverview() {
+    setupFundReceiptYearDropdown();
+    const yearSelect = document.getElementById('fund-receipt-year-select');
+    const selectedYear = parseInt((yearSelect && yearSelect.value) || state.selectedYear, 10);
+    const ceYear = selectedYear - 543;
+
+    const tbody = document.getElementById('fund-receipts-tbody');
+    const totalEl = document.getElementById('fund-receipts-year-total');
+    if (!tbody) return;
+
+    let total = 0;
+    const rows = THAI_MONTH_NAMES.map((name, idx) => {
+        const monthKey = `${ceYear}-${String(idx + 1).padStart(2, '0')}`;
+        const rec = getFundReceiptByMonth(monthKey);
+        if (rec) total += parseFloat(rec.amount) || 0;
+        return `
+            <tr>
+                <td>${name}</td>
+                <td class="text-right">${rec ? (parseFloat(rec.amount) || 0).toLocaleString('th-TH', {minimumFractionDigits:2}) : '-'}</td>
+                <td class="text-center">${rec
+                    ? `<a href="${rec.fileUrl}" target="_blank"><i data-lucide="paperclip" style="width:14px;height:14px;vertical-align:middle;"></i> ${escapeHTML(rec.fileName || 'ไฟล์')}</a>`
+                    : '<span style="color:var(--text-muted);">ไม่มีเอกสาร</span>'}</td>
+                <td class="text-center">${rec
+                    ? `<button class="btn btn-icon btn-sm" title="แก้ไข" onclick="openFundReceiptModal('${monthKey}')"><i data-lucide="edit" style="width:14px;height:14px;"></i></button> <button class="btn btn-icon btn-sm text-danger" title="ลบ" onclick="deleteFundReceipt('${rec.id}')"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>`
+                    : `<button class="btn btn-icon btn-sm" title="เพิ่ม" onclick="openFundReceiptModal('${monthKey}')"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>`}</td>
+            </tr>`;
+    }).join('');
+
+    tbody.innerHTML = rows;
+    if (totalEl) totalEl.textContent = total.toLocaleString('th-TH', {minimumFractionDigits:2}) + ' บาท';
+    if (window.lucide) lucide.createIcons();
+}
+
+// ==========================================================================
 // Tab Navigation
 // ==========================================================================
 function switchTab(tabName) {
@@ -890,7 +1084,8 @@ function switchTab(tabName) {
         'claims-view': ['จัดกลุ่มส่งเบิก (Claims)', 'รวมกลุ่มและบริหารรายการบิลส่งเบิกมูลนิธิ'],
         'spreadsheet-view': ['สเปรดชีตส่งเบิก', 'ใบขอเบิกเงินรูปแบบตาราง Excel'],
         'food-overview': ['ค่าอาหารประจำเดือน', 'ภาพรวมรายการค่าอาหารและสรุปยอด'],
-        'summary-view': ['รายงานสรุปรายปี', 'สรุปยอดเงินแยกตามเดือน โครงการ และปีงบประมาณ']
+        'summary-view': ['รายงานสรุปรายปี', 'สรุปยอดเงินแยกตามเดือน โครงการ และปีงบประมาณ'],
+        'fund-receipts': ['เอกสารรับเงินทุน', 'หลักฐานการรับเงินทุนของนักเรียน/นักศึกษา สรุปรายเดือนและรายปี']
     };
 
     const [title, subtitle] = titles[tabName] || ['ระบบบันทึกรายจ่าย', ''];
@@ -898,7 +1093,7 @@ function switchTab(tabName) {
     (document.getElementById('page-subtitle-display') || {}).textContent = subtitle;
 
     // Hide global headers (filter bar, metrics) for admin/settings tabs
-    const isSettingsTab = (tabName === 'settings-view' || tabName === 'user-management' || tabName === 'summary-view');
+    const isSettingsTab = (tabName === 'settings-view' || tabName === 'user-management' || tabName === 'summary-view' || tabName === 'fund-receipts');
     const filterBar = document.querySelector('.header-filters');
     const metricsBar = document.getElementById('metrics-bar');
     const carryOver = document.getElementById('carry-over-banner');
@@ -938,6 +1133,7 @@ function switchTab(tabName) {
         renderColumnSettingsUI();
     }
     if (tabName === 'summary-view') renderSummaryView();
+    if (tabName === 'fund-receipts') renderFundReceiptsOverview();
 
     initializeLucide();
 }
@@ -1102,12 +1298,14 @@ function renderAll() {
     renderSpreadsheet();
     renderSummaries();
     renderProjectFilterDropdown();
+    updateFundReceiptWidget();
     if (state.activeTab === 'settings-view') {
         renderMasterData();
         renderSignaturePreviews();
         renderColumnSettingsUI();
     }
     if (state.activeTab === 'claims-view') renderClaims();
+    if (state.activeTab === 'fund-receipts') renderFundReceiptsOverview();
 }
 
 // ==========================================================================
@@ -6544,10 +6742,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('change', () => {
             updateFoodWidgetMonthBadge();
+            updateFundReceiptWidget();
         });
     });
 
     updateFoodWidgetMonthBadge();
+    updateFundReceiptWidget();
 });
 
 /* ==========================================================================
