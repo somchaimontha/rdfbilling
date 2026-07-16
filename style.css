@@ -2035,3 +2035,83 @@ button, input, select, textarea {
     border-color: var(--primary) !important;
     background: var(--primary-light) !important;
 }
+
+/* ==========================================================================
+   Settings Page — Sidebar Navigation + Scroll-spy
+   ========================================================================== */
+.settings-layout {
+    display: flex;
+    align-items: flex-start;
+    gap: 24px;
+}
+
+.settings-sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 16px;
+    background: var(--surface-solid);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 10px 0;
+}
+
+.settings-sidebar .sbar-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: calc(100% - 12px);
+    margin: 2px 6px;
+    padding: 9px 12px;
+    border: none;
+    background: none;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s ease;
+}
+
+.settings-sidebar .sbar-item:hover {
+    background: var(--bg-main);
+    color: var(--text-primary);
+}
+
+.settings-sidebar .sbar-item.active {
+    background: var(--primary-light);
+    color: var(--primary);
+    font-weight: 700;
+}
+
+.settings-sidebar .sbar-icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    opacity: 0.75;
+}
+
+.settings-sidebar .sbar-item.active .sbar-icon {
+    opacity: 1;
+}
+
+.settings-main {
+    flex: 1;
+    min-width: 0;
+    max-width: 900px;
+}
+
+.settings-section-anchor {
+    scroll-margin-top: 16px;
+}
+
+@media (max-width: 900px) {
+    .settings-sidebar {
+        display: none;
+    }
+    .settings-layout {
+        display: block;
+    }
+}

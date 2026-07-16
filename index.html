@@ -689,268 +689,299 @@
 
     <!-- TAB: Settings -->
     <div class="tab-content" id="tab-settings-view">
-        <div style="max-width:900px; margin:0;">
-            
-            <div class="settings-header" style="background: linear-gradient(135deg, #4f46e5, #7c3aed); padding: 30px; border-radius: 16px; color: white; margin-bottom: 30px; box-shadow: 0 10px 25px rgba(79, 70, 229, 0.25); position: relative; overflow: hidden;">
-                <div style="position: absolute; right: -20px; top: -20px; opacity: 0.1;">
-                    <i data-lucide="settings" style="width: 150px; height: 150px;"></i>
-                </div>
-
-            <!-- ========================================================= -->
-            <!-- SECTION: Master Data Management -->
-            <!-- ========================================================= -->
-            <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
-                <div style="flex:1; height:1px; background:var(--border-color);"></div>
-                <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">จัดการข้อมูลหลัก (Master Data)</div>
-                <div style="flex:1; height:1px; background:var(--border-color);"></div>
+        <div class="settings-header" style="background: linear-gradient(135deg, #4f46e5, #7c3aed); padding: 24px 30px; border-radius: 16px; color: white; margin-bottom: 24px; box-shadow: 0 10px 25px rgba(79, 70, 229, 0.25); position: relative; overflow: hidden;">
+            <div style="position: absolute; right: -20px; top: -20px; opacity: 0.1;">
+                <i data-lucide="settings" style="width: 150px; height: 150px;"></i>
             </div>
+            <h2 style="margin: 0; font-size: 24px; font-weight: 700; position: relative; z-index: 1;">ตั้งค่าระบบ (System Settings)</h2>
+            <p style="margin: 5px 0 0; font-size: 14px; opacity: 0.9; position: relative; z-index: 1;">ปรับแต่งการทำงาน การเชื่อมต่อ และควบคุมระบบทั้งหมดจากที่นี่</p>
+        </div>
 
-            <div class="master-data-grid" style="margin-bottom: 20px;">
-                <!-- โครงการ -->
-                <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
-                    <div class="master-section-header">
-                        <div class="master-section-title">
-                            <div class="master-section-icon icon-project"><i data-lucide="briefcase"></i></div>
-                            โครงการ
+        <div class="settings-layout">
+            <!-- Settings Sidebar Navigation (จอกว้าง — ซ่อนบนมือถือ) -->
+            <nav class="settings-sidebar">
+                <button type="button" class="sbar-item" onclick="settingsSbarGo('settings-sec-master')">
+                    <i data-lucide="database" class="sbar-icon"></i>
+                    <span>จัดการข้อมูลหลัก</span>
+                </button>
+                <button type="button" class="sbar-item" onclick="settingsSbarGo('settings-sec-general')">
+                    <i data-lucide="sliders-horizontal" class="sbar-icon"></i>
+                    <span>ตั้งค่าทั่วไป</span>
+                </button>
+                <button type="button" class="sbar-item" onclick="settingsSbarGo('settings-sec-integrations')">
+                    <i data-lucide="plug" class="sbar-icon"></i>
+                    <span>การเชื่อมต่อบริการ</span>
+                </button>
+                <button type="button" class="sbar-item" onclick="settingsSbarGo('settings-sec-system-info')">
+                    <i data-lucide="info" class="sbar-icon"></i>
+                    <span>ข้อมูลระบบ</span>
+                </button>
+            </nav>
+
+            <div class="settings-main">
+                <!-- ========================================================= -->
+                <!-- SECTION: Master Data Management -->
+                <!-- ========================================================= -->
+                <div class="settings-section-anchor" id="settings-sec-master">
+                    <div style="display:flex; align-items:center; gap:12px; margin: 0 0 15px 0;">
+                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                        <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">จัดการข้อมูลหลัก (Master Data)</div>
+                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                    </div>
+
+                    <div class="master-data-grid" style="margin-bottom: 30px;">
+                        <!-- โครงการ -->
+                        <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
+                            <div class="master-section-header">
+                                <div class="master-section-title">
+                                    <div class="master-section-icon icon-project"><i data-lucide="briefcase"></i></div>
+                                    โครงการ
+                                </div>
+                                <button class="btn btn-primary" onclick="openMasterModal('project')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
+                            </div>
+                            <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                                <table class="table" id="master-projects-table" style="margin:0;">
+                                    <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
+                                        <tr><th>ชื่อโครงการ</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
                         </div>
-                        <button class="btn btn-primary" onclick="openMasterModal('project')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
-                    </div>
-                    <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
-                        <table class="table" id="master-projects-table" style="margin:0;">
-                            <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
-                                <tr><th>ชื่อโครงการ</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
 
-                <!-- หมวดหมู่ -->
-                <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
-                    <div class="master-section-header">
-                        <div class="master-section-title">
-                            <div class="master-section-icon icon-category"><i data-lucide="tag"></i></div>
-                            หมวดหมู่
+                        <!-- หมวดหมู่ -->
+                        <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
+                            <div class="master-section-header">
+                                <div class="master-section-title">
+                                    <div class="master-section-icon icon-category"><i data-lucide="tag"></i></div>
+                                    หมวดหมู่
+                                </div>
+                                <button class="btn btn-primary" onclick="openMasterModal('category')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
+                            </div>
+                            <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                                <table class="table" id="master-categories-table" style="margin:0;">
+                                    <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
+                                        <tr><th>หมวดหมู่</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
                         </div>
-                        <button class="btn btn-primary" onclick="openMasterModal('category')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
-                    </div>
-                    <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
-                        <table class="table" id="master-categories-table" style="margin:0;">
-                            <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
-                                <tr><th>หมวดหมู่</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
 
-                <!-- แหล่งเงิน -->
-                <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
-                    <div class="master-section-header">
-                        <div class="master-section-title">
-                            <div class="master-section-icon icon-fund"><i data-lucide="wallet"></i></div>
-                            แหล่งเงิน
+                        <!-- แหล่งเงิน -->
+                        <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
+                            <div class="master-section-header">
+                                <div class="master-section-title">
+                                    <div class="master-section-icon icon-fund"><i data-lucide="wallet"></i></div>
+                                    แหล่งเงิน
+                                </div>
+                                <button class="btn btn-primary" onclick="openMasterModal('fundsource')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
+                            </div>
+                            <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                                <table class="table" id="master-fundsources-table" style="margin:0;">
+                                    <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
+                                        <tr><th>แหล่งเงิน</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
                         </div>
-                        <button class="btn btn-primary" onclick="openMasterModal('fundsource')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
-                    </div>
-                    <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
-                        <table class="table" id="master-fundsources-table" style="margin:0;">
-                            <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
-                                <tr><th>แหล่งเงิน</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
 
-                <!-- ร้านค้า -->
-                <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
-                    <div class="master-section-header">
-                        <div class="master-section-title">
-                            <div class="master-section-icon icon-vendor"><i data-lucide="store"></i></div>
-                            ร้านค้า/ผู้ขาย
+                        <!-- ร้านค้า -->
+                        <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
+                            <div class="master-section-header">
+                                <div class="master-section-title">
+                                    <div class="master-section-icon icon-vendor"><i data-lucide="store"></i></div>
+                                    ร้านค้า/ผู้ขาย
+                                </div>
+                                <button class="btn btn-primary" onclick="openMasterModal('vendor')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
+                            </div>
+                            <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                                <table class="table" id="master-vendors-table" style="margin:0;">
+                                    <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
+                                        <tr><th>ร้านค้า/ผู้ขาย</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
                         </div>
-                        <button class="btn btn-primary" onclick="openMasterModal('vendor')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
                     </div>
-                    <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
-                        <table class="table" id="master-vendors-table" style="margin:0;">
-                            <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
-                                <tr><th>ร้านค้า/ผู้ขาย</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
+                </div>
+
+                <!-- ========================================================= -->
+                <!-- SECTION: General Settings -->
+                <!-- ========================================================= -->
+                <div class="settings-section-anchor" id="settings-sec-general">
+                    <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
+                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                        <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">การตั้งค่าทั่วไป (General)</div>
+                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                    </div>
+
+                    <!-- Section: File Upload -->
+                    <div class="card" style="margin-bottom:20px;">
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+                            <div style="width:40px;height:40px;background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                                <i data-lucide="upload-cloud" style="width:20px;height:20px;color:white;"></i>
+                            </div>
+                            <div>
+                                <h3 style="font-size:15px;font-weight:700;margin:0;">ตั้งค่าการอัปโหลดไฟล์ (File Upload Limit)</h3>
+                                <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">กำหนดขนาดสูงสุดที่อนุญาตให้อัปโหลด (ระบบจะบีบอัดภาพอัตโนมัติให้ไม่เกินค่านี้)</p>
+                            </div>
+                        </div>
+                        <div class="form-group" style="max-width:300px;">
+                            <label class="form-label">ขนาดไฟล์แนบสูงสุด (MB)</label>
+                            <div style="display:flex; gap:8px;">
+                                <input type="number" id="setting-max-upload-size" class="form-input" min="1" max="20" placeholder="2">
+                                <button class="btn btn-primary" onclick="saveSystemSetting('maxUploadSizeMb', document.getElementById('setting-max-upload-size').value)" style="white-space:nowrap; padding:0 16px;">บันทึก</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Section: Bottom Nav Opacity -->
+                    <div class="card" style="margin-bottom:20px;">
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+                            <div style="width:40px;height:40px;background:linear-gradient(135deg,#f59e0b,#d97706);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                                <i data-lucide="smartphone" style="width:20px;height:20px;color:white;"></i>
+                            </div>
+                            <div style="flex:1;">
+                                <h3 style="font-size:15px;font-weight:700;margin:0;">ความโปร่งใสของเมนูด้านล่าง (มือถือ)</h3>
+                                <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">ปรับระดับความทึบแสงของแถบ Bottom Navigation</p>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <div style="display:flex; justify-content:space-between; margin-bottom: 8px;">
+                                <span style="font-size:12px; font-weight:600;">โปร่งใสมาก</span>
+                                <span style="font-size:12px; font-weight:600;" id="bottom-nav-opacity-value">85%</span>
+                                <span style="font-size:12px; font-weight:600;">ทึบแสง</span>
+                            </div>
+                            <input type="range" id="setting-bottom-nav-opacity" min="0.3" max="1.0" step="0.05" value="0.85" style="width:100%; cursor:pointer;">
+                            <div style="text-align:right; margin-top:12px;">
+                                <button class="btn btn-primary" onclick="saveBottomNavOpacity()" style="padding:6px 16px; font-size:13px;">บันทึกการตั้งค่า</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========================================================= -->
+                <!-- SECTION: Integrations -->
+                <!-- ========================================================= -->
+                <div class="settings-section-anchor" id="settings-sec-integrations">
+                    <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
+                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                        <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">การเชื่อมต่อบริการ (Integrations)</div>
+                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                    </div>
+
+                    <!-- Section: Google Login -->
+                    <div class="card" style="margin-bottom:20px;">
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+                            <div style="width:40px;height:40px;background:linear-gradient(135deg,#4285f4,#34a853);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                                <i data-lucide="chrome" style="width:20px;height:20px;color:white;"></i>
+                            </div>
+                            <div>
+                                <h3 style="font-size:15px;font-weight:700;margin:0;">Google Login (OAuth 2.0)</h3>
+                                <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">อนุญาตให้ผู้ใช้เข้าสู่ระบบด้วยบัญชี Google</p>
+                            </div>
+                            <div style="margin-left:auto;display:flex;align-items:center;gap:10px;">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="setting-google-login-enabled" onchange="saveSystemSetting('googleLoginEnabled', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                                <span id="setting-google-login-status" style="font-size:12px;color:var(--text-secondary);">ปิดอยู่</span>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Google OAuth Client ID</label>
+                            <div style="display:flex; gap:8px;">
+                                <input type="text" id="setting-google-client-id" class="form-input" placeholder="xxxxxxxx.apps.googleusercontent.com" style="font-size:12px; font-family:monospace;">
+                                <button class="btn btn-primary" onclick="saveSecureSetting('googleOauthClientId', document.getElementById('setting-google-client-id').value)" style="white-space:nowrap; padding:0 16px;">
+                                    <i data-lucide="save"></i> บันทึก
+                                </button>
+                            </div>
+                            <p style="font-size:11px;color:var(--text-secondary);margin-top:6px;">
+                                📌 วิธีขอ Client ID: <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:var(--primary);">Google Cloud Console</a>  ที่หน้า OAuth 2.0 Client เลือก Web Application  และเพิ่ม Authorized origins ของ URL แอปนี้
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Section: Google Drive -->
+                    <div class="card" style="margin-bottom:20px;">
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+                            <div style="width:40px;height:40px;background:linear-gradient(135deg,#0f9d58,#0b8043);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                                <i data-lucide="folder-open" style="width:20px;height:20px;color:white;"></i>
+                            </div>
+                            <div>
+                                <h3 style="font-size:15px;font-weight:700;margin:0;">Google Drive จัดเก็บไฟล์</h3>
+                                <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">ระบุโฟลเดอร์สำหรับเก็บใบเสร็จ เอกสาร และรูปภาพ</p>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Drive Folder ID (โฟลเดอร์หลัก)</label>
+                            <div style="display:flex; gap:8px;">
+                                <input type="text" id="setting-drive-folder-id" class="form-input" placeholder="1AbcXxxx... (จาก URL ของ Google Drive Folder)" style="font-size:12px; font-family:monospace;">
+                                <button class="btn btn-primary" onclick="saveSecureSetting('driveFolderId', document.getElementById('setting-drive-folder-id').value)" style="white-space:nowrap; padding:0 16px;">
+                                    <i data-lucide="save"></i> บันทึก
+                                </button>
+                            </div>
+                            <p style="font-size:11px;color:var(--text-secondary);margin-top:6px;">
+                                📌 วิธีหา Folder ID: เปิด Google Drive  คลิกขวาโฟลเดอร์  "แชร์"  ดูจาก URL (ส่วน <code style="background:var(--bg-main);padding:2px 4px;border-radius:3px;">folders/xxxxxxxxxx</code>)
+                            </p>
+                        </div>
+                        <div id="drive-folder-status" style="padding:10px 14px;background:var(--bg-main);border-radius:8px;font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;">
+                            <i data-lucide="info" style="width:14px;height:14px;"></i>
+                            <span>ยังไม่ได้ตั้งค่า Folder ID ระบบจะสร้างโฟลเดอร์ใหม่อัตโนมัติหลังจากกำหนด</span>
+                        </div>
+                        <div style="margin-top:14px;padding:12px;background:rgba(15,157,88,0.08);border:1px solid rgba(15,157,88,0.2);border-radius:8px;font-size:12px;">
+                            <strong>โครงสร้างโฟลเดอร์อัตโนมัติ:</strong><br>
+                            📁 RDF_Billing (root)<br>
+                            &nbsp;&nbsp;├── 📁 ปี 2568<br>
+                            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── 📁 เดือน 06<br>
+                            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── 📁 ค่าอาหาร<br>
+                            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── 📁 วัสดุอุปกรณ์
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========================================================= -->
+                <!-- SECTION: System Info -->
+                <!-- ========================================================= -->
+                <div class="settings-section-anchor" id="settings-sec-system-info">
+                    <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
+                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                        <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">ข้อมูลและการบำรุงรักษา (Maintenance)</div>
+                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
+                    </div>
+
+                    <!-- Section: System Info -->
+                    <div class="card" style="margin-bottom:20px;">
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+                            <div style="width:40px;height:40px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                                <i data-lucide="info" style="width:20px;height:20px;color:white;"></i>
+                            </div>
+                            <h3 style="font-size:15px;font-weight:700;margin:0;">ข้อมูลระบบ</h3>
+                        </div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                            <div style="padding:12px;background:var(--bg-main);border-radius:8px;">
+                                <div style="font-size:11px;color:var(--text-secondary);">เวอร์ชั่น</div>
+                                <div style="font-weight:700;font-size:14px;">RDF Billing v2.0</div>
+                            </div>
+                            <div style="padding:12px;background:var(--bg-main);border-radius:8px;">
+                                <div style="font-size:11px;color:var(--text-secondary);">สถานะ API</div>
+                                <div style="font-weight:700;font-size:14px;" id="setting-api-status">ตรวจ...</div>
+                            </div>
+                            <div style="padding:12px;background:var(--bg-main);border-radius:8px;">
+                                <div style="font-size:11px;color:var(--text-secondary);">ผู้ดูแลระบบ</div>
+                                <div style="font-weight:700;font-size:14px;" id="setting-admin-info">-</div>
+                            </div>
+                            <div style="padding:12px;background:var(--bg-main);border-radius:8px;">
+                                <div style="font-size:11px;color:var(--text-secondary);">เข้าสู่ระบบล่าสุด</div>
+                                <div style="font-weight:700;font-size:14px;" id="setting-last-login">-</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
-
-                <h2 style="margin: 0; font-size: 24px; font-weight: 700; position: relative; z-index: 1;">ตั้งค่าระบบ (System Settings)</h2>
-                <p style="margin: 5px 0 0; font-size: 14px; opacity: 0.9; position: relative; z-index: 1;">ปรับแต่งการทำงาน การเชื่อมต่อ และควบคุมระบบทั้งหมดจากที่นี่</p>
-            </div>
-
-            
-            <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
-                <div style="flex:1; height:1px; background:var(--border-color);"></div>
-                <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">การตั้งค่าทั่วไป (General)</div>
-                <div style="flex:1; height:1px; background:var(--border-color);"></div>
-            </div>
-
-            <!-- Section: File Upload -->
-            <div class="card" style="margin-bottom:20px;">
-                <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
-                    <div style="width:40px;height:40px;background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:10px;display:flex;align-items:center;justify-content:center;">
-                        <i data-lucide="upload-cloud" style="width:20px;height:20px;color:white;"></i>
-                    </div>
-                    <div>
-                        <h3 style="font-size:15px;font-weight:700;margin:0;">ตั้งค่าการอัปโหลดไฟล์ (File Upload Limit)</h3>
-                        <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">กำหนดขนาดสูงสุดที่อนุญาตให้อัปโหลด (ระบบจะบีบอัดภาพอัตโนมัติให้ไม่เกินค่านี้)</p>
-                    </div>
-                </div>
-                <div class="form-group" style="max-width:300px;">
-                    <label class="form-label">ขนาดไฟล์แนบสูงสุด (MB)</label>
-                    <div style="display:flex; gap:8px;">
-                        <input type="number" id="setting-max-upload-size" class="form-input" min="1" max="20" placeholder="2">
-                        <button class="btn btn-primary" onclick="saveSystemSetting('maxUploadSizeMb', document.getElementById('setting-max-upload-size').value)" style="white-space:nowrap; padding:0 16px;">บันทึก</button>
-                    </div>
-                </div>
-            </div>
-
-            
-
-            <!-- Section: Bottom Nav Opacity -->
-            <div class="card" style="margin-bottom:20px;">
-                <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
-                    <div style="width:40px;height:40px;background:linear-gradient(135deg,#f59e0b,#d97706);border-radius:10px;display:flex;align-items:center;justify-content:center;">
-                        <i data-lucide="smartphone" style="width:20px;height:20px;color:white;"></i>
-                    </div>
-                    <div style="flex:1;">
-                        <h3 style="font-size:15px;font-weight:700;margin:0;">ความโปร่งใสของเมนูด้านล่าง (มือถือ)</h3>
-                        <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">ปรับระดับความทึบแสงของแถบ Bottom Navigation</p>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <div style="display:flex; justify-content:space-between; margin-bottom: 8px;">
-                        <span style="font-size:12px; font-weight:600;">โปร่งใสมาก</span>
-                        <span style="font-size:12px; font-weight:600;" id="bottom-nav-opacity-value">85%</span>
-                        <span style="font-size:12px; font-weight:600;">ทึบแสง</span>
-                    </div>
-                    <input type="range" id="setting-bottom-nav-opacity" min="0.3" max="1.0" step="0.05" value="0.85" style="width:100%; cursor:pointer;">
-                    <div style="text-align:right; margin-top:12px;">
-                        <button class="btn btn-primary" onclick="saveBottomNavOpacity()" style="padding:6px 16px; font-size:13px;">บันทึกการตั้งค่า</button>
-                    </div>
-                </div>
-            </div>
-
-            <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
-                <div style="flex:1; height:1px; background:var(--border-color);"></div>
-                <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">การเชื่อมต่อบริการ (Integrations)</div>
-                <div style="flex:1; height:1px; background:var(--border-color);"></div>
-            </div>
-
-            <!-- Section: Google Login -->
-            <div class="card" style="margin-bottom:20px;">
-                <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
-                    <div style="width:40px;height:40px;background:linear-gradient(135deg,#4285f4,#34a853);border-radius:10px;display:flex;align-items:center;justify-content:center;">
-                        <i data-lucide="chrome" style="width:20px;height:20px;color:white;"></i>
-                    </div>
-                    <div>
-                        <h3 style="font-size:15px;font-weight:700;margin:0;">Google Login (OAuth 2.0)</h3>
-                        <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">อนุญาตให้ผู้ใช้เข้าสู่ระบบด้วยบัญชี Google</p>
-                    </div>
-                    <div style="margin-left:auto;display:flex;align-items:center;gap:10px;">
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="setting-google-login-enabled" onchange="saveSystemSetting('googleLoginEnabled', this.checked)">
-                            <span class="toggle-slider"></span>
-                        </label>
-                        <span id="setting-google-login-status" style="font-size:12px;color:var(--text-secondary);">ปิดอยู่</span>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Google OAuth Client ID</label>
-                    <div style="display:flex; gap:8px;">
-                        <input type="text" id="setting-google-client-id" class="form-input" placeholder="xxxxxxxx.apps.googleusercontent.com" style="font-size:12px; font-family:monospace;">
-                        <button class="btn btn-primary" onclick="saveSecureSetting('googleOauthClientId', document.getElementById('setting-google-client-id').value)" style="white-space:nowrap; padding:0 16px;">
-                            <i data-lucide="save"></i> บันทึก
-                        </button>
-                    </div>
-                    <p style="font-size:11px;color:var(--text-secondary);margin-top:6px;">
-                        📌 วิธีขอ Client ID: <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:var(--primary);">Google Cloud Console</a>  ที่หน้า OAuth 2.0 Client เลือก Web Application  และเพิ่ม Authorized origins ของ URL แอปนี้
-                    </p>
-                </div>
-            </div>
-
-            <!-- Section: Google Drive -->
-            <div class="card" style="margin-bottom:20px;">
-                <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
-                    <div style="width:40px;height:40px;background:linear-gradient(135deg,#0f9d58,#0b8043);border-radius:10px;display:flex;align-items:center;justify-content:center;">
-                        <i data-lucide="folder-open" style="width:20px;height:20px;color:white;"></i>
-                    </div>
-                    <div>
-                        <h3 style="font-size:15px;font-weight:700;margin:0;">Google Drive จัดเก็บไฟล์</h3>
-                        <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">ระบุโฟลเดอร์สำหรับเก็บใบเสร็จ เอกสาร และรูปภาพ</p>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Drive Folder ID (โฟลเดอร์หลัก)</label>
-                    <div style="display:flex; gap:8px;">
-                        <input type="text" id="setting-drive-folder-id" class="form-input" placeholder="1AbcXxxx... (จาก URL ของ Google Drive Folder)" style="font-size:12px; font-family:monospace;">
-                        <button class="btn btn-primary" onclick="saveSecureSetting('driveFolderId', document.getElementById('setting-drive-folder-id').value)" style="white-space:nowrap; padding:0 16px;">
-                            <i data-lucide="save"></i> บันทึก
-                        </button>
-                    </div>
-                    <p style="font-size:11px;color:var(--text-secondary);margin-top:6px;">
-                        📌 วิธีหา Folder ID: เปิด Google Drive  คลิกขวาโฟลเดอร์  "แชร์"  ดูจาก URL (ส่วน <code style="background:var(--bg-secondary);padding:2px 4px;border-radius:3px;">folders/xxxxxxxxxx</code>)
-                    </p>
-                </div>
-                <div id="drive-folder-status" style="padding:10px 14px;background:var(--bg-secondary);border-radius:8px;font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;">
-                    <i data-lucide="info" style="width:14px;height:14px;"></i>
-                    <span>ยังไม่ได้ตั้งค่า Folder ID ระบบจะสร้างโฟลเดอร์ใหม่อัตโนมัติหลังจากกำหนด</span>
-                </div>
-                <div style="margin-top:14px;padding:12px;background:rgba(15,157,88,0.08);border:1px solid rgba(15,157,88,0.2);border-radius:8px;font-size:12px;">
-                    <strong>โครงสร้างโฟลเดอร์อัตโนมัติ:</strong><br>
-                    📁 RDF_Billing (root)<br>
-                    &nbsp;&nbsp;├── 📁 ปี 2568<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── 📁 เดือน 06<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── 📁 ค่าอาหาร<br>
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── 📁 วัสดุอุปกรณ์
-                </div>
-            </div>
-
-            
-            <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
-                <div style="flex:1; height:1px; background:var(--border-color);"></div>
-                <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">ข้อมูลและการบำรุงรักษา (Maintenance)</div>
-                <div style="flex:1; height:1px; background:var(--border-color);"></div>
-            </div>
-
-            <!-- Section: System Info -->
-            <div class="card" style="margin-bottom:20px;">
-                <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
-                    <div style="width:40px;height:40px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:10px;display:flex;align-items:center;justify-content:center;">
-                        <i data-lucide="info" style="width:20px;height:20px;color:white;"></i>
-                    </div>
-                    <h3 style="font-size:15px;font-weight:700;margin:0;">ข้อมูลระบบ</h3>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-                    <div style="padding:12px;background:var(--bg-secondary);border-radius:8px;">
-                        <div style="font-size:11px;color:var(--text-secondary);">เวอร์ชั่น</div>
-                        <div style="font-weight:700;font-size:14px;">RDF Billing v2.0</div>
-                    </div>
-                    <div style="padding:12px;background:var(--bg-secondary);border-radius:8px;">
-                        <div style="font-size:11px;color:var(--text-secondary);">สถานะ API</div>
-                        <div style="font-weight:700;font-size:14px;" id="setting-api-status">ตรวจ...</div>
-                    </div>
-                    <div style="padding:12px;background:var(--bg-secondary);border-radius:8px;">
-                        <div style="font-size:11px;color:var(--text-secondary);">ผู้ดูแลระบบ</div>
-                        <div style="font-weight:700;font-size:14px;" id="setting-admin-info">-</div>
-                    </div>
-                    <div style="padding:12px;background:var(--bg-secondary);border-radius:8px;">
-                        <div style="font-size:11px;color:var(--text-secondary);">เข้าสู่ระบบล่าสุด</div>
-                        <div style="font-weight:700;font-size:14px;" id="setting-last-login">-</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Section: Login Logs -->
         </div>
     </div>
     </main>

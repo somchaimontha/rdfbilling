@@ -1131,12 +1131,51 @@ function switchTab(tabName) {
         renderMasterData();
         renderSignaturePreviews();
         renderColumnSettingsUI();
+        initSettingsScrollSpy();
     }
     if (tabName === 'summary-view') renderSummaryView();
     if (tabName === 'fund-receipts') renderFundReceiptsOverview();
 
     initializeLucide();
 }
+
+// ==========================================================================
+// Settings Page — Sidebar Navigation + Scroll-spy
+// ==========================================================================
+function settingsSbarGo(sectionId) {
+    const el = document.getElementById(sectionId);
+    if (!el) return;
+    const top = el.getBoundingClientRect().top + window.pageYOffset - 16;
+    window.scrollTo({ top, behavior: 'smooth' });
+}
+window.settingsSbarGo = settingsSbarGo;
+
+let _settingsScrollSpyObserver = null;
+function initSettingsScrollSpy() {
+    const sidebar = document.querySelector('#tab-settings-view .settings-sidebar');
+    const sections = document.querySelectorAll('#tab-settings-view .settings-section-anchor');
+    if (!sidebar || !sections.length) return;
+
+    if (_settingsScrollSpyObserver) {
+        _settingsScrollSpyObserver.disconnect();
+    }
+
+    const setActive = (id) => {
+        sidebar.querySelectorAll('.sbar-item').forEach(btn => {
+            btn.classList.toggle('active', btn.getAttribute('onclick') === `settingsSbarGo('${id}')`);
+        });
+    };
+
+    _settingsScrollSpyObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) setActive(entry.target.id);
+        });
+    }, { rootMargin: '-20% 0px -70% 0px', threshold: 0 });
+
+    sections.forEach(sec => _settingsScrollSpyObserver.observe(sec));
+    setActive(sections[0].id);
+}
+window.initSettingsScrollSpy = initSettingsScrollSpy;
 
 // ==========================================================================
 // Date Utility Functions
