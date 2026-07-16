@@ -2007,11 +2007,15 @@ function renderMasterProjects() {
     tbody.innerHTML = '';
     state.projects.forEach((p, idx) => {
         const tr = document.createElement('tr');
+        const meta = [p.id, p.budget ? `งบ ฿${p.budget.toLocaleString('th-TH')}` : null].filter(Boolean).join(' · ');
         tr.innerHTML = `
-            <td class="font-semibold">${p.id}</td>
-            <td>${p.name}</td>
-            <td class="text-right">฿${(p.budget || 0).toLocaleString('th-TH')}</td>
-            <td><span class="badge ${p.active ? 'badge-claimable' : 'badge-non-claimable'}">${p.active ? 'ใช้งาน' : 'ปิดใช้งาน'}</span></td>
+            <td>
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <span style="font-weight:600;">${p.name}</span>
+                    <span class="badge ${p.active ? 'badge-claimable' : 'badge-non-claimable'}" style="font-size:10px;">${p.active ? 'ใช้งาน' : 'ปิดใช้งาน'}</span>
+                </div>
+                <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${meta}</div>
+            </td>
             <td class="text-center">
                 <div class="action-buttons" style="justify-content:center;">
                     <button class="btn-icon btn-icon-edit" data-master="project" data-idx="${idx}"><i data-lucide="edit"></i></button>
@@ -2031,8 +2035,10 @@ function renderMasterCategories() {
     state.categories.forEach((c, idx) => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-            <td class="font-semibold">${c.id}</td>
-            <td>${c.name}</td>
+            <td>
+                <div style="font-weight:600;">${c.name}</div>
+                <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${c.id}</div>
+            </td>
             <td class="text-center">
                 <div class="action-buttons" style="justify-content:center;">
                     <button class="btn-icon btn-icon-edit" data-master="category" data-idx="${idx}"><i data-lucide="edit"></i></button>
@@ -2051,10 +2057,12 @@ function renderMasterVendors() {
     tbody.innerHTML = '';
     state.vendors.forEach((v, idx) => {
         const tr = document.createElement('tr');
+        const meta = [v.id, v.phone || null].filter(Boolean).join(' · ');
         tr.innerHTML = `
-            <td class="font-semibold">${v.id}</td>
-            <td>${v.name}</td>
-            <td>${v.phone || '-'}</td>
+            <td>
+                <div style="font-weight:600;">${v.name}</div>
+                <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${meta}</div>
+            </td>
             <td class="text-center">
                 <div class="action-buttons" style="justify-content:center;">
                     <button class="btn-icon btn-icon-edit" data-master="vendor" data-idx="${idx}"><i data-lucide="edit"></i></button>
@@ -2074,8 +2082,10 @@ function renderMasterFundSources() {
     state.fundSources.forEach((f, idx) => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-            <td class="font-semibold">${f.id}</td>
-            <td>${f.name}</td>
+            <td>
+                <div style="font-weight:600;">${f.name}</div>
+                <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${f.id}</div>
+            </td>
             <td class="text-center">
                 <div class="action-buttons" style="justify-content:center;">
                     <button class="btn-icon btn-icon-edit" data-master="fundsource" data-idx="${idx}"><i data-lucide="edit"></i></button>
