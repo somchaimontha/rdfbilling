@@ -697,38 +697,31 @@
             <p style="margin: 5px 0 0; font-size: 14px; opacity: 0.9; position: relative; z-index: 1;">ปรับแต่งการทำงาน การเชื่อมต่อ และควบคุมระบบทั้งหมดจากที่นี่</p>
         </div>
 
-        <div class="settings-layout">
-            <!-- Settings Sidebar Navigation (จอกว้าง — ซ่อนบนมือถือ) -->
-            <nav class="settings-sidebar">
-                <button type="button" class="sbar-item" onclick="settingsSbarGo('settings-sec-master')">
-                    <i data-lucide="database" class="sbar-icon"></i>
+        <div class="settings-main">
+            <!-- Settings Top Tab Bar -->
+            <div class="settings-tabbar">
+                <button type="button" class="settings-tab-btn active" data-settings-tab="master" onclick="switchSettingsTab('master')">
+                    <i data-lucide="database" class="settings-tab-icon"></i>
                     <span>จัดการข้อมูลหลัก</span>
                 </button>
-                <button type="button" class="sbar-item" onclick="settingsSbarGo('settings-sec-general')">
-                    <i data-lucide="sliders-horizontal" class="sbar-icon"></i>
+                <button type="button" class="settings-tab-btn" data-settings-tab="general" onclick="switchSettingsTab('general')">
+                    <i data-lucide="sliders-horizontal" class="settings-tab-icon"></i>
                     <span>ตั้งค่าทั่วไป</span>
                 </button>
-                <button type="button" class="sbar-item" onclick="settingsSbarGo('settings-sec-integrations')">
-                    <i data-lucide="plug" class="sbar-icon"></i>
+                <button type="button" class="settings-tab-btn" data-settings-tab="integrations" onclick="switchSettingsTab('integrations')">
+                    <i data-lucide="plug" class="settings-tab-icon"></i>
                     <span>การเชื่อมต่อบริการ</span>
                 </button>
-                <button type="button" class="sbar-item" onclick="settingsSbarGo('settings-sec-system-info')">
-                    <i data-lucide="info" class="sbar-icon"></i>
+                <button type="button" class="settings-tab-btn" data-settings-tab="system-info" onclick="switchSettingsTab('system-info')">
+                    <i data-lucide="info" class="settings-tab-icon"></i>
                     <span>ข้อมูลระบบ</span>
                 </button>
-            </nav>
+            </div>
 
-            <div class="settings-main">
-                <!-- ========================================================= -->
-                <!-- SECTION: Master Data Management -->
-                <!-- ========================================================= -->
-                <div class="settings-section-anchor" id="settings-sec-master">
-                    <div style="display:flex; align-items:center; gap:12px; margin: 0 0 15px 0;">
-                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
-                        <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">จัดการข้อมูลหลัก (Master Data)</div>
-                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
-                    </div>
-
+            <!-- ========================================================= -->
+            <!-- PANEL: Master Data Management -->
+            <!-- ========================================================= -->
+            <div class="settings-tab-panel" id="settings-panel-master">
                     <div class="master-data-grid" style="margin-bottom: 30px;">
                         <!-- โครงการ -->
                         <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
@@ -806,18 +799,12 @@
                             </div>
                         </div>
                     </div>
-                </div>
+            </div>
 
-                <!-- ========================================================= -->
-                <!-- SECTION: General Settings -->
-                <!-- ========================================================= -->
-                <div class="settings-section-anchor" id="settings-sec-general">
-                    <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
-                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
-                        <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">การตั้งค่าทั่วไป (General)</div>
-                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
-                    </div>
-
+            <!-- ========================================================= -->
+            <!-- PANEL: General Settings -->
+            <!-- ========================================================= -->
+            <div class="settings-tab-panel" id="settings-panel-general" style="display:none;">
                     <!-- Section: File Upload -->
                     <div class="card" style="margin-bottom:20px;">
                         <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
@@ -861,18 +848,12 @@
                             </div>
                         </div>
                     </div>
-                </div>
+            </div>
 
-                <!-- ========================================================= -->
-                <!-- SECTION: Integrations -->
-                <!-- ========================================================= -->
-                <div class="settings-section-anchor" id="settings-sec-integrations">
-                    <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
-                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
-                        <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">การเชื่อมต่อบริการ (Integrations)</div>
-                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
-                    </div>
-
+            <!-- ========================================================= -->
+            <!-- PANEL: Integrations -->
+            <!-- ========================================================= -->
+            <div class="settings-tab-panel" id="settings-panel-integrations" style="display:none;">
                     <!-- Section: Google Login -->
                     <div class="card" style="margin-bottom:20px;">
                         <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
@@ -941,18 +922,12 @@
                             &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── 📁 วัสดุอุปกรณ์
                         </div>
                     </div>
-                </div>
+            </div>
 
-                <!-- ========================================================= -->
-                <!-- SECTION: System Info -->
-                <!-- ========================================================= -->
-                <div class="settings-section-anchor" id="settings-sec-system-info">
-                    <div style="display:flex; align-items:center; gap:12px; margin: 30px 0 15px 0;">
-                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
-                        <div style="font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px;">ข้อมูลและการบำรุงรักษา (Maintenance)</div>
-                        <div style="flex:1; height:1px; background:var(--border-color);"></div>
-                    </div>
-
+            <!-- ========================================================= -->
+            <!-- PANEL: System Info -->
+            <!-- ========================================================= -->
+            <div class="settings-tab-panel" id="settings-panel-system-info" style="display:none;">
                     <!-- Section: System Info -->
                     <div class="card" style="margin-bottom:20px;">
                         <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
@@ -983,7 +958,6 @@
                 </div>
             </div>
         </div>
-    </div>
     </main>
 
     <!-- Mobile Bottom Navigation -->
