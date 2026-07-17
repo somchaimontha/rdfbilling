@@ -664,26 +664,150 @@
 
         <!-- TAB: User Management -->
         <div class="tab-content" id="tab-user-management">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-                <h3 style="margin:0;">จัดการผู้ใช้งาน</h3>
-                <button class="btn btn-primary" onclick="openCreateUserModal()"><i data-lucide="user-plus"></i> เพิ่มผู้ใช้งาน</button>
+            <h3 style="margin:0 0 16px;">จัดการผู้ใช้งาน</h3>
+
+            <div class="settings-tabbar">
+                <button type="button" class="settings-tab-btn active" data-usermgmt-tab="users" onclick="switchUserMgmtTab('users')">
+                    <i data-lucide="users" class="settings-tab-icon"></i>
+                    <span>รายชื่อผู้ใช้งาน</span>
+                </button>
+                <button type="button" class="settings-tab-btn" data-usermgmt-tab="roles" onclick="switchUserMgmtTab('roles')">
+                    <i data-lucide="shield" class="settings-tab-icon"></i>
+                    <span>อธิบายสิทธิ์</span>
+                </button>
+                <button type="button" class="settings-tab-btn" data-usermgmt-tab="matrix" onclick="switchUserMgmtTab('matrix')">
+                    <i data-lucide="table-2" class="settings-tab-icon"></i>
+                    <span>Permission Matrix</span>
+                </button>
             </div>
-            <div class="table-container">
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th style="width:48px;"></th>
-                            <th>Username</th>
-                            <th>อีเมล</th>
-                            <th>สิทธิ์</th>
-                            <th style="text-align:center;">สถานะ</th>
-                            <th style="text-align:center; width:100px;">จัดการ</th>
-                        </tr>
-                    </thead>
-                    <tbody id="user-management-tbody">
-                        <tr><td colspan="6" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>
-                    </tbody>
-                </table>
+
+            <!-- PANEL: Users list -->
+            <div class="settings-tab-panel" id="usermgmt-panel-users">
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin-bottom:14px;">
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; flex:1; min-width:260px;">
+                        <input type="text" id="user-mgmt-search" class="form-input" placeholder="ค้นหา Username / ชื่อ-สกุล / อีเมล..." style="max-width:280px;" oninput="applyUserMgmtFilter()">
+                        <select id="user-mgmt-role-filter" class="form-select" style="max-width:170px;" onchange="applyUserMgmtFilter()">
+                            <option value="">ทุกสิทธิ์</option>
+                            <option value="admin">Admin</option>
+                            <option value="manager">Manager</option>
+                            <option value="staff">Staff</option>
+                            <option value="viewer">Viewer</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" onclick="openCreateUserModal()" style="white-space:nowrap;"><i data-lucide="user-plus"></i> เพิ่มผู้ใช้งาน</button>
+                </div>
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th style="width:48px;"></th>
+                                <th>Username</th>
+                                <th>อีเมล</th>
+                                <th>สิทธิ์</th>
+                                <th style="text-align:center;">สถานะ</th>
+                                <th style="text-align:center; width:100px;">จัดการ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="user-management-tbody">
+                            <tr><td colspan="6" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- PANEL: Role explanations -->
+            <div class="settings-tab-panel" id="usermgmt-panel-roles" style="display:none;">
+                <div style="padding:10px 14px; background:var(--primary-light); border-radius:8px; font-size:12px; color:var(--primary); margin-bottom:16px; display:flex; align-items:center; gap:8px;">
+                    <i data-lucide="info" style="width:14px;height:14px;flex-shrink:0;"></i>
+                    <span>สิทธิ์ด้านล่างเป็นค่าเริ่มต้นของระบบ หากมีการปรับแต่งเพิ่มเติมในแท็บ "Permission Matrix" ให้ยึดข้อมูลในแท็บนั้นเป็นหลัก</span>
+                </div>
+                <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(260px,1fr)); gap:16px;">
+                    <div class="card" style="margin:0; border-left:4px solid #ef4444;">
+                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                            <div style="width:36px;height:36px;border-radius:8px;background:#fef2f2;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i data-lucide="shield-check" style="width:18px;height:18px;color:#ef4444;"></i></div>
+                            <div>
+                                <div style="font-weight:700;font-size:14px;">Admin</div>
+                                <div style="font-size:11px;color:var(--text-muted);">ผู้ดูแลระบบ (สิทธิ์สูงสุด)</div>
+                            </div>
+                        </div>
+                        <ul style="margin:0;padding-left:18px;font-size:12.5px;color:var(--text-secondary);display:flex;flex-direction:column;gap:6px;">
+                            <li>จัดการทุกอย่างในระบบ ไม่ถูกจำกัดโดย Permission Matrix</li>
+                            <li>จัดการผู้ใช้งานและตั้งค่าระบบ (เฉพาะ Admin เท่านั้น)</li>
+                            <li>อนุมัติ/ปฏิเสธใบเบิก, บันทึกรับเงินคืน, ลบรายการต่างๆ ได้ทั้งหมด</li>
+                        </ul>
+                    </div>
+                    <div class="card" style="margin:0; border-left:4px solid #1d4ed8;">
+                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                            <div style="width:36px;height:36px;border-radius:8px;background:#eff6ff;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i data-lucide="briefcase" style="width:18px;height:18px;color:#1d4ed8;"></i></div>
+                            <div>
+                                <div style="font-weight:700;font-size:14px;">Manager</div>
+                                <div style="font-size:11px;color:var(--text-muted);">ผู้จัดการ</div>
+                            </div>
+                        </div>
+                        <ul style="margin:0;padding-left:18px;font-size:12.5px;color:var(--text-secondary);display:flex;flex-direction:column;gap:6px;">
+                            <li>ทำได้ทุกอย่างเหมือน Staff</li>
+                            <li>อนุมัติ/ปฏิเสธใบเบิก, บันทึกการเบิกจ่ายเงินคืน</li>
+                            <li>ลบรายจ่ายและเอกสารรับเงินทุนได้</li>
+                            <li>จัดการผู้ใช้งาน/ตั้งค่าระบบไม่ได้ (Admin เท่านั้น)</li>
+                        </ul>
+                    </div>
+                    <div class="card" style="margin:0; border-left:4px solid #16a34a;">
+                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                            <div style="width:36px;height:36px;border-radius:8px;background:#f0fdf4;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i data-lucide="user" style="width:18px;height:18px;color:#16a34a;"></i></div>
+                            <div>
+                                <div style="font-weight:700;font-size:14px;">Staff</div>
+                                <div style="font-size:11px;color:var(--text-muted);">เจ้าหน้าที่ (บันทึกข้อมูล)</div>
+                            </div>
+                        </div>
+                        <ul style="margin:0;padding-left:18px;font-size:12.5px;color:var(--text-secondary);display:flex;flex-direction:column;gap:6px;">
+                            <li>เพิ่ม/แก้ไขรายจ่าย, ดูรายจ่ายทั้งหมด</li>
+                            <li>สร้าง/ส่งใบเบิก, ยกเลิกใบเบิกฉบับร่าง</li>
+                            <li>บันทึกเอกสารรับเงินทุนประจำเดือน</li>
+                            <li>อนุมัติใบเบิก/ลบรายการ/จัดการผู้ใช้งานไม่ได้</li>
+                        </ul>
+                    </div>
+                    <div class="card" style="margin:0; border-left:4px solid #0ea5e9;">
+                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                            <div style="width:36px;height:36px;border-radius:8px;background:#f0f9ff;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i data-lucide="eye" style="width:18px;height:18px;color:#0ea5e9;"></i></div>
+                            <div>
+                                <div style="font-weight:700;font-size:14px;">Viewer</div>
+                                <div style="font-size:11px;color:var(--text-muted);">ดูอย่างเดียว (เช่น กรรมการ/ผู้ตรวจสอบ)</div>
+                            </div>
+                        </div>
+                        <ul style="margin:0;padding-left:18px;font-size:12.5px;color:var(--text-secondary);display:flex;flex-direction:column;gap:6px;">
+                            <li>ดูรายจ่ายและเอกสารรับเงินทุนได้อย่างเดียว</li>
+                            <li>เพิ่ม/แก้ไข/ลบข้อมูลใดๆ ไม่ได้</li>
+                            <li>เหมาะสำหรับผู้ที่ต้องการดูรายงานเท่านั้น</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PANEL: Permission Matrix -->
+            <div class="settings-tab-panel" id="usermgmt-panel-matrix" style="display:none;">
+                <div style="padding:10px 14px; background:var(--danger-light); border-radius:8px; font-size:12px; color:var(--danger); margin-bottom:16px; display:flex; align-items:center; gap:8px;">
+                    <i data-lucide="alert-triangle" style="width:14px;height:14px;flex-shrink:0;"></i>
+                    <span>การให้สิทธิ์มากเกินไปอาจกระทบความปลอดภัยของข้อมูลการเงิน กรุณาตรวจสอบก่อนบันทึก — Admin ถูกล็อกให้มีสิทธิ์เต็มเสมอ แก้ไขไม่ได้</span>
+                </div>
+                <div class="table-container">
+                    <table class="data-table" id="permission-matrix-table" style="font-size:13px;">
+                        <thead>
+                            <tr>
+                                <th>ฟังก์ชัน / Permission</th>
+                                <th style="text-align:center;width:80px;">Admin<br><span style="font-size:10px;font-weight:400;color:var(--text-muted);">ล็อก</span></th>
+                                <th style="text-align:center;width:80px;">Manager</th>
+                                <th style="text-align:center;width:80px;">Staff</th>
+                                <th style="text-align:center;width:80px;">Viewer</th>
+                            </tr>
+                        </thead>
+                        <tbody id="permission-matrix-tbody">
+                            <tr><td colspan="5" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div style="text-align:right; margin-top:16px;">
+                    <button class="btn btn-primary" onclick="savePermissionMatrix()"><i data-lucide="save"></i> บันทึก Permission Matrix</button>
+                </div>
             </div>
         </div>
 
@@ -1875,12 +1999,14 @@
                     <input type="password" id="admin-user-password" class="form-input" placeholder="อย่างน้อย 8 ตัว A-Z a-z 0-9">
                 </div>
                 <div class="form-group">
-                    <label class="form-label">สิสิทธิ์การใช้งานน</label>
+                    <label class="form-label">สิทธิ์การใช้งาน</label>
                     <select id="admin-user-role" class="form-select" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-card);color:var(--text-primary);font-size:14px;">
-                        <option value="user">👤 User  ผู้ใช้ทั่วไป (อ่าน-บันทึก)</option>
-                        <option value="manager">👨‍ Manager  ผู้จัดการ (อนุมัติ-รายงาน)</option>
-                        <option value="admin">🛡 Admin  ผู้ดูแลระบบบ (จัดการทุกอย่าง)</option>
+                        <option value="viewer">👁 Viewer  ดูอย่างเดียว</option>
+                        <option value="staff">👤 Staff  เจ้าหน้าที่ (บันทึกข้อมูล)</option>
+                        <option value="manager">💼 Manager  ผู้จัดการ (อนุมัติ-ลบได้)</option>
+                        <option value="admin">🛡 Admin  ผู้ดูแลระบบ (จัดการทุกอย่าง)</option>
                     </select>
+                    <p id="admin-user-role-warning" style="display:none; font-size:11px; color:var(--danger); margin-top:6px;">⚠ บัญชีนี้มีสิทธิ์เดิมที่ระบบไม่รู้จัก ระบบเลือก "Staff" ให้ชั่วคราว กรุณาตรวจสอบและกดบันทึกเพื่อแก้ไขให้ถูกต้อง</p>
                 </div>
             </div>
             <div class="modal-footer">

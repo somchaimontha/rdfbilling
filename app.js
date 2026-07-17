@@ -1125,7 +1125,10 @@ function switchTab(tabName) {
         if (monthInput && !monthInput.value) monthInput.value = `${d.getFullYear()}-${mStr}`;
         loadFoodOverview();
     }
-    if (tabName === 'user-management') renderUserManagement();
+    if (tabName === 'user-management') {
+        renderUserManagement();
+        switchUserMgmtTab('users');
+    }
     if (tabName === 'settings-view') {
         renderSettingsTab();
         renderMasterData();
@@ -6001,6 +6004,7 @@ async function saveUserProfile() {
 
 // ---- Admin User Management ----
 let adminUserList = [];
+let userMgmtFilters = { search: '', role: '' };
 
 async function renderUserManagement() {
     const tbody = document.getElementById('user-management-tbody');
@@ -6009,38 +6013,64 @@ async function renderUserManagement() {
     try {
         const res = await apiCall('getUsers');
         adminUserList = res.users || [];
-
-        if (!adminUserList.length) {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">ยังไม่มีผู้ใช้งาน</td></tr>';
-            return;
-        }
-
-        const roleColors = { admin: '#f59e0b', superadmin: '#ef4444', manager: '#3b82f6', user: '#10b981' };
-        tbody.innerHTML = adminUserList.map((u, idx) => {
-            const color = roleColors[(u.role || 'user').toLowerCase()] || '#6b7280';
-            const activeBadge = u.active
-                ? '<span style="background:#10b98122;color:#10b981;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">ใช้งาน</span>'
-                : '<span style="background:#ef444422;color:#ef4444;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">ปิดใช้งาน</span>';
-            return `
-                <tr>
-                    <td><img src="https://ui-avatars.com/api/?name=${encodeURIComponent(u.username || '')}&background=random" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:2px solid var(--border-color);"></td>
-                    <td style="font-weight:600;">${escapeHTML(u.username || '-')}</td>
-                    <td style="color:var(--text-secondary);font-size:13px;">${escapeHTML(u.email || '-')}</td>
-                    <td><span style="background:${color}22;color:${color};padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">${(u.role || 'user').toUpperCase()}</span></td>
-                    <td style="text-align:center;">${activeBadge}</td>
-                    <td style="text-align:center;">
-                        <button class="btn btn-outline" style="padding:4px 10px;font-size:12px;margin-right:4px;" onclick="openEditUserModal(${idx})"><i data-lucide="edit-2"></i></button>
-                        <button class="btn" style="padding:4px 10px;font-size:12px;background:var(--danger-light);color:var(--danger);border:none;" onclick="confirmToggleUserActive('${escapeHTML(u.id)}', ${!!u.active})" title="${u.active ? 'ปิดการใช้งาน' : 'เปิดการใช้งาน'}">
-                            <i data-lucide="${u.active ? 'user-x' : 'user-check'}"></i>
-                        </button>
-                    </td>
-                </tr>
-            `;
-        }).join('');
-        if (window.lucide) lucide.createIcons();
+        renderUserManagementRows();
     } catch (err) {
         tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--danger);">โหลดข้อมูลไม่สำเร็จ: ' + escapeHTML(err.message) + '</td></tr>';
     }
+}
+
+function applyUserMgmtFilter() {
+    userMgmtFilters.search = (document.getElementById('user-mgmt-search') || {}).value || '';
+    userMgmtFilters.role = (document.getElementById('user-mgmt-role-filter') || {}).value || '';
+    renderUserManagementRows();
+}
+
+function renderUserManagementRows() {
+    const tbody = document.getElementById('user-management-tbody');
+    if (!tbody) return;
+
+    if (!adminUserList.length) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">ยังไม่มีผู้ใช้งาน</td></tr>';
+        return;
+    }
+
+    const search = userMgmtFilters.search.trim().toLowerCase();
+    const roleFilter = userMgmtFilters.role;
+    const filtered = adminUserList.filter(u => {
+        if (roleFilter && (u.role || '').toLowerCase() !== roleFilter) return false;
+        if (!search) return true;
+        const haystack = `${u.username || ''} ${u.fullName || ''} ${u.email || ''}`.toLowerCase();
+        return haystack.includes(search);
+    });
+
+    if (!filtered.length) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">ไม่พบผู้ใช้งานที่ตรงกับเงื่อนไข</td></tr>';
+        return;
+    }
+
+    const roleColors = { admin: '#ef4444', manager: '#1d4ed8', staff: '#16a34a', viewer: '#0ea5e9' };
+    tbody.innerHTML = filtered.map(u => {
+        const color = roleColors[(u.role || '').toLowerCase()] || '#6b7280';
+        const activeBadge = u.active
+            ? '<span style="background:#10b98122;color:#10b981;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">ใช้งาน</span>'
+            : '<span style="background:#ef444422;color:#ef4444;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">ปิดใช้งาน</span>';
+        return `
+            <tr>
+                <td><img src="https://ui-avatars.com/api/?name=${encodeURIComponent(u.username || '')}&background=random" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:2px solid var(--border-color);"></td>
+                <td style="font-weight:600;">${escapeHTML(u.username || '-')}</td>
+                <td style="color:var(--text-secondary);font-size:13px;">${escapeHTML(u.email || '-')}</td>
+                <td><span style="background:${color}22;color:${color};padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">${(u.role || '-').toUpperCase()}</span></td>
+                <td style="text-align:center;">${activeBadge}</td>
+                <td style="text-align:center;">
+                    <button class="btn btn-outline" style="padding:4px 10px;font-size:12px;margin-right:4px;" onclick="openEditUserModal('${escapeHTML(u.id)}')"><i data-lucide="edit-2"></i></button>
+                    <button class="btn" style="padding:4px 10px;font-size:12px;background:var(--danger-light);color:var(--danger);border:none;" onclick="confirmToggleUserActive('${escapeHTML(u.id)}', ${!!u.active})" title="${u.active ? 'ปิดการใช้งาน' : 'เปิดการใช้งาน'}">
+                        <i data-lucide="${u.active ? 'user-x' : 'user-check'}"></i>
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+    if (window.lucide) lucide.createIcons();
 }
 
 function openCreateUserModal() {
@@ -6052,14 +6082,17 @@ function openCreateUserModal() {
     (document.getElementById('admin-user-lastname') || {}).value = '';
     (document.getElementById('admin-user-email') || {}).value = '';
     (document.getElementById('admin-user-password') || {}).value = '';
-    (document.getElementById('admin-user-role') || {}).value = 'user';
+    (document.getElementById('admin-user-role') || {}).value = 'staff';
     (document.getElementById('admin-user-pw-hint') || {}).textContent = '(จำเป็น)';
+    (document.getElementById('admin-user-role-warning') || {}).style.display = 'none';
     const modal = document.getElementById('modal-admin-user');
     modal.style.display = 'flex'; modal.classList.add('active');
 }
 
-function openEditUserModal(index) {
-    const u = adminUserList[index];
+const VALID_USER_ROLES = ['admin', 'manager', 'staff', 'viewer'];
+
+function openEditUserModal(userId) {
+    const u = adminUserList.find(x => x.id === userId);
     if (!u) return;
     (document.getElementById('admin-user-modal-title') || {}).textContent = 'แก้ไขผู้ใช้งาน: ' + u.username;
     (document.getElementById('admin-user-mode') || {}).value = 'edit';
@@ -6069,7 +6102,10 @@ function openEditUserModal(index) {
     (document.getElementById('admin-user-lastname') || {}).value = '';
     (document.getElementById('admin-user-email') || {}).value = u.email || '';
     (document.getElementById('admin-user-password') || {}).value = '';
-    (document.getElementById('admin-user-role') || {}).value = (u.role || 'user').toLowerCase();
+    const currentRole = (u.role || '').toLowerCase();
+    const isKnownRole = VALID_USER_ROLES.includes(currentRole);
+    (document.getElementById('admin-user-role') || {}).value = isKnownRole ? currentRole : 'staff';
+    (document.getElementById('admin-user-role-warning') || {}).style.display = isKnownRole ? 'none' : 'block';
     (document.getElementById('admin-user-pw-hint') || {}).textContent = '(เว้นว่างถ้าไม่ต้องการเปลี่ยน)';
     const modal = document.getElementById('modal-admin-user');
     modal.style.display = 'flex'; modal.classList.add('active');
@@ -6135,6 +6171,122 @@ async function toggleUserActive(id, newActiveState) {
         await apiCall('updateUser', { id, active: newActiveState });
         appAlert((newActiveState ? 'เปิด' : 'ปิด') + 'การใช้งานบัญชีสำเร็จ', 'success');
         renderUserManagement();
+    } catch (err) {
+        appAlert(err.message || 'เกิดข้อผิดพลาด', 'error');
+    }
+}
+
+// ---- User Management Sub-Tabs (รายชื่อผู้ใช้งาน / อธิบายสิทธิ์ / Permission Matrix) ----
+function switchUserMgmtTab(tabKey) {
+    const bar = document.querySelector('#tab-user-management .settings-tabbar');
+    if (!bar) return;
+    bar.querySelectorAll('.settings-tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('data-usermgmt-tab') === tabKey);
+    });
+    document.querySelectorAll('#tab-user-management .settings-tab-panel').forEach(panel => {
+        panel.style.display = (panel.id === `usermgmt-panel-${tabKey}`) ? '' : 'none';
+    });
+    if (tabKey === 'matrix') renderPermissionMatrix();
+    initializeLucide();
+}
+window.switchUserMgmtTab = switchUserMgmtTab;
+
+// ---- Permission Matrix ----
+// รายการ action ต้อง sync ด้วยมือกับ PERMISSIONS ใน backend/Config.gs ถ้ามีการเพิ่ม/ลบ action ในอนาคต
+const PERMISSION_ACTIONS = [
+    { action: 'createExpense',       label: 'เพิ่มรายจ่าย',                    category: 'รายจ่าย' },
+    { action: 'updateExpense',       label: 'แก้ไขรายจ่าย',                    category: 'รายจ่าย' },
+    { action: 'deleteExpense',       label: 'ลบรายจ่าย',                       category: 'รายจ่าย' },
+    { action: 'getExpenses',         label: 'ดูรายจ่าย',                       category: 'รายจ่าย' },
+    { action: 'createClaim',         label: 'สร้างใบเบิก',                     category: 'ใบเบิก' },
+    { action: 'cancelClaimDraft',    label: 'ยกเลิกใบเบิก (ฉบับร่าง)',          category: 'ใบเบิก' },
+    { action: 'submitClaim',         label: 'ส่งใบเบิกขออนุมัติ',              category: 'ใบเบิก' },
+    { action: 'approveClaim',        label: 'อนุมัติใบเบิก',                    category: 'ใบเบิก' },
+    { action: 'rejectClaim',         label: 'ปฏิเสธใบเบิก',                     category: 'ใบเบิก' },
+    { action: 'recordReimbursement', label: 'บันทึกการเบิกจ่ายเงินคืน',         category: 'ใบเบิก' },
+    { action: 'getFundReceipts',     label: 'ดูเอกสารรับเงินทุน',               category: 'เอกสารรับเงินทุน' },
+    { action: 'saveFundReceipt',     label: 'บันทึกเอกสารรับเงินทุน',           category: 'เอกสารรับเงินทุน' },
+    { action: 'deleteFundReceipt',   label: 'ลบเอกสารรับเงินทุน',               category: 'เอกสารรับเงินทุน' },
+    { action: 'getUsers',            label: 'ดูรายชื่อผู้ใช้งาน',               category: 'ผู้ใช้งานและระบบ' },
+    { action: 'createUser',          label: 'เพิ่มผู้ใช้งาน',                   category: 'ผู้ใช้งานและระบบ' },
+    { action: 'updateUser',          label: 'แก้ไขผู้ใช้งาน',                   category: 'ผู้ใช้งานและระบบ' },
+    { action: 'getSystemConfig',     label: 'ดูการตั้งค่าระบบ',                 category: 'ผู้ใช้งานและระบบ' },
+    { action: 'updateSystemConfig',  label: 'แก้ไขการตั้งค่าระบบ',              category: 'ผู้ใช้งานและระบบ' },
+];
+
+// ค่าเริ่มต้น = มิเรอร์ของ PERMISSIONS ใน backend/Config.gs (admin ไม่ต้องเก็บ เพราะ full access เสมอ)
+const DEFAULT_PERMISSION_MATRIX = {
+    createExpense:       { manager: true,  staff: true,  viewer: false },
+    updateExpense:       { manager: true,  staff: true,  viewer: false },
+    deleteExpense:       { manager: true,  staff: false, viewer: false },
+    getExpenses:         { manager: true,  staff: true,  viewer: true  },
+    createClaim:         { manager: true,  staff: true,  viewer: false },
+    cancelClaimDraft:    { manager: true,  staff: true,  viewer: false },
+    submitClaim:         { manager: true,  staff: true,  viewer: false },
+    approveClaim:        { manager: true,  staff: false, viewer: false },
+    rejectClaim:         { manager: true,  staff: false, viewer: false },
+    recordReimbursement: { manager: true,  staff: false, viewer: false },
+    getFundReceipts:     { manager: true,  staff: true,  viewer: true  },
+    saveFundReceipt:     { manager: true,  staff: true,  viewer: false },
+    deleteFundReceipt:   { manager: true,  staff: false, viewer: false },
+    getUsers:            { manager: false, staff: false, viewer: false },
+    createUser:          { manager: false, staff: false, viewer: false },
+    updateUser:          { manager: false, staff: false, viewer: false },
+    getSystemConfig:     { manager: false, staff: false, viewer: false },
+    updateSystemConfig:  { manager: false, staff: false, viewer: false },
+};
+
+async function renderPermissionMatrix() {
+    const tbody = document.getElementById('permission-matrix-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>';
+    try {
+        const res = await apiCall('getSystemConfig');
+        const config = res.config || {};
+        let matrix = DEFAULT_PERMISSION_MATRIX;
+        if (config.permissionMatrix) {
+            try {
+                matrix = { ...DEFAULT_PERMISSION_MATRIX, ...JSON.parse(config.permissionMatrix) };
+            } catch (e) { /* ข้อมูลเสีย ใช้ค่าเริ่มต้นแทน */ }
+        }
+
+        let lastCategory = null;
+        tbody.innerHTML = PERMISSION_ACTIONS.map(({ action, label, category }) => {
+            const perms = matrix[action] || DEFAULT_PERMISSION_MATRIX[action] || { manager: false, staff: false, viewer: false };
+            const categoryRow = category !== lastCategory
+                ? `<tr><td colspan="5" style="background:var(--bg-main);font-weight:700;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">${escapeHTML(category)}</td></tr>`
+                : '';
+            lastCategory = category;
+            return `
+                ${categoryRow}
+                <tr data-action="${action}">
+                    <td>${escapeHTML(label)}</td>
+                    <td style="text-align:center;color:var(--text-muted);">✓</td>
+                    <td style="text-align:center;"><input type="checkbox" data-perm-role="manager" ${perms.manager ? 'checked' : ''}></td>
+                    <td style="text-align:center;"><input type="checkbox" data-perm-role="staff" ${perms.staff ? 'checked' : ''}></td>
+                    <td style="text-align:center;"><input type="checkbox" data-perm-role="viewer" ${perms.viewer ? 'checked' : ''}></td>
+                </tr>
+            `;
+        }).join('');
+    } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--danger);">โหลดข้อมูลไม่สำเร็จ: ' + escapeHTML(err.message) + '</td></tr>';
+    }
+}
+
+async function savePermissionMatrix() {
+    const matrix = {};
+    document.querySelectorAll('#permission-matrix-tbody tr[data-action]').forEach(tr => {
+        const action = tr.getAttribute('data-action');
+        matrix[action] = {
+            manager: tr.querySelector('input[data-perm-role="manager"]').checked,
+            staff: tr.querySelector('input[data-perm-role="staff"]').checked,
+            viewer: tr.querySelector('input[data-perm-role="viewer"]').checked,
+        };
+    });
+    if (!confirm('ยืนยันการบันทึก Permission Matrix? การเปลี่ยนแปลงจะมีผลทันทีกับผู้ใช้งานทุกคน')) return;
+    try {
+        await apiCall('updateSystemConfig', { permissionMatrix: JSON.stringify(matrix) });
+        appAlert('บันทึก Permission Matrix สำเร็จ', 'success');
     } catch (err) {
         appAlert(err.message || 'เกิดข้อผิดพลาด', 'error');
     }
