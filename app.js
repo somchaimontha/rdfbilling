@@ -111,18 +111,33 @@ function handleSessionExpired() {
     if (profileBox) profileBox.style.display = 'none';
 }
 
-// Display logged in user details in sidebar
+// Display logged in user details in sidebar + header
+// (login response shape is {id, name, role, organizationId} — no "username"/"avatar" field, see Auth.gs login())
 function showUserProfile(user) {
+    if (!user) return;
+
     const profileBox = document.getElementById('user-profile-box');
     const profileName = document.getElementById('user-profile-name');
     const profileRole = document.getElementById('user-profile-role');
     const avatarChar = document.getElementById('user-avatar-char');
-    
-    if (profileBox && user) {
+    if (profileBox) {
         profileBox.style.display = 'flex';
         if (profileName) profileName.textContent = user.name || user.id;
         if (profileRole) profileRole.textContent = `สิทธิ์: ${user.role || 'staff'}`;
         if (avatarChar) avatarChar.textContent = (user.name || 'U').substring(0, 1).toUpperCase();
+    }
+
+    const usernameEl = document.getElementById('header-username');
+    const roleEl = document.getElementById('header-role');
+    const avatarEl = document.getElementById('header-avatar');
+    if (usernameEl) usernameEl.textContent = user.name || user.id || 'Guest';
+    if (roleEl) roleEl.textContent = (user.role || 'User').toUpperCase();
+    if (avatarEl) avatarEl.src = user.avatar || ('https://ui-avatars.com/api/?name=' + encodeURIComponent(user.name || user.id || 'User') + '&background=random');
+
+    // Check Admin rights
+    const navUserMgt = document.getElementById('nav-user-management');
+    if (navUserMgt) {
+        navUserMgt.style.display = (user.role && user.role.toLowerCase() === 'admin') ? 'flex' : 'none';
     }
 }
 
@@ -371,8 +386,14 @@ async function initAppWithAPI() {
         showLoading(true);
         
         // 1. ดึงข้อมูล Master Data
-        const settingsRes = await apiCall('getSystemConfig');
-          state.maxUploadSizeMb = (settingsRes.config && settingsRes.config.maxUploadSizeMb) ? parseFloat(settingsRes.config.maxUploadSizeMb) : 2;
+        // getSystemConfig เป็น admin-only — role อื่นเรียกแล้วจะโดน FORBIDDEN เสมอ ต้องดักไว้เอง
+        // ไม่ให้ล้มทั้งฟังก์ชัน (ไม่งั้น manager/staff/viewer จะโหลดข้อมูลอะไรไม่ได้เลยทั้งแอป)
+        try {
+            const settingsRes = await apiCall('getSystemConfig');
+            state.maxUploadSizeMb = (settingsRes.config && settingsRes.config.maxUploadSizeMb) ? parseFloat(settingsRes.config.maxUploadSizeMb) : 2;
+        } catch (e) {
+            state.maxUploadSizeMb = 2;
+        }
           const master = await apiCall('getMasterData');
         state.projects = (master.projects || []).map(p => ({ ...p, name: p.projectName || p.name }));
         state.categories = (master.categories || []).map(c => ({ ...c, name: c.categoryName || c.name }));
@@ -4148,10 +4169,11 @@ async function saveInlineRow(prefix) {
     
     const multiItems = isEXP ? inlineExpMultiItems : inlineAttMultiItems;
     const noteStr = formatNoteData('', customFields, multiItems);
-    
+
+    const inlineUser = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
     const payload = {
         expenseDate: dateVal,
-        organizationId: 'ORG01',
+        organizationId: inlineUser.organizationId || 'ORG001',
         projectId: projId,
         categoryId: catId,
         fundSourceId: fundId,
@@ -5920,27 +5942,8 @@ document.addEventListener('DOMContentLoaded', () => {
 // ==========================================================================
 // USER MANAGEMENT & PROFILE (Phase 12)
 // ==========================================================================
-
-function showUserProfile(user) {
-    if (!user) return;
-    const usernameEl = document.getElementById('header-username');
-    const roleEl = document.getElementById('header-role');
-    const avatarEl = document.getElementById('header-avatar');
-    
-    if(usernameEl) usernameEl.textContent = user.username;
-    if(roleEl) roleEl.textContent = (user.role || 'User').toUpperCase();
-    if(avatarEl) avatarEl.src = user.avatar || ('https://ui-avatars.com/api/?name=' + encodeURIComponent(user.username) + '&background=random');
-    
-    // Check Admin rights
-    const navUserMgt = document.getElementById('nav-user-management');
-    if (navUserMgt) {
-        if (user.role && user.role.toLowerCase() === 'admin') {
-            navUserMgt.style.display = 'flex';
-        } else {
-            navUserMgt.style.display = 'none';
-        }
-    }
-}
+// showUserProfile() itself now lives near the top of the file (merged with the
+// sidebar-box version — both updated the same login-response user object).
 
 function openUserProfileModal() {
     const userJson = localStorage.getItem('rdf_current_user');
