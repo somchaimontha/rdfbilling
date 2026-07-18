@@ -6295,6 +6295,69 @@ async function savePermissionMatrix() {
     }
 }
 
+// ── Google Sign-In: init (called once we know the configured Client ID) ──
+// ใช้วิธี imperative (google.accounts.id.initialize + renderButton) แทนแบบ HTML declarative (g_id_onload)
+// เพราะ Client ID มาจาก backend หลัง page load แล้วเสมอ ไม่ใช่ค่าคงที่ที่ฝังไว้ตอน build
+function initGoogleLogin(clientId) {
+    if (!window.google || !google.accounts || !google.accounts.id || !clientId) return;
+    google.accounts.id.initialize({
+        client_id: clientId,
+        callback: handleGoogleLogin,
+        auto_select: false,
+        cancel_on_tap_outside: true,
+    });
+    const container = document.getElementById('google-login-container');
+    if (container) container.style.display = 'block';
+    const btnTarget = document.getElementById('google-signin-button');
+    if (btnTarget) {
+        google.accounts.id.renderButton(btnTarget, {
+            type: 'standard', theme: 'outline', text: 'signin_with', locale: 'th', width: 280,
+        });
+    }
+}
+window.initGoogleLogin = initGoogleLogin;
+
+// ── Google Sign-In: callback เมื่อผู้ใช้เลือกบัญชี Google สำเร็จ ──
+// ผูกบัญชีด้วยการจับคู่อีเมล — ไม่มีการสมัครสมาชิกอัตโนมัติ ต้องมีบัญชีที่ตั้งอีเมลนี้ไว้แล้วในหน้าจัดการผู้ใช้งาน
+async function handleGoogleLogin(response) {
+    const errorMsg = document.getElementById('login-error-msg');
+    if (errorMsg) errorMsg.style.display = 'none';
+    showLoading(true);
+    try {
+        const res = await fetch(API_URL, {
+            method: 'POST',
+            mode: 'cors',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({ action: 'loginWithGoogle', data: { idToken: response.credential } })
+        });
+        const result = await res.json();
+
+        if (result.success) {
+            localStorage.setItem('rdf_session_token', result.data.token);
+            localStorage.setItem('rdf_current_user', JSON.stringify(result.data.user));
+            localStorage.setItem('rdf_login_time', new Date().toISOString());
+
+            const loginOverlay = document.getElementById('login-overlay');
+            if (loginOverlay) loginOverlay.style.display = 'none';
+
+            showUserProfile(result.data.user);
+            await initAppWithAPI();
+        } else if (errorMsg) {
+            errorMsg.textContent = (result.error && result.error.message) || 'เข้าสู่ระบบด้วย Google ไม่สำเร็จ';
+            errorMsg.style.display = 'block';
+        }
+    } catch (err) {
+        if (errorMsg) {
+            errorMsg.textContent = 'เข้าสู่ระบบด้วย Google ไม่สำเร็จ: การเชื่อมต่อล้มเหลว';
+            errorMsg.style.display = 'block';
+        }
+        console.error('Google login error:', err);
+    } finally {
+        showLoading(false);
+    }
+}
+window.handleGoogleLogin = handleGoogleLogin;
+
 // ── Initialize Google Login on app startup ──
 (function initGoogleOnLoad() {
     // Check settings and try to initialize Google Login
