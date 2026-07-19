@@ -50,6 +50,20 @@ function escapeHTML(str) {
         .replace(/'/g, '&#039;');
 }
 
+// สร้าง QR code ตรวจสอบเอกสารย้อนกลับ — ทำงานฝั่ง client ล้วนๆ (ไลบรารี qrcode จาก CDN)
+// ข้อมูลไม่ออกจากเบราว์เซอร์เลยตอนสร้างรูป ต่างจากการเรียก API ภายนอกสร้าง QR image
+async function generateVerifyQR(type, code) {
+    if (typeof QRCode === 'undefined' || !code) return '';
+    const verifyUrl = `${window.location.origin}${window.location.pathname}?verify_type=${encodeURIComponent(type)}&verify_code=${encodeURIComponent(code)}`;
+    try {
+        return await QRCode.toDataURL(verifyUrl, { width: 160, margin: 1 });
+    } catch (err) {
+        console.error('QR generation failed:', err);
+        return '';
+    }
+}
+window.generateVerifyQR = generateVerifyQR;
+
 // SweetAlert2 wrappers
 async function appConfirm(message, title = 'ยืนยัน') {
     const result = await Swal.fire({
@@ -245,9 +259,93 @@ let currentMultiItems = [];
 let currentMultiItemsTarget = null;
 
 // ==========================================================================
+// Public Document Verification (สแกน QR แล้วมาที่นี่ — ไม่ต้อง login)
+// ==========================================================================
+const VERIFY_TYPE_LABELS = { claim: 'ใบเบิก/ชุดส่งเบิก', food: 'รายงานค่าอาหารประจำเดือน', fundreceipt: 'เอกสารรับเงินทุนประจำเดือน' };
+
+function initVerifyModeIfPresent() {
+    const params = new URLSearchParams(window.location.search);
+    const type = params.get('verify_type');
+    const code = params.get('verify_code');
+    if (!type || !code) return false;
+
+    const loginOverlay = document.getElementById('login-overlay');
+    const appShell = document.getElementById('app-shell');
+    const verifyView = document.getElementById('verify-result-view');
+    if (loginOverlay) loginOverlay.style.display = 'none';
+    if (appShell) appShell.style.display = 'none';
+    if (!verifyView) return true;
+    verifyView.style.display = 'flex';
+
+    fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'verifyDocument', data: { type, code } })
+    }).then(r => r.json()).then(result => {
+        renderVerifyResult(result, type);
+    }).catch(() => {
+        renderVerifyResult({ success: false, error: { message: 'ไม่สามารถเชื่อมต่อระบบได้ กรุณาลองใหม่' } }, type);
+    });
+
+    return true;
+}
+
+function renderVerifyResult(result, type) {
+    const box = document.getElementById('verify-result-box');
+    if (!box) return;
+    const typeLabel = VERIFY_TYPE_LABELS[type] || 'เอกสาร';
+
+    if (!result || !result.success) {
+        const msg = (result && result.error && result.error.message) || 'ไม่พบเอกสารนี้ในระบบ';
+        box.innerHTML = `
+            <div style="text-align:center;">
+                <i data-lucide="x-circle" style="width:56px;height:56px;color:#ef4444;"></i>
+                <h2 style="margin:12px 0 4px;color:#ef4444;">ไม่สามารถตรวจสอบเอกสารได้</h2>
+                <p style="color:#6b7280;font-size:14px;">${escapeHTML(msg)}</p>
+            </div>`;
+        if (window.lucide) lucide.createIcons();
+        return;
+    }
+
+    const d = result.data || {};
+    let rows = '';
+    if (type === 'claim') {
+        rows = `
+            <div class="vr-row"><span>เลขที่เอกสาร</span><strong>${escapeHTML(d.documentNo || '-')}</strong></div>
+            <div class="vr-row"><span>ชื่อชุดส่งเบิก</span><strong>${escapeHTML(d.title || '-')}</strong></div>
+            <div class="vr-row"><span>เดือน</span><strong>${escapeHTML(d.month || '-')}</strong></div>
+            <div class="vr-row"><span>จำนวนรายการ</span><strong>${d.itemCount ?? '-'}</strong></div>
+            <div class="vr-row"><span>ยอดรวม</span><strong>${(parseFloat(d.totalAmount) || 0).toLocaleString('th-TH', {minimumFractionDigits:2})} บาท</strong></div>
+            <div class="vr-row"><span>สถานะปัจจุบัน</span><strong>${escapeHTML(d.status || '-')}</strong></div>`;
+    } else if (type === 'food') {
+        rows = `
+            <div class="vr-row"><span>เดือน</span><strong>${escapeHTML(d.month || '-')}</strong></div>
+            <div class="vr-row"><span>จำนวนรายการ</span><strong>${d.recordCount ?? '-'}</strong></div>
+            <div class="vr-row"><span>ยอดรวม</span><strong>${(parseFloat(d.totalAmount) || 0).toLocaleString('th-TH', {minimumFractionDigits:2})} บาท</strong></div>`;
+    } else if (type === 'fundreceipt') {
+        rows = `
+            <div class="vr-row"><span>เดือน</span><strong>${escapeHTML(d.month || '-')}</strong></div>
+            <div class="vr-row"><span>จำนวนเงิน</span><strong>${(parseFloat(d.amount) || 0).toLocaleString('th-TH', {minimumFractionDigits:2})} บาท</strong></div>
+            ${d.note ? `<div class="vr-row"><span>หมายเหตุ</span><strong>${escapeHTML(d.note)}</strong></div>` : ''}`;
+    }
+
+    box.innerHTML = `
+        <div style="text-align:center;">
+            <i data-lucide="check-circle-2" style="width:56px;height:56px;color:#10b981;"></i>
+            <h2 style="margin:12px 0 4px;color:#10b981;">ตรวจสอบสำเร็จ</h2>
+            <p style="color:#6b7280;font-size:13px;margin-bottom:20px;">${typeLabel} — ข้อมูลนี้ดึงจากระบบจริงแบบเรียลไทม์</p>
+        </div>
+        <div style="text-align:left;">${rows}</div>
+        <p style="color:#9ca3af;font-size:11px;text-align:center;margin-top:20px;">RDF Expense System — วิทยาลัยการอาชีพแม่สะเรียง</p>`;
+    if (window.lucide) lucide.createIcons();
+}
+
+// ==========================================================================
 // Initialization & Lifecycle
 // ==========================================================================
 document.addEventListener('DOMContentLoaded', () => {
+    if (initVerifyModeIfPresent()) return;
+
     loadState();
     applyLoginBackground();
     initializeLucide();
@@ -630,13 +728,6 @@ function setupEventBindings() {
         await initAppWithAPI();
     });
 
-    // Backup & Restore Events
-    (document.getElementById('btn-backup-export') || {}).addEventListener?.('click', exportBackupJSON);
-    (document.getElementById('btn-backup-import-trigger') || {}).addEventListener?.('click', () => {
-        document.getElementById('input-backup-file').click();
-    });
-    (document.getElementById('input-backup-file') || {}).addEventListener?.('change', importBackupJSON);
-
     // Excel Export Event
     const excelBtn = document.getElementById('btn-export-excel');
     if (excelBtn) excelBtn.addEventListener('click', exportExcelXLSX);
@@ -918,13 +1009,78 @@ function updateFundReceiptWidget() {
                     <div style="font-size:20px; font-weight:700; color:var(--primary);">${(parseFloat(rec.amount) || 0).toLocaleString('th-TH', {minimumFractionDigits:2})} บาท</div>
                     <a href="${rec.fileUrl}" target="_blank" style="font-size:13px;"><i data-lucide="paperclip" style="width:14px;height:14px;vertical-align:middle;"></i> ${escapeHTML(rec.fileName || 'ดูไฟล์แนบ')}</a>
                 </div>
-                <span class="badge" style="background:#10b98122;color:#10b981;">มีเอกสารแล้ว</span>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span class="badge" style="background:#10b98122;color:#10b981;">มีเอกสารแล้ว</span>
+                    <button class="btn btn-outline btn-sm" onclick="exportFundReceiptSlip()" style="display:flex; align-items:center; gap:6px;" title="พิมพ์เอกสารยืนยัน พร้อม QR ตรวจสอบ">
+                        <i data-lucide="printer" style="width:14px;height:14px;"></i> พิมพ์เอกสารยืนยัน
+                    </button>
+                </div>
             </div>`;
     } else {
         body.innerHTML = `<div style="color:var(--text-muted); font-size:13px;">ยังไม่มีเอกสารรับเงินทุนของเดือนนี้</div>`;
     }
     if (window.lucide) lucide.createIcons();
 }
+
+// สร้างเอกสารยืนยันการรับเงินทุน 1 หน้า (สรุป+QR) — ไม่ฝังไฟล์แนบต้นฉบับซ้ำ (ยังเป็นลิงก์แยกเหมือนเดิม)
+async function exportFundReceiptSlip(monthKey) {
+    const month = monthKey || selectedMonthKey();
+    const rec = getFundReceiptByMonth(month);
+    if (!rec) { appAlert('ยังไม่มีเอกสารรับเงินทุนของเดือนนี้'); return; }
+
+    const qrDataUrl = rec.verifyCode ? await generateVerifyQR('fundreceipt', rec.verifyCode) : '';
+    const [ceYear, m] = month.split('-').map(Number);
+    const thYear = ceYear + 543;
+    const monthName = THAI_MONTH_NAMES[m - 1];
+
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>เอกสารยืนยันการรับเงินทุน — ${monthName} ${thYear}</title>
+<style>
+    body { font-family:'Sarabun',sans-serif; padding:32px; color:#111; }
+    .page { max-width:640px; margin:0 auto; }
+    .org-header{text-align:center;border-bottom:2.5px double #111;padding-bottom:14px;margin-bottom:20px;}
+    .org-header .eng-title{font-size:16px;font-weight:700;}
+    .org-header .thai-title{font-size:14px;font-weight:600;margin:4px 0;}
+    .amount-box{border:1.5px solid #334155;border-radius:8px;padding:20px;margin:20px 0;text-align:center;}
+    .amount-box .amount{font-size:28px;font-weight:700;color:#065f46;}
+    .info-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px dashed #ddd;font-size:14px;}
+    .doc-footer{margin-top:32px;display:flex;align-items:center;justify-content:center;gap:12px;font-size:11px;color:#777;}
+    @media print { button { display:none; } }
+</style>
+</head>
+<body onload="window.print();">
+<div class="page">
+    <div class="org-header">
+        <div class="eng-title">DR. ROBERT DYCKERHOFF FOUNDATION</div>
+        <div class="thai-title">มูลนิธิ ดร. โรเบิร์ต ดีคเคอร์ฮอฟฟ์</div>
+        <div style="font-size:12px;color:#444;">เอกสารยืนยันการรับเงินทุนประจำเดือน ${monthName} พ.ศ. ${thYear}</div>
+    </div>
+    <div class="amount-box">
+        <div style="font-size:12px;color:#555;">จำนวนเงินที่รับทั้งหมด</div>
+        <div class="amount">${(parseFloat(rec.amount) || 0).toLocaleString('th-TH', {minimumFractionDigits:2})} บาท</div>
+    </div>
+    <div class="info-row"><span>เดือน</span><span>${monthName} พ.ศ. ${thYear}</span></div>
+    ${rec.note ? `<div class="info-row"><span>หมายเหตุ</span><span>${escapeHTML(rec.note)}</span></div>` : ''}
+    <div class="info-row"><span>ไฟล์แนบต้นฉบับ</span><span>${escapeHTML(rec.fileName || '-')}</span></div>
+    ${qrDataUrl ? `
+    <div class="doc-footer">
+        <img src="${qrDataUrl}" style="width:64px;height:64px;">
+        <div style="text-align:left;">สแกนเพื่อตรวจสอบเอกสารนี้กับระบบ<br>พิมพ์เมื่อ: ${new Date().toLocaleDateString('th-TH', {year:'numeric',month:'long',day:'numeric'})}</div>
+    </div>` : `
+    <div class="doc-footer">พิมพ์เมื่อ: ${new Date().toLocaleDateString('th-TH', {year:'numeric',month:'long',day:'numeric'})}</div>`}
+</div>
+</body></html>`;
+
+    const printWin = window.open('', '_blank', 'width=720,height=800');
+    if (!printWin) {
+        appAlert('กรุณาอนุญาต Popup ในเบราว์เซอร์ก่อนใช้งาน Export PDF');
+        return;
+    }
+    printWin.document.write(html);
+    printWin.document.close();
+}
+window.exportFundReceiptSlip = exportFundReceiptSlip;
 
 function renderFundReceiptFilePreview(existingRec) {
     const el = document.getElementById('fund-receipt-file-preview');
@@ -2892,593 +3048,6 @@ function previewAttachmentFile(expId, idx) {
 }
 
 // ==========================================================================
-// EXPORT OPTIONS MODAL & MULTI-FORMAT
-// ==========================================================================
-async function showExportOptions() {
-    await Swal.fire({
-        title: 'เลือกรูปแบบการ Export',
-        html: `
-            <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 15px;">
-                <button id="swal-btn-pdf" class="btn btn-outline" style="width: 100%; justify-content: flex-start; gap: 10px; border-color: #ef4444; color: #ef4444;">
-                    <i data-lucide="file-text"></i> Export PDF / Print
-                </button>
-                <button id="swal-btn-excel" class="btn btn-outline" style="width: 100%; justify-content: flex-start; gap: 10px; border-color: #10b981; color: #10b981;">
-                    <i data-lucide="file-spreadsheet"></i> Export Excel (.xlsx)
-                </button>
-                <button id="swal-btn-docx" class="btn btn-outline" style="width: 100%; justify-content: flex-start; gap: 10px; border-color: #3b82f6; color: #3b82f6;">
-                    <i data-lucide="file-type-2"></i> Export Word (.docx)
-                </button>
-            </div>
-        `,
-        showConfirmButton: false,
-        showCancelButton: true,
-        cancelButtonText: 'ปิด',
-        didOpen: () => {
-            initializeLucide();
-            (document.getElementById('swal-btn-pdf') || {}).addEventListener?.('click', () => {
-                Swal.close();
-                exportMonthlyClaimSheet();
-            });
-            (document.getElementById('swal-btn-excel') || {}).addEventListener?.('click', () => {
-                Swal.close();
-                exportExcelXLSX();
-            });
-            (document.getElementById('swal-btn-docx') || {}).addEventListener?.('click', () => {
-                Swal.close();
-                exportMonthlyClaimDocx();
-            });
-        }
-    });
-}
-
-function exportMonthlyClaimDocx() {
-    const table = document.getElementById('excel-grid');
-    if (!table) return appAlert('ไม่พบตารางสำหรับส่งออก!');
-    
-    // Using HTML-to-Word approach for best table compatibility
-    const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Export Report</title></head><body><h2 style='text-align:center;'>รายงานรายจ่ายโครงการ</h2><br>";
-    const footer = "</body></html>";
-    const html = header + table.outerHTML + footer;
-
-    const blob = new Blob(['\ufeff', html], { type: 'application/msword' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('A');
-    link.href = url;
-    const dateStr = `${state.selectedYear}-${state.selectedMonth}`;
-    link.download = `rdf_billing_report_${dateStr}.doc`;
-    document.body.appendChild(link);
-    if (navigator.msSaveOrOpenBlob) navigator.msSaveOrOpenBlob(blob, link.download);
-    else link.click();
-    document.body.removeChild(link);
-}
-
-// ==========================================================================
-// PHASE 2: PDF / Print Export (Claim Sheet)
-// ==========================================================================
-function exportMonthlyClaimSheet() {
-    const monthlyExp = state.expenses.filter(e => isDateInSelectedMonth(e.expenseDate));
-    const monthlyAttach = state.attachments.filter(a => isDateInSelectedMonth(a.expenseDate));
-    const totals = calculateTotals();
-    const monthName = THAI_MONTH_NAMES[state.selectedMonth - 1];
-
-    const generatePrintRow = (item, isAttachment = false) => {
-        const parsedNote = parseNoteData(item.note);
-        const amount = item.amount || 0;
-        
-        let rowHtml = `<tr id="print-row-${item.id}">`;
-        
-        // Add check column (visible only on screen)
-        rowHtml += `<td class="col-check no-print text-center" style="width:30px;"><input type="checkbox" class="row-toggle-checkbox" data-row-id="${item.id}" data-project-id="${item.projectId}" checked onchange="togglePrintRow('${item.id}', this.checked)"></td>`;
-        
-        state.columns.forEach(col => {
-            const isVisible = col.visible;
-            const style = isVisible ? '' : 'display:none;';
-            let cellContent = '';
-            let alignClass = '';
-            
-            switch (col.id) {
-                case 'documentNo':
-                    cellContent = item.documentNo || (isAttachment ? '—' : '');
-                    alignClass = 'tc';
-                    break;
-                case 'expenseDate':
-                    cellContent = formatThaiDate(item.expenseDate);
-                    alignClass = 'tc';
-                    break;
-                case 'projectId':
-                    cellContent = getProjectName(item.projectId);
-                    break;
-                case 'categoryId':
-                    cellContent = getCategoryName(item.categoryId);
-                    break;
-                case 'fundSourceId':
-                    cellContent = getFundSourceName(item.fundSourceId);
-                    break;
-                case 'vendorId':
-                    cellContent = isAttachment ? '—' : getVendorName(item.vendorId);
-                    break;
-                case 'description':
-                    let descHTML = item.description;
-                    if (parsedNote.multiItems && parsedNote.multiItems.length > 0) {
-                        descHTML += `<div class="itemized-list" style="margin-top: 4px; font-size: 11px; color: #4b5563; background: #f3f4f6; padding: 4px 8px; border-radius: 4px; border-left: 2px solid #3b82f6;">`;
-                        parsedNote.multiItems.forEach((sub, subIdx) => {
-                            descHTML += `<div style="display: flex; justify-content: space-between; gap: 8px; padding: 2px 0;">
-                                <span>${subIdx + 1}. ${sub.desc}</span>
-                                <span>${sub.qty} × ฿${sub.price.toFixed(2)} = ฿${(sub.qty * sub.price).toFixed(2)}</span>
-                            </div>`;
-                        });
-                        descHTML += `</div>`;
-                    }
-                    if (parsedNote.text) {
-                        descHTML += `<div style="font-size:11px; color:#6b7280; margin-top:2px;">หมายเหตุ: ${parsedNote.text}</div>`;
-                    }
-                    cellContent = descHTML;
-                    break;
-                case 'quantity':
-                    cellContent = isAttachment ? '—' : item.quantity;
-                    alignClass = 'tr';
-                    break;
-                case 'unitPrice':
-                    cellContent = isAttachment ? '—' : `฿${item.unitPrice.toLocaleString('th-TH', {minimumFractionDigits:2})}`;
-                    alignClass = 'tr';
-                    break;
-                case 'amount':
-                    cellContent = `฿${amount.toLocaleString('th-TH', {minimumFractionDigits:2})}`;
-                    alignClass = 'tr bold';
-                    break;
-                case 'claimable':
-                    cellContent = `<span class="${item.claimable ? 'bc' : 'bnc'}">${item.claimable ? 'เบิก' : 'ไม่เบิก'}</span>`;
-                    alignClass = 'tc';
-                    break;
-                case 'attachment':
-                    const hasAttachment = attachmentStore[item.id] ? 'มี' : 'ไม่มี';
-                    cellContent = `<span style="font-size:11px;">${hasAttachment}</span>`;
-                    alignClass = 'tc';
-                    break;
-                default:
-                    if (col.custom) {
-                        cellContent = parsedNote.customFields[col.label] || '-';
-                    }
-                    break;
-            }
-            
-            const extraAttrs = col.id === 'amount' ? `data-amount="${amount}"` : '';
-            rowHtml += `<td class="col-${col.id} ${alignClass}" style="${style}" ${extraAttrs}>${cellContent}</td>`;
-        });
-        
-        rowHtml += `</tr>`;
-        return rowHtml;
-    };
-
-    const expRows = monthlyExp.map(exp => generatePrintRow(exp, false)).join('');
-    
-    // Dynamic colspan for the section headers row
-    const visibleColsCount = state.columns.filter(c => c.visible).length + 1; // +1 for the check column
-    
-    const attachRows = monthlyAttach.length > 0 ? `
-        <tr class="section-row-wrapper"><td colspan="${visibleColsCount}" class="section-row" style="background:#eff6ff; color:#1e40af; font-weight:700; text-align:left; padding:8px 10px; font-size:12px;">📎 รายการบิลแนบ / ค่าสาธารณูปโภค</td></tr>
-        ${monthlyAttach.map(a => generatePrintRow(a, true)).join('')}` : '';
-
-    const carryHTML = totals.carryOver > 0 ? `
-        <div class="carry-banner" id="print-carry-banner">
-            ⚠️ ยอดยกมาจากเดือนก่อน:
-            <strong id="print-carry-banner-total">฿${totals.carryOver.toLocaleString('th-TH', {minimumFractionDigits:2})}</strong>
-            รวมอยู่ในยอดขอเบิกแล้ว
-        </div>` : '';
-
-    const html = `<!DOCTYPE html>
-<html lang="th">
-<head>
-<meta charset="UTF-8">
-<title>ใบขอเบิกเงิน — ${monthName} ${state.selectedYear}</title>
-<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-<style>
-*{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:'Sarabun',sans-serif;font-size:13px;color:#111;background:#fff;}
-.page{max-width:960px;margin:0 auto;padding:16mm 18mm;}
-
-/* Print Setup Panel */
-.no-print {
-    background: #f8fafc;
-    border-bottom: 1px solid #e2e8f0;
-    padding: 16px 24px;
-    font-family: 'Sarabun', sans-serif;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-.no-print button {
-    background: #059669;
-    color: white;
-    border: none;
-    border-radius: 8px;
-    padding: 10px 28px;
-    font-size: 15px;
-    cursor: pointer;
-    font-weight: 700;
-    font-family: 'Sarabun', sans-serif;
-}
-.no-print button:hover { background: #047857; }
-.no-print label {
-    font-size: 13px;
-    color: #334155;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    cursor: pointer;
-}
-.no-print select {
-    padding: 4px 8px;
-    border-radius: 6px;
-    border: 1px solid #cbd5e1;
-    font-family: 'Sarabun', sans-serif;
-    font-size: 13px;
-}
-
-/* Header */
-.org-header{text-align:center;border-bottom:2.5px double #111;padding-bottom:14px;margin-bottom:16px;}
-.org-header .eng-title{font-size:16px;font-weight:700;letter-spacing:.5px;}
-.org-header .thai-title{font-size:14px;font-weight:600;margin:4px 0;}
-.org-header .sub-title{font-size:12px;color:#444;margin-bottom:8px;}
-.org-header .month-badge{
-    display:inline-block;background:#d1fae5;color:#065f46;
-    border:1px solid #6ee7b7;border-radius:6px;
-    padding:4px 18px;font-size:14px;font-weight:700;margin-top:6px;
-}
-
-/* Table */
-table{width:100%;border-collapse:collapse;margin-bottom:14px;font-size:12px;}
-th{background:#1e3a5f;color:white;font-weight:700;padding:8px 7px;border:1px solid #1e3a5f;text-align:center;}
-td{padding:6px 7px;border:1px solid #999;vertical-align:top;}
-tr:nth-child(even) td{background:#f8fafc;}
-.tc{text-align:center;}
-.tr{text-align:right;}
-.bold{font-weight:700;}
-.note{font-size:11px;color:#666;}
-.row-hidden { display: none !important; }
-
-/* Status badges */
-.bc{background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;}
-.bnc{background:#e5e7eb;color:#374151;padding:2px 8px;border-radius:4px;font-size:11px;}
-
-/* Carry over banner */
-.carry-banner{background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:13px;}
-
-/* Totals */
-.totals-box{border:1.5px solid #334155;border-radius:8px;padding:14px 18px;margin:12px 0;}
-.totals-row{display:flex;justify-content:space-between;padding:4px 0;font-size:13px;}
-.totals-row.sub{color:#555;}
-.totals-row.claim{color:#065f46;font-weight:700;border-top:1px dashed #aaa;margin-top:6px;padding-top:8px;}
-.totals-row.grand{font-size:15px;font-weight:700;border-top:2px solid #111;margin-top:6px;padding-top:8px;}
-.thai-baht-text{font-style:italic;color:#444;font-size:12px;margin-top:6px;}
-
-/* Signatures */
-.signatures{display:flex;justify-content:space-around;margin-top:52px;text-align:center;}
-.sig-box{width:28%;}
-.sig-line{height:52px;border-bottom:1px solid #111;margin-bottom:8px;}
-.sig-label{font-weight:700;font-size:13px;}
-.sig-sub{font-size:11px;color:#666;margin-top:4px;}
-.date-line{font-size:11px;color:#444;margin-top:8px;}
-
-/* Footer */
-.doc-footer{text-align:center;margin-top:24px;font-size:11px;color:#888;border-top:1px solid #ddd;padding-top:10px;}
-
-@media print{
-    .no-print{display:none!important;}
-    @page{size:A4;margin:10mm 12mm;}
-    body{font-size:11px;}
-    th{background:#1e3a5f!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
-    .bc,.bnc{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
-    .section-row{background:#eff6ff!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
-    .col-check { display: none !important; }
-}
-</style>
-</head>
-<body>
-<div class="no-print">
-    <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h4 style="margin:0; font-size:16px; color:#1e293b; font-weight:700;">⚙️ ตั้งค่าและควบคุมการพิมพ์รายงาน A4</h4>
-        <div style="display:flex; gap: 8px;">
-            <button onclick="window.print()" style="background:#ef4444; color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:bold; font-family:'Sarabun',sans-serif;">🖨️ PDF / Print</button>
-            <button onclick="exportExcel()" style="background:#10b981; color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:bold; font-family:'Sarabun',sans-serif;">📊 Excel (.xlsx)</button>
-            <button onclick="exportWord()" style="background:#3b82f6; color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:bold; font-family:'Sarabun',sans-serif;">📄 Word (.docx)</button>
-        </div>
-    </div>
-    <div style="display:flex; flex-wrap:wrap; gap:10px 16px; padding:8px 0; border-top:1px solid #e2e8f0; border-bottom:1px solid #e2e8f0;">
-        <span style="font-weight:600; font-size:13px; color:#475569;">แสดงคอลัมน์:</span>
-        ${state.columns.map(col => `
-            <label>
-                <input type="checkbox" class="col-filter-checkbox" data-col-id="${col.id}" ${col.visible ? 'checked' : ''} onchange="togglePrintColumn('${col.id}', this.checked)">
-                ${col.label}
-            </label>
-        `).join('')}
-    </div>
-    <div style="display:flex; flex-wrap:wrap; gap:24px; align-items:center;">
-        <label>
-            <input type="checkbox" checked onchange="document.querySelector('.signatures').style.display = this.checked ? 'flex' : 'none'">
-            แสดงกล่องลงนามท้ายรายงาน
-        </label>
-        <label>
-            <input type="checkbox" checked onchange="toggleAllRows(this.checked)">
-            เลือกทั้งหมด / ยกเลิกทั้งหมด (แถว)
-        </label>
-        <label style="gap:8px;">
-            <span>ตัวกรองโครงการ:</span>
-            <select id="print-project-filter" onchange="filterPrintRowsByProject(this.value)">
-                <option value="all">แสดงทุกโครงการ</option>
-                ${state.projects.filter(p => p.active).map(p => `<option value="${p.id}">${p.name}</option>`).join('')}
-            </select>
-        </label>
-        <label style="gap:8px;">
-            <span>การคำนวณ:</span>
-            <select id="print-calc-mode" onchange="recalculatePrintTotals()">
-                <option value="all" ${state.calculationMode === 'all' ? 'selected' : ''}>ทั้งหมด</option>
-                <option value="claim" ${state.calculationMode === 'claim' ? 'selected' : ''}>เฉพาะเบิกมูลนิธิ</option>
-                <option value="no-claim" ${state.calculationMode === 'no-claim' ? 'selected' : ''}>เฉพาะไม่เบิก</option>
-            </select>
-        </label>
-    </div>
-</div>
-
-<input type="hidden" id="carry-over-amount" value="${totals.carryOver}">
-
-<div class="page">
-    <div class="org-header">
-        <div class="eng-title">DR. ROBERT DYCKERHOFF FOUNDATION</div>
-        <div class="thai-title">มูลนิธิ ดร. โรเบิร์ต ดีคเคอร์ฮอฟฟ์</div>
-        <div class="sub-title">Expense Reimbursement Report / ใบขอเบิกค่าใช้จ่าย</div>
-        <div class="sub-title">วิทยาลัยการอาชีพแม่สะเรียง (Mae Sariang ICEC)</div>
-        <div class="month-badge">ประจำเดือน ${monthName} พ.ศ. ${state.selectedYear}</div>
-    </div>
-
-    ${carryHTML}
-
-    <table>
-        <thead>
-            <tr>
-                <th class="col-check no-print" style="width:30px;"><input type="checkbox" checked onchange="toggleAllRows(this.checked)"></th>
-                ${state.columns.map(col => `<th class="col-${col.id}" style="${col.visible ? '' : 'display:none;'}">${col.label}</th>`).join('')}
-            </tr>
-        </thead>
-        <tbody>
-            ${expRows || '<tr><td colspan="13" class="tc" style="padding:16px;color:#666;">ไม่มีรายการบิลในเดือนนี้</td></tr>'}
-            ${attachRows}
-        </tbody>
-    </table>
-
-    <div class="totals-box">
-        <div class="totals-row sub">
-            <span>ยอดรายจ่ายเดือนนี้ (ก่อนยกมา):</span>
-            <span id="print-active-total">฿${totals.activeTotal.toLocaleString('th-TH', {minimumFractionDigits:2})}</span>
-        </div>
-        ${totals.carryOver > 0 ? `
-        <div class="totals-row sub">
-            <span>+ ยอดยกมาจากเดือนก่อน:</span>
-            <span id="print-carry-total">฿${totals.carryOver.toLocaleString('th-TH', {minimumFractionDigits:2})}</span>
-        </div>` : ''}
-        <div class="totals-row claim">
-            <span>✅ ยอดขอเบิกจากมูลนิธิ:</span>
-            <span id="print-claimable-total">฿${totals.totalClaimable.toLocaleString('th-TH', {minimumFractionDigits:2})}</span>
-        </div>
-        <div class="totals-row sub">
-            <span>❌ ยอดไม่ขอเบิกจากมูลนิธิ:</span>
-            <span id="print-non-claimable-total">฿${totals.totalNonClaimable.toLocaleString('th-TH', {minimumFractionDigits:2})}</span>
-        </div>
-        <div class="totals-row grand">
-            <span>ยอดรวมสุทธิ (ทั้งหมด):</span>
-            <span id="print-grand-total">฿${totals.grandTotal.toLocaleString('th-TH', {minimumFractionDigits:2})}</span>
-        </div>
-        <div class="thai-baht-text" id="print-thai-baht-text">( ${thaiBahtText(totals.totalClaimable)} )</div>
-    </div>
-
-    <div class="signatures">
-        <div class="sig-box">
-            <div class="sig-line" style="display:flex; justify-content:center; align-items:center; height:52px; border-bottom:1px solid #111; margin-bottom:8px;">
-                ${(state.signatures && state.signatures.prepared) ? `<img src="${state.signatures.prepared}" class="sig-image-rendered" style="max-height:48px; max-width:120px; object-fit:contain;" />` : ''}
-            </div>
-            <div class="sig-label">ผู้จัดทำ / Prepared By</div>
-            <div class="sig-sub">............................................</div>
-            <div class="date-line">วันที่ ............/............/.............</div>
-        </div>
-        <div class="sig-box">
-            <div class="sig-line" style="display:flex; justify-content:center; align-items:center; height:52px; border-bottom:1px solid #111; margin-bottom:8px;">
-                ${(state.signatures && state.signatures.checked) ? `<img src="${state.signatures.checked}" class="sig-image-rendered" style="max-height:48px; max-width:120px; object-fit:contain;" />` : ''}
-            </div>
-            <div class="sig-label">ผู้ตรวจสอบ / Checked By</div>
-            <div class="sig-sub">............................................</div>
-            <div class="date-line">วันที่ ............/............/.............</div>
-        </div>
-        <div class="sig-box">
-            <div class="sig-line" style="display:flex; justify-content:center; align-items:center; height:52px; border-bottom:1px solid #111; margin-bottom:8px;">
-                ${(state.signatures && state.signatures.approved) ? `<img src="${state.signatures.approved}" class="sig-image-rendered" style="max-height:48px; max-width:120px; object-fit:contain;" />` : ''}
-            </div>
-            <div class="sig-label">ผู้อนุมัติ / Approved By</div>
-            <div class="sig-sub">............................................</div>
-            <div class="date-line">วันที่ ............/............/.............</div>
-        </div>
-    </div>
-
-    <div class="doc-footer">
-        สร้างโดย: ระบบบันทึกรายจ่าย RDF — วก.แม่สะเรียง &bull;
-        พิมพ์เมื่อ: ${new Date().toLocaleDateString('th-TH', {year:'numeric',month:'long',day:'numeric'})}
-    </div>
-</div>
-
-<script>
-${thaiBahtText.toString()}
-${convertSection.toString()}
-
-function togglePrintColumn(colId, visible) {
-    const cells = document.querySelectorAll('.col-' + colId);
-    cells.forEach(c => {
-        c.style.display = visible ? '' : 'none';
-    });
-    updateSectionRowColspan();
-}
-
-function filterPrintRowsByProject(projectId) {
-    const checkboxes = document.querySelectorAll('.row-toggle-checkbox');
-    checkboxes.forEach(cb => {
-        const rowId = cb.getAttribute('data-row-id');
-        const rowProjId = cb.getAttribute('data-project-id');
-        const matches = (projectId === 'all') || (rowProjId === projectId);
-        cb.checked = matches;
-        togglePrintRow(rowId, matches, false);
-    });
-    recalculatePrintTotals();
-}
-
-function updateSectionRowColspan() {
-    const ths = Array.from(document.querySelectorAll('thead th'));
-    const visibleCount = ths.filter(th => th.style.display !== 'none').length;
-    const sectionRow = document.querySelector('.section-row');
-    if (sectionRow) {
-        sectionRow.colSpan = visibleCount;
-    }
-}
-
-function togglePrintRow(rowId, checked, triggerRecalc = true) {
-    const row = document.getElementById('print-row-' + rowId);
-    if (row) {
-        if (checked) {
-            row.classList.remove('row-hidden');
-        } else {
-            row.classList.add('row-hidden');
-        }
-    }
-    if (triggerRecalc) {
-        recalculatePrintTotals();
-    }
-}
-
-function toggleAllRows(checked) {
-    const checkboxes = document.querySelectorAll('.row-toggle-checkbox');
-    checkboxes.forEach(cb => {
-        cb.checked = checked;
-        const rowId = cb.getAttribute('data-row-id');
-        togglePrintRow(rowId, checked, false);
-    });
-    recalculatePrintTotals();
-}
-
-function recalculatePrintTotals() {
-    let totalClaimable = 0;
-    let totalNonClaimable = 0;
-    
-    const rows = document.querySelectorAll('tbody tr:not(.section-row-wrapper):not(.row-hidden)');
-    rows.forEach(row => {
-        const amountCell = row.querySelector('.col-amount');
-        if (!amountCell) return;
-        const amount = parseFloat(amountCell.getAttribute('data-amount')) || 0;
-        
-        const typeCell = row.querySelector('.col-claimable');
-        const isClaim = typeCell && (typeCell.querySelector('.bc') || typeCell.textContent.includes('เบิก'));
-        if (isClaim) {
-            totalClaimable += amount;
-        } else {
-            totalNonClaimable += amount;
-        }
-    });
-    
-    const carryOver = parseFloat(document.getElementById('carry-over-amount').value) || 0;
-    const displayClaimable = totalClaimable + carryOver;
-    const activeTotal = totalClaimable + totalNonClaimable;
-    
-    // Mode calculation
-    const mode = document.getElementById('print-calc-mode').value;
-    let finalClaimable = 0;
-    let finalNonClaimable = 0;
-    let finalGrand = 0;
-    
-    if (mode === 'claim') {
-        finalClaimable = displayClaimable;
-        finalNonClaimable = 0;
-        finalGrand = finalClaimable;
-    } else if (mode === 'no-claim') {
-        finalClaimable = 0;
-        finalNonClaimable = totalNonClaimable;
-        finalGrand = finalNonClaimable;
-    } else {
-        finalClaimable = displayClaimable;
-        finalNonClaimable = totalNonClaimable;
-        finalGrand = finalClaimable + finalNonClaimable;
-    }
-    
-    const activeTotalEl = document.getElementById('print-active-total');
-    const carryOverEl = document.getElementById('print-carry-total');
-    const claimableEl = document.getElementById('print-claimable-total');
-    const nonClaimableEl = document.getElementById('print-non-claimable-total');
-    const grandEl = document.getElementById('print-grand-total');
-    
-    if (activeTotalEl) activeTotalEl.textContent = '฿' + activeTotal.toLocaleString('th-TH', {minimumFractionDigits:2});
-    if (carryOverEl) carryOverEl.textContent = '฿' + carryOver.toLocaleString('th-TH', {minimumFractionDigits:2});
-    if (claimableEl) claimableEl.textContent = '฿' + finalClaimable.toLocaleString('th-TH', {minimumFractionDigits:2});
-    if (nonClaimableEl) nonClaimableEl.textContent = '฿' + finalNonClaimable.toLocaleString('th-TH', {minimumFractionDigits:2});
-    if (grandEl) grandEl.textContent = '฿' + finalGrand.toLocaleString('th-TH', {minimumFractionDigits:2});
-    
-    // Recalculate banner text too
-    const banner = document.getElementById('print-carry-banner');
-    if (banner) {
-        banner.style.display = (carryOver > 0 && mode !== 'no-claim') ? 'block' : 'none';
-    }
-    
-    const thaiTextEl = document.getElementById('print-thai-baht-text');
-    if (thaiTextEl) {
-        thaiTextEl.textContent = '( ' + thaiBahtText(finalClaimable) + ' )';
-    }
-}
-
-function exportExcel() {
-    const table = document.querySelector('table');
-    if (!table) return alert('ไม่พบตาราง');
-    const clone = table.cloneNode(true);
-    const checks = clone.querySelectorAll('.col-check');
-    checks.forEach(c => c.remove());
-    const hiddenRows = clone.querySelectorAll('.row-hidden');
-    hiddenRows.forEach(c => c.remove());
-    
-    const wb = XLSX.utils.table_to_book(clone, { raw: true });
-    XLSX.writeFile(wb, 'rdf_report_${state.selectedYear}_${state.selectedMonth}.xlsx');
-}
-
-function exportWord() {
-    const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Export Report</title></head><body>";
-    const footer = "</body></html>";
-    const clone = document.body.cloneNode(true);
-    const noPrint = clone.querySelector('.no-print');
-    if (noPrint) noPrint.remove();
-    const checks = clone.querySelectorAll('.col-check');
-    checks.forEach(c => c.remove());
-    const hiddenRows = clone.querySelectorAll('.row-hidden');
-    hiddenRows.forEach(c => c.remove());
-
-    const htmlStr = header + clone.innerHTML + footer;
-    const blob = new Blob(['\ufeff', htmlStr], { type: 'application/msword' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('A');
-    link.href = url;
-    link.download = 'rdf_report_${state.selectedYear}_${state.selectedMonth}.doc';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-}
-
-</script>
-</body>
-</html>`;
-
-    const printWin = window.open('', '_blank', 'width=960,height=720');
-    if (!printWin) {
-        appAlert('กรุณาอนุญาต Popup ในเบราว์เซอร์ก่อนใช้งาน Export PDF');
-        return;
-    }
-    printWin.document.write(html);
-    printWin.document.close();
-}
-
-
-// ==========================================================================
 // Phase 3.5: Custom Columns, Note Parsing & Inline Adding Helper Functions
 // ==========================================================================
 
@@ -4363,68 +3932,6 @@ function saveMultiItems() {
 
 
 // ==========================================================================
-// Backup & Restore JSON (Phase 2)
-// ==========================================================================
-function exportBackupJSON() {
-    const backupData = {
-        schemaVersion: 4.1,
-        backupDate: new Date().toISOString(),
-        state: state,
-        attachmentStore: attachmentStore
-    };
-    
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(backupData, null, 2));
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute("href", dataStr);
-    
-    const dateStr = new Date().toISOString().split('T')[0];
-    downloadAnchor.setAttribute("download", `rdf_billing_backup_${dateStr}.json`);
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
-    
-    appAlert("ดาวน์โหลดไฟล์สำรองข้อมูลเรียบร้อยแล้ว!");
-}
-
-function importBackupJSON(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-    
-    const reader = new FileReader();
-    reader.onload = async function(e) {
-        try {
-            const data = JSON.parse(e.target.result);
-            if (!data.state || !data.state.expenses) {
-                throw new Error("โครงสร้างไฟล์สำรองข้อมูลไม่ถูกต้อง");
-            }
-            
-            if (await appConfirm("คุณต้องการกู้คืนข้อมูลจากไฟล์นี้ใช่หรือไม่? การทำงานนี้จะเขียนทับข้อมูลทั้งหมดที่คุณมีอยู่ในเครื่องนี้!")) {
-                state = data.state;
-                const defaults = getDefaultState();
-                if (!state.projects) state.projects = defaults.projects;
-                if (!state.categories) state.categories = defaults.categories;
-                if (!state.vendors) state.vendors = defaults.vendors;
-                if (!state.fundSources) state.fundSources = defaults.fundSources;
-                if (!state.claims) state.claims = [];
-                if (!state.signatures) state.signatures = { prepared: null, checked: null, approved: null };
-                
-                if (data.attachmentStore) {
-                    attachmentStore = data.attachmentStore;
-                    localStorage.setItem('rdf_attachments_v4', JSON.stringify(attachmentStore));
-                }
-                
-                saveState();
-                appAlert("กู้คืนข้อมูลสำเร็จ! ระบบจะทำการรีโหลดหน้าเว็บ");
-                window.location.reload();
-            }
-        } catch (err) {
-            appAlert("เกิดข้อผิดพลาดในการนำเข้าข้อมูล: " + err.message);
-        }
-    };
-    reader.readAsText(file);
-}
-
-// ==========================================================================
 // Excel Export XLSX (Phase 2)
 // ==========================================================================
 function exportExcelXLSX() {
@@ -4882,9 +4389,11 @@ async function deleteClaimPackage(claimId) {
     }
 }
 
-function exportClaimPDF(claimId) {
+async function exportClaimPDF(claimId) {
     const claim = state.claims.find(c => c.id === claimId);
     if (!claim) return appAlert("ไม่พบชุดส่งเบิกนี้!");
+
+    const claimQrDataUrl = claim.verifyCode ? await generateVerifyQR('claim', claim.verifyCode) : '';
 
     const [claimYearCE, claimMonthNum] = (claim.claimMonth || '').split('-').map(Number);
     const claimYearBE = claimYearCE + 543;
@@ -5065,10 +4574,19 @@ tr:nth-child(even) td{background:#f8fafc;}
         </div>
     </div>
 
+    ${claimQrDataUrl ? `
+    <div class="doc-footer" style="display:flex; align-items:center; justify-content:center; gap:12px;">
+        <img src="${claimQrDataUrl}" style="width:64px; height:64px; flex-shrink:0;">
+        <div style="text-align:left;">
+            สแกนเพื่อตรวจสอบเอกสารนี้กับระบบ<br>
+            สร้างโดย: ระบบบันทึกรายจ่าย RDF — วก.แม่สะเรียง &bull;
+            พิมพ์เมื่อ: ${new Date().toLocaleDateString('th-TH', {year:'numeric',month:'long',day:'numeric'})}
+        </div>
+    </div>` : `
     <div class="doc-footer">
         สร้างโดย: ระบบบันทึกรายจ่าย RDF — วก.แม่สะเรียง &bull;
         พิมพ์เมื่อ: ${new Date().toLocaleDateString('th-TH', {year:'numeric',month:'long',day:'numeric'})}
-    </div>
+    </div>`}
 </div>
 </body>
 </html>`;
@@ -5422,7 +4940,7 @@ function buildDynamicExportDictionary(context) {
                 { id: 'status', label: 'สถานะ', default: true, type: 'status' }
             ]
         };
-    } else if (context === 'food-expenses' || context === 'food') {
+    } else if (context === 'food-expenses' || context === 'food' || context === 'food-overview') {
          dictionary['food'] = {
             label: 'ค่าอาหารประจำเดือน',
             getData: () => state.foodExpenses,
@@ -5454,6 +4972,18 @@ function buildDynamicExportDictionary(context) {
                 { id: 'approver', label: 'ผู้อนุมัติ', default: true },
                 { id: 'status', label: 'สถานะ', default: true, type: 'status' },
                 { id: 'note', label: 'หมายเหตุ', default: true }
+            ]
+         };
+    } else if (context === 'fund-receipts') {
+         dictionary['fundReceipts'] = {
+            label: 'เอกสารรับเงินทุนประจำเดือน',
+            getData: () => state.fundReceipts,
+            fields: [
+                { id: 'month', label: 'เดือน', default: true },
+                { id: 'amount', label: 'จำนวนเงิน', default: true, type: 'currency' },
+                { id: 'note', label: 'หมายเหตุ', default: true },
+                { id: 'fileName', label: 'ชื่อไฟล์แนบ', default: true },
+                { id: 'createdAt', label: 'วันที่บันทึก', default: false, type: 'date' }
             ]
          };
     } else if (context === 'spreadsheet-view') {
@@ -6449,13 +5979,24 @@ window.renderFoodOverview = function() {
     if (totalEl) totalEl.textContent = total.toLocaleString('th-TH', {minimumFractionDigits:2}) + ' บาท';
 };
 
-window.exportFoodPDF = function() {
+window.exportFoodPDF = async function() {
     const selectedMonth = (document.getElementById('food-overview-month') || {}).value; // YYYY-MM
     let data = state.foodExpenses || [];
     if (selectedMonth) {
         data = data.filter(item => item.date && item.date.startsWith(selectedMonth));
     }
     data.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    // QR ตรวจสอบย้อนกลับผูกกับ "เดือน" (ไม่ใช่รายการเดียว เพราะรายงานนี้รวมหลายรายการ) — ต้องเลือกเดือนก่อนถึงจะมี QR ได้
+    let foodQrDataUrl = '';
+    if (selectedMonth) {
+        try {
+            const res = await apiCall('getFoodMonthVerifyCode', { month: selectedMonth });
+            if (res && res.code) foodQrDataUrl = await generateVerifyQR('food', res.code);
+        } catch (err) {
+            console.error('สร้าง QR ตรวจสอบไม่สำเร็จ:', err);
+        }
+    }
 
     let total = 0;
     const rows = data.length
@@ -6513,7 +6054,8 @@ window.exportFoodPDF = function() {
             </tr>
         </tfoot>
     </table>
-    <div class="doc-footer">
+    <div class="doc-footer" style="${foodQrDataUrl ? 'display:flex; align-items:center; justify-content:flex-end; gap:10px;' : ''}">
+        ${foodQrDataUrl ? `<img src="${foodQrDataUrl}" style="width:56px; height:56px;"><span>สแกนเพื่อตรวจสอบเอกสารนี้กับระบบ &bull; </span>` : ''}
         สร้างโดย: ระบบบันทึกรายจ่าย RDF &bull; พิมพ์เมื่อ: ${new Date().toLocaleDateString('th-TH', {year:'numeric',month:'long',day:'numeric'})}
     </div>
 </body></html>`;
@@ -6994,116 +6536,16 @@ document.addEventListener('DOMContentLoaded', () => {
     updateFundReceiptWidget();
 });
 
-/* ==========================================================================
-   Export Bills Modal - Open / Close / Execute
-   ========================================================================== */
-// [REMOVED: openExportModal override that pointed to wrong modal-export-bills]
-
-window.updateExportBillsCounts = function () {
-    const monthInput = document.getElementById('export-bills-month');
-    if (!monthInput || !monthInput.value) return;
-
-    const [ceYear, month] = monthInput.value.split('-').map(Number);
-    const thYear = ceYear + 543;
-
-    // Try to get counts from existing rendered tables
-    const billsTable = document.getElementById('full-bills-table');
-    const foodTable = document.getElementById('food-bills-table');
-    const attachTable = document.getElementById('attached-bills-table');
-
-    const countRows = (table) => {
-        if (!table) return 0;
-        const rows = table.querySelectorAll('tbody tr');
-        return Array.from(rows).filter(r => !r.querySelector('td[colspan]')).length;
-    };
-
-    const billsCount = countRows(billsTable);
-    const foodCount = countRows(foodTable);
-    const attachCount = countRows(attachTable);
-
-    const billsChk = document.getElementById('export-chk-bills');
-    const foodChk = document.getElementById('export-chk-food');
-    const attachChk = document.getElementById('export-chk-attach');
-
-    document.getElementById('export-bills-count').textContent = billsCount + ' รายการ';
-    document.getElementById('export-food-count').textContent = foodCount + ' รายการ';
-    document.getElementById('export-attach-count').textContent = attachCount + ' รายการ';
-
-    const total = (billsChk?.checked ? billsCount : 0) +
-                  (foodChk?.checked ? foodCount : 0) +
-                  (attachChk?.checked ? attachCount : 0);
-    document.getElementById('export-total-count').textContent = total;
-
-    // Update toggles on checkbox change
-    ['export-chk-bills','export-chk-food','export-chk-attach'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.onchange = updateExportBillsTotalCount;
-    });
-};
-
-window.updateExportBillsTotalCount = function () {
-    const billsChk = document.getElementById('export-chk-bills');
-    const foodChk = document.getElementById('export-chk-food');
-    const attachChk = document.getElementById('export-chk-attach');
-
-    const billsCount = parseInt(document.getElementById('export-bills-count').textContent) || 0;
-    const foodCount = parseInt(document.getElementById('export-food-count').textContent) || 0;
-    const attachCount = parseInt(document.getElementById('export-attach-count').textContent) || 0;
-
-    const total = (billsChk?.checked ? billsCount : 0) +
-                  (foodChk?.checked ? foodCount : 0) +
-                  (attachChk?.checked ? attachCount : 0);
-    document.getElementById('export-total-count').textContent = total;
-};
-
-window.executeBillsExport = function () {
-    const format = document.getElementById('export-bills-format')?.value || 'excel';
-    const includeBills = document.getElementById('export-chk-bills')?.checked;
-    const includeFood = document.getElementById('export-chk-food')?.checked;
-    const includeAttach = document.getElementById('export-chk-attach')?.checked;
-
-    if (!includeBills && !includeFood && !includeAttach) {
-        if (typeof showToast === 'function') showToast('กรุณาเลือกอย่างน้อย 1 หัวข้อ', 'error');
-        return;
-    }
-
-    if (format === 'pdf') {
-        // Open the existing PDF export modal if available
-        if (typeof openExportPdfModal === 'function') {
-            closeBillsExportModal();
-            openExportPdfModal();
-        } else {
-            window.print();
-        }
-    } else if (format === 'excel' && typeof executeDynamicExport === 'function') {
-        closeBillsExportModal();
-        executeDynamicExport('excel');
-    } else if (format === 'csv' && typeof executeDynamicExport === 'function') {
-        closeBillsExportModal();
-        executeDynamicExport('csv');
-    } else {
-        if (typeof showToast === 'function') showToast('ฟีเจอร์ส่งออกกำลังพัฒนา', 'info');
-    }
-};
-
 // closeExportModal — single source of truth. Defined at top level (not inside a
 // DOMContentLoaded wrapper) because other DOMContentLoaded listeners registered
 // earlier in this file reference it directly and would fire before a later
-// wrapper's assignment ran, throwing "closeBillsExportModal is not defined".
+// wrapper's assignment ran, throwing "is not defined".
 window.closeExportModal = function() {
     const modal = document.getElementById('modal-export-pdf');
     if (modal) {
         modal.classList.remove('active');
         modal.style.display = '';   // ← always clear inline style
     }
-};
-
-// closeBillsExportModal — fix to close the correct modal
-window.closeBillsExportModal = function() {
-    const m1 = document.getElementById('modal-export-bills');
-    const m2 = document.getElementById('modal-export-pdf');
-    if (m1) { m1.classList.remove('active'); m1.style.display = ''; }
-    if (m2) { m2.classList.remove('active'); m2.style.display = ''; }
 };
 
 // updateExportSectionBadges helper
@@ -7124,30 +6566,6 @@ window.updateExportSectionBadges = function() {
         if (el) el.textContent = n + ' รายการ';
     });
 };
-
-// Style section toggle rows
-document.addEventListener('DOMContentLoaded', () => {
-    // Close modal-export-bills
-    const closeBtn = document.getElementById('modal-export-bills-close');
-    if (closeBtn) closeBtn.addEventListener('click', closeBillsExportModal);
-
-    // Highlight checked section rows
-    ['export-chk-bills','export-chk-food','export-chk-attach'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) {
-            const row = el.closest('.export-section-toggle');
-            const syncStyle = () => {
-                if (row) {
-                    row.style.borderColor = el.checked ? 'var(--primary)' : 'var(--border-color)';
-                    row.style.background = el.checked ? 'var(--primary-light)' : '';
-                }
-                updateExportBillsTotalCount();
-            };
-            el.addEventListener('change', syncStyle);
-            syncStyle();
-        }
-    });
-});
 
 /* ==========================================================================
    Export Modal — Enhanced Logic

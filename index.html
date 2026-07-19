@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
@@ -77,7 +78,18 @@
     <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
-<div class="app-container">
+
+<!-- Public Document Verification View (สแกน QR แล้วมาที่นี่ — ไม่ต้อง login) -->
+<div id="verify-result-view" style="display:none; min-height:100vh; align-items:center; justify-content:center; background:var(--bg-main); padding:20px;">
+    <div id="verify-result-box" style="background:var(--surface-solid); border:1px solid var(--border-color); border-radius:16px; padding:32px; max-width:420px; width:100%; box-shadow:0 10px 30px rgba(0,0,0,0.08);">
+        <div style="text-align:center;">
+            <i data-lucide="loader" style="width:40px;height:40px;color:var(--primary);"></i>
+            <p style="color:var(--text-secondary); margin-top:12px;">กำลังตรวจสอบเอกสาร...</p>
+        </div>
+    </div>
+</div>
+
+<div class="app-container" id="app-shell">
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
     <!-- Sidebar Navigation -->
     <aside class="sidebar">
@@ -2133,77 +2145,6 @@
     </div>
 </div>
 
-<!-- ===================================================
-     MODAL: Export Report (Bills Table)
-===================================================== -->
-<div class="modal-overlay" id="modal-export-bills">
-    <div class="modal-card" style="max-width:560px;">
-        <header class="modal-header">
-            <div>
-                <h3 class="modal-title">📊 ส่งออกรายงาน</h3>
-                <div style="font-size:12px; color:var(--text-muted); margin-top:4px;" id="export-month-label">เลือกข้อมูลที่ต้องการส่งออก</div>
-            </div>
-            <button class="modal-close" id="modal-export-bills-close"><i data-lucide="x"></i></button>
-        </header>
-        <div class="modal-body">
-            <!-- Section selector -->
-            <div style="margin-bottom:20px;">
-                <label class="form-label" style="margin-bottom:10px; display:block; font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-secondary);">เลือกหัวข้อที่ต้องการส่งออก</label>
-                <div style="display:flex; flex-direction:column; gap:10px;">
-                    <label class="export-section-toggle" style="display:flex; align-items:center; gap:12px; padding:12px 16px; border:1px solid var(--border-color); border-radius:10px; cursor:pointer; transition:all 0.2s;" id="toggle-bills-main">
-                        <input type="checkbox" id="export-chk-bills" checked style="width:16px; height:16px; cursor:pointer; accent-color:var(--primary);">
-                        <div>
-                            <div style="font-weight:600; font-size:14px;">📄 รายการบิลประจำเดือน</div>
-                            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;" id="export-bills-count">กำลังนับ...</div>
-                        </div>
-                    </label>
-                    <label class="export-section-toggle" style="display:flex; align-items:center; gap:12px; padding:12px 16px; border:1px solid var(--border-color); border-radius:10px; cursor:pointer; transition:all 0.2s;" id="toggle-food">
-                        <input type="checkbox" id="export-chk-food" checked style="width:16px; height:16px; cursor:pointer; accent-color:var(--primary);">
-                        <div>
-                            <div style="font-weight:600; font-size:14px;">🍽️ รายการค่าอาหาร</div>
-                            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;" id="export-food-count">กำลังนับ...</div>
-                        </div>
-                    </label>
-                    <label class="export-section-toggle" style="display:flex; align-items:center; gap:12px; padding:12px 16px; border:1px solid var(--border-color); border-radius:10px; cursor:pointer; transition:all 0.2s;" id="toggle-attach">
-                        <input type="checkbox" id="export-chk-attach" checked style="width:16px; height:16px; cursor:pointer; accent-color:var(--primary);">
-                        <div>
-                            <div style="font-weight:600; font-size:14px;">📎 รายการบิลแนบ / ค่าสาธารณูปโภค</div>
-                            <div style="font-size:11px; color:var(--text-muted); margin-top:2px;" id="export-attach-count">กำลังนับ...</div>
-                        </div>
-                    </label>
-                </div>
-            </div>
-
-            <!-- Month & Format options -->
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:20px;">
-                <div class="form-group">
-                    <label class="form-label">เดือน / ปี ที่ส่งออก</label>
-                    <input type="month" id="export-bills-month" class="form-input" onchange="updateExportBillsCounts()">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">รูปแบบไฟล์</label>
-                    <select id="export-bills-format" class="form-select" style="width:100%;">
-                        <option value="excel">📊 Excel (.xlsx)</option>
-                        <option value="csv">📄 CSV</option>
-                        <option value="pdf">🖨️ PDF / พิมพ์</option>
-                    </select>
-                </div>
-            </div>
-
-            <!-- Summary counts -->
-            <div style="background:var(--bg-main); border-radius:10px; padding:12px 16px; font-size:13px; color:var(--text-secondary);">
-                <i data-lucide="info" style="width:14px; height:14px; vertical-align:middle; margin-right:4px;"></i>
-                รวมรายการที่จะส่งออก: <strong id="export-total-count" style="color:var(--primary);">0</strong> รายการ
-            </div>
-        </div>
-        <footer class="modal-footer">
-            <button type="button" class="btn btn-secondary" onclick="closeBillsExportModal()">ยกเลิก</button>
-            <button type="button" class="btn btn-primary" onclick="executeBillsExport()" style="display:flex; align-items:center; gap:8px;">
-                <i data-lucide="download" style="width:16px; height:16px;"></i> ส่งออก
-            </button>
-        </footer>
-    </div>
-</div>
 </body>
 </html>
 

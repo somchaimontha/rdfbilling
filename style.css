@@ -2126,3 +2126,25 @@ table.table tbody tr:hover {
 .settings-tab-panel {
     animation: fadeIn 0.25s ease;
 }
+
+/* ==========================================================================
+   Public Document Verification View (QR scan result)
+   ========================================================================== */
+.vr-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px dashed var(--border-color);
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.vr-row:last-child {
+    border-bottom: none;
+}
+
+.vr-row strong {
+    color: var(--text-primary);
+    text-align: right;
+}
