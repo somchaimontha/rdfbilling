@@ -5480,7 +5480,7 @@ function openUserProfileModal() {
     if (!userJson) return;
     const user = JSON.parse(userJson);
     
-    document.getElementById('profile-modal-avatar-preview').src = user.avatar || 'https://ui-avatars.com/api/?name=' + encodeURIComponent(user.username) + '&background=random';
+    document.getElementById('profile-modal-avatar-preview').src = user.avatar || 'https://ui-avatars.com/api/?name=' + encodeURIComponent(user.name || user.username || user.id || 'User') + '&background=random';
     (document.getElementById('profile-modal-email') || {}).value = user.email || '';
     (document.getElementById('profile-modal-password') || {}).value = '';
     (document.getElementById('profile-modal-avatar') || {}).value = '';
