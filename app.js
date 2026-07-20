@@ -7042,7 +7042,15 @@ window.closeFoodExpenseModal = function() {
 };
 
 window.saveSecureSetting = async function(key, value) {
-    if (!value) return;
+    if (!value) {
+        appAlert('กรุณากรอกค่าก่อนบันทึก', 'error');
+        return;
+    }
+    const confirmed = await appConfirm(
+        'การตั้งค่านี้มีผลกับทั้งระบบ — ถ้ากรอกผิดพลาด ฟีเจอร์ที่เกี่ยวข้องจะหยุดทำงานทันทีสำหรับผู้ใช้ทุกคน ยืนยันการบันทึกทับค่าเดิมหรือไม่?',
+        'ยืนยันการบันทึก'
+    );
+    if (!confirmed) return;
     try {
         await apiCall('updateSystemConfig', { [key]: value });
         appAlert('บันทึกการตั้งค่าเรียบร้อยแล้ว', 'success');
