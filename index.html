@@ -51,28 +51,7 @@
             background-color: rgba(99,102,241,0.12); color: #6366f1;
             padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
         }
-        /* Master Data Tab */
-        .master-data-grid {
-            display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
-        }
-        @media (max-width: 900px) { .master-data-grid { grid-template-columns: 1fr; } }
-        .master-section-header {
-            display: flex; justify-content: space-between; align-items: center;
-            margin-bottom: 16px;
-        }
-        .master-section-title {
-            font-size: 16px; font-weight: 700; color: var(--text-primary);
-            display: flex; align-items: center; gap: 8px;
-        }
-        .master-section-icon {
-            width: 32px; height: 32px; border-radius: 8px;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 16px;
-        }
-        .icon-project { background: var(--accent-light); color: var(--accent); }
-        .icon-category { background: rgba(99,102,241,0.12); color: #6366f1; }
-        .icon-vendor { background: rgba(16,185,129,0.12); color: #10b981; }
-        .icon-fund { background: var(--warning-light); color: var(--warning); }
+        /* Master Data Tab styles live in style.css (.master-data-grid etc) — kept in one place only */
     </style>
     <!-- Google Identity Services (for Google Login) -->
     <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -858,15 +837,19 @@
             <!-- PANEL: Master Data Management -->
             <!-- ========================================================= -->
             <div class="settings-tab-panel" id="settings-panel-master">
+                    <p class="master-panel-intro">จัดการรายชื่ออ้างอิง (โครงการ, หมวดหมู่, แหล่งเงิน, ร้านค้า) ที่ใช้เลือกตอนบันทึกรายจ่ายทั่วทั้งระบบ</p>
                     <div class="master-data-grid" style="margin-bottom: 30px;">
                         <!-- โครงการ -->
                         <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
                             <div class="master-section-header">
                                 <div class="master-section-title">
                                     <div class="master-section-icon icon-project"><i data-lucide="briefcase"></i></div>
-                                    โครงการ
+                                    <div>
+                                        <div class="master-section-name">โครงการ <span class="master-section-count" id="master-projects-count">0</span></div>
+                                        <div class="master-section-desc">รายชื่อโครงการที่เลือกได้ตอนบันทึกรายจ่าย</div>
+                                    </div>
                                 </div>
-                                <button class="btn btn-primary" onclick="openMasterModal('project')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
+                                <button class="btn btn-primary master-add-btn" onclick="openMasterModal('project')"><i data-lucide="plus"></i> เพิ่ม</button>
                             </div>
                             <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
                                 <table class="table" id="master-projects-table" style="margin:0;">
@@ -883,9 +866,12 @@
                             <div class="master-section-header">
                                 <div class="master-section-title">
                                     <div class="master-section-icon icon-category"><i data-lucide="tag"></i></div>
-                                    หมวดหมู่
+                                    <div>
+                                        <div class="master-section-name">หมวดหมู่ <span class="master-section-count" id="master-categories-count">0</span></div>
+                                        <div class="master-section-desc">หมวดรายจ่ายสำหรับจัดกลุ่มรายงาน</div>
+                                    </div>
                                 </div>
-                                <button class="btn btn-primary" onclick="openMasterModal('category')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
+                                <button class="btn btn-primary master-add-btn" onclick="openMasterModal('category')"><i data-lucide="plus"></i> เพิ่ม</button>
                             </div>
                             <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
                                 <table class="table" id="master-categories-table" style="margin:0;">
@@ -902,9 +888,12 @@
                             <div class="master-section-header">
                                 <div class="master-section-title">
                                     <div class="master-section-icon icon-fund"><i data-lucide="wallet"></i></div>
-                                    แหล่งเงิน
+                                    <div>
+                                        <div class="master-section-name">แหล่งเงิน <span class="master-section-count" id="master-fundsources-count">0</span></div>
+                                        <div class="master-section-desc">แหล่งที่มาของเงินที่ใช้จ่าย</div>
+                                    </div>
                                 </div>
-                                <button class="btn btn-primary" onclick="openMasterModal('fundsource')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
+                                <button class="btn btn-primary master-add-btn" onclick="openMasterModal('fundsource')"><i data-lucide="plus"></i> เพิ่ม</button>
                             </div>
                             <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
                                 <table class="table" id="master-fundsources-table" style="margin:0;">
@@ -921,9 +910,12 @@
                             <div class="master-section-header">
                                 <div class="master-section-title">
                                     <div class="master-section-icon icon-vendor"><i data-lucide="store"></i></div>
-                                    ร้านค้า/ผู้ขาย
+                                    <div>
+                                        <div class="master-section-name">ร้านค้า/ผู้ขาย <span class="master-section-count" id="master-vendors-count">0</span></div>
+                                        <div class="master-section-desc">รายชื่อร้านค้า/ผู้ขายที่ซื้อของด้วยเป็นประจำ</div>
+                                    </div>
                                 </div>
-                                <button class="btn btn-primary" onclick="openMasterModal('vendor')" style="padding:4px 12px; font-size:12px;"><i data-lucide="plus"></i> เพิ่ม</button>
+                                <button class="btn btn-primary master-add-btn" onclick="openMasterModal('vendor')"><i data-lucide="plus"></i> เพิ่ม</button>
                             </div>
                             <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
                                 <table class="table" id="master-vendors-table" style="margin:0;">

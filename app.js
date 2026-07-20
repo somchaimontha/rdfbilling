@@ -2184,6 +2184,8 @@ function renderMasterData() {
 function renderMasterProjects() {
     const tbody = document.querySelector('#master-projects-table tbody');
     if (!tbody) return;
+    const countEl = document.getElementById('master-projects-count');
+    if (countEl) countEl.textContent = state.projects.length;
     tbody.innerHTML = '';
     state.projects.forEach((p, idx) => {
         const tr = document.createElement('tr');
@@ -2211,6 +2213,8 @@ function renderMasterProjects() {
 function renderMasterCategories() {
     const tbody = document.querySelector('#master-categories-table tbody');
     if (!tbody) return;
+    const countEl = document.getElementById('master-categories-count');
+    if (countEl) countEl.textContent = state.categories.length;
     tbody.innerHTML = '';
     state.categories.forEach((c, idx) => {
         const tr = document.createElement('tr');
@@ -2234,6 +2238,8 @@ function renderMasterCategories() {
 function renderMasterVendors() {
     const tbody = document.querySelector('#master-vendors-table tbody');
     if (!tbody) return;
+    const countEl = document.getElementById('master-vendors-count');
+    if (countEl) countEl.textContent = state.vendors.length;
     tbody.innerHTML = '';
     state.vendors.forEach((v, idx) => {
         const tr = document.createElement('tr');
@@ -2258,6 +2264,8 @@ function renderMasterVendors() {
 function renderMasterFundSources() {
     const tbody = document.querySelector('#master-fundsources-table tbody');
     if (!tbody) return;
+    const countEl = document.getElementById('master-fundsources-count');
+    if (countEl) countEl.textContent = state.fundSources.length;
     tbody.innerHTML = '';
     state.fundSources.forEach((f, idx) => {
         const tr = document.createElement('tr');
