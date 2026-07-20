@@ -222,8 +222,9 @@ function getDefaultState() {
         selectedMonth: currentMonth,
         selectedYear: currentYearBE,
         calculationMode: "all",
-        monthStatuses: {},
-        
+        monthStatuses: {}, // แคชสถานะเบิกจ่ายรายเดือน ดึงจาก backend สดทุกครั้งที่เปลี่ยนเดือน/ปี (ดู refreshCarryOverAmount)
+        carryOverAmount: 0,
+
         // ---- Claims & Signatures ----
         claims: [],
         bills: [],
@@ -518,6 +519,9 @@ async function initAppWithAPI() {
         const fundReceiptsRes = await apiCall('getFundReceipts');
         state.fundReceipts = fundReceiptsRes.fundReceipts || [];
 
+        // 5. ยอดยกไปจากเดือนก่อนหน้า + สถานะเบิกจ่ายรายเดือน (คำนวณที่ backend เสมอ)
+        await refreshCarryOverAmount();
+
         // โหลดข้อมูลลายเซ็นจาก LocalStorage ท้องถิ่น (ตาม Phase 2 เดิม)
         loadAttachments();
 
@@ -549,7 +553,6 @@ function loadState() {
             state.selectedMonth = parsed.selectedMonth || defaults.selectedMonth;
             state.selectedYear = parsed.selectedYear || defaults.selectedYear;
             state.calculationMode = parsed.calculationMode || 'all';
-            state.monthStatuses = parsed.monthStatuses || {};
             state.signatures = parsed.signatures || { prepared: null, checked: null, approved: null };
             state.loginBg = parsed.loginBg || '';
             state.loginBgMode = parsed.loginBgMode || 'slideshow';
@@ -567,7 +570,6 @@ function saveState() {
         selectedMonth: state.selectedMonth,
         selectedYear: state.selectedYear,
         calculationMode: state.calculationMode,
-        monthStatuses: state.monthStatuses,
         signatures: state.signatures,
         columns: state.columns,
         loginBg: state.loginBg,
@@ -635,9 +637,7 @@ function setupDropdownDefaults() {
     (document.getElementById('select-year') || {}).value = state.selectedYear;
     (document.getElementById('select-calc-mode') || {}).value = state.calculationMode;
 
-    const statusKey = `${state.selectedYear}-${state.selectedMonth}`;
-    const status = state.monthStatuses[statusKey] || 'claimed';
-    document.getElementById('month-status-unclaimed').checked = (status === 'unclaimed');
+    updateMonthStatusCheckboxUI();
 }
 
 // ==========================================================================
@@ -679,12 +679,21 @@ function setupEventBindings() {
         renderAll();
     });
 
-    // Month Status Checkbox
-    (document.getElementById('month-status-unclaimed') || {}).addEventListener?.('change', (e) => {
-        const statusKey = `${state.selectedYear}-${state.selectedMonth}`;
-        state.monthStatuses[statusKey] = e.target.checked ? 'unclaimed' : 'claimed';
-        saveState();
-        renderAll();
+    // Month Status Checkbox — สถานะนี้ใช้ร่วมกันทุกคน จึงบันทึกที่ backend ไม่ใช่แค่เครื่องนี้
+    (document.getElementById('month-status-unclaimed') || {}).addEventListener?.('change', async (e) => {
+        const ceYear = state.selectedYear - 543;
+        const monthKey = `${ceYear}-${String(state.selectedMonth).padStart(2, '0')}`;
+        e.target.disabled = true;
+        try {
+            await apiCall('toggleMonthStatus', { month: monthKey });
+            await refreshCarryOverAmount();
+            renderAll();
+        } catch (err) {
+            e.target.checked = !e.target.checked; // ย้อนกลับถ้าบันทึกไม่สำเร็จ
+            appAlert('บันทึกสถานะไม่สำเร็จ: ' + err.message, 'error');
+        } finally {
+            e.target.disabled = false;
+        }
     });
 
     // Bill Modal
@@ -873,10 +882,32 @@ function setupEventBindings() {
 }
 
 function updateMonthStatusCheckboxUI() {
-    const statusKey = `${state.selectedYear}-${state.selectedMonth}`;
+    const ceYear = state.selectedYear - 543;
+    const statusKey = `${ceYear}-${String(state.selectedMonth).padStart(2, '0')}`;
     const status = state.monthStatuses[statusKey] || 'claimed';
-    document.getElementById('month-status-unclaimed').checked = (status === 'unclaimed');
+    const checkbox = document.getElementById('month-status-unclaimed');
+    if (checkbox) checkbox.checked = (status === 'unclaimed');
 }
+
+// ดึงยอดยกไปจากเดือนก่อนหน้า + สถานะเบิกจ่ายรายเดือนของปีนี้จาก backend เสมอ
+// (คำนวณฝั่ง client ไม่ได้ เพราะ state.expenses มีแค่ข้อมูลเดือนที่เลือกอยู่เดือนเดียว)
+async function refreshCarryOverAmount() {
+    try {
+        const res = await apiCall('getCarryOverAmount', { beforeMonth: state.selectedMonth, beforeYear: state.selectedYear });
+        state.carryOverAmount = res.carryOverAmount || 0;
+    } catch (err) {
+        state.carryOverAmount = 0;
+    }
+    try {
+        const ceYear = state.selectedYear - 543;
+        const res2 = await apiCall('getMonthStatuses', { year: ceYear });
+        state.monthStatuses = res2.statuses || {};
+    } catch (err) {
+        // ดึงไม่สำเร็จ — เก็บค่าที่มีอยู่เดิมไว้แทนการล้างทิ้ง
+    }
+    updateMonthStatusCheckboxUI();
+}
+window.refreshCarryOverAmount = refreshCarryOverAmount;
 
 // ==========================================================================
 // Annual Summary Report
@@ -920,17 +951,24 @@ async function renderSummaryView() {
     const totalEl = document.getElementById('summary-year-total');
     if (!monthTbody || !projectTbody) return;
 
-    monthTbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>';
+    monthTbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>';
     projectTbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>';
 
     let allExpenses;
+    let monthStatuses = {};
     try {
         allExpenses = await fetchAllExpensesForSummary();
     } catch (err) {
         appAlert('ไม่สามารถโหลดข้อมูลรายงานสรุปได้: ' + err.message, 'error');
-        monthTbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:var(--danger);">โหลดข้อมูลไม่สำเร็จ</td></tr>';
+        monthTbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--danger);">โหลดข้อมูลไม่สำเร็จ</td></tr>';
         projectTbody.innerHTML = '';
         return;
+    }
+    try {
+        const statusRes = await apiCall('getMonthStatuses', { year: ceYear });
+        monthStatuses = statusRes.statuses || {};
+    } catch (err) {
+        // โหลดสถานะไม่สำเร็จ — แสดงเป็น "เบิกแล้ว" (ค่าเริ่มต้น) ไปก่อน ไม่ล้มทั้งหน้า
     }
 
     const yearExpenses = allExpenses.filter(e => e.expenseDate && e.expenseDate.startsWith(String(ceYear)));
@@ -958,13 +996,22 @@ async function renderSummaryView() {
 
     if (totalEl) totalEl.textContent = yearTotal.toLocaleString('th-TH', { minimumFractionDigits: 2 }) + ' บาท';
 
-    monthTbody.innerHTML = byMonth.map((m, idx) => `
+    monthTbody.innerHTML = byMonth.map((m, idx) => {
+        const monthKey = `${ceYear}-${String(idx + 1).padStart(2, '0')}`;
+        const status = monthStatuses[monthKey] || 'claimed';
+        const isUnclaimed = status === 'unclaimed';
+        return `
         <tr>
             <td>${thMonths[idx]}</td>
             <td class="text-right">${m.count}</td>
             <td class="text-right">${m.amount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
-        </tr>
-    `).join('');
+            <td class="text-center">
+                <span class="badge ${isUnclaimed ? 'badge-non-claimable' : 'badge-claimable'}" style="cursor:pointer;" onclick="toggleMonthClaimStatus('${monthKey}')" title="คลิกเพื่อสลับสถานะ">
+                    ${isUnclaimed ? 'ยังไม่เบิก (ยกยอดต่อ)' : 'เบิกแล้ว'}
+                </span>
+            </td>
+        </tr>`;
+    }).join('');
 
     const projectRows = Object.entries(byProject).sort((a, b) => b[1].amount - a[1].amount);
     projectTbody.innerHTML = projectRows.length
@@ -977,6 +1024,26 @@ async function renderSummaryView() {
         `).join('')
         : '<tr><td colspan="3" style="text-align:center; color:var(--text-muted);">ไม่มีข้อมูลในปีงบประมาณนี้</td></tr>';
 }
+
+// สลับสถานะเบิกจ่ายของเดือนใดก็ได้จากหน้ารายงานสรุปรายปี (monthKey = ค.ศ. "YYYY-MM")
+async function toggleMonthClaimStatus(monthKey) {
+    try {
+        await apiCall('toggleMonthStatus', { month: monthKey });
+        await renderSummaryView();
+
+        // ถ้าเดือนที่สลับอยู่ก่อนเดือนที่กำลังเลือกอยู่บนหน้าบันทึกบิล ให้รีเฟรชยอดยกไปที่นั่นด้วย
+        const [ceYear, ceMonth] = monthKey.split('-').map(Number);
+        const beYear = ceYear + 543;
+        const isBeforeSelected = beYear < state.selectedYear || (beYear === state.selectedYear && ceMonth < state.selectedMonth);
+        if (isBeforeSelected) {
+            await refreshCarryOverAmount();
+            updateMetricsBar();
+        }
+    } catch (err) {
+        appAlert('บันทึกสถานะไม่สำเร็จ: ' + err.message, 'error');
+    }
+}
+window.toggleMonthClaimStatus = toggleMonthClaimStatus;
 
 // ==========================================================================
 // Fund Receipt Documents (เอกสารรับเงินทุนประจำเดือน)
@@ -1370,39 +1437,8 @@ function formatNumber(num) {
 }
 
 // ==========================================================================
-// Carry-over Balance Logic
+// Carry-over Balance — คำนวณที่ backend เสมอ (ดู refreshCarryOverAmount, state.carryOverAmount)
 // ==========================================================================
-function calculateCarryOver(targetMonth, targetYear) {
-    let carryOverTotal = 0;
-    let curMonth = 1;
-    let curYear = 2566;
-
-    while (curYear < targetYear || (curYear === targetYear && curMonth < targetMonth)) {
-        const statusKey = `${curYear}-${curMonth}`;
-        const status = state.monthStatuses[statusKey] || 'claimed';
-
-        if (status === 'unclaimed') {
-            let monthClaimableSum = 0;
-            state.expenses.forEach(exp => {
-                const info = getBudDateInfo(exp.expenseDate);
-                if (info && info.month === curMonth && info.year === curYear && exp.claimable) {
-                    monthClaimableSum += exp.amount;
-                }
-            });
-            state.attachments.forEach(a => {
-                const info = getBudDateInfo(a.expenseDate);
-                if (info && info.month === curMonth && info.year === curYear && a.claimable) {
-                    monthClaimableSum += a.amount;
-                }
-            });
-            carryOverTotal += monthClaimableSum;
-        }
-
-        curMonth++;
-        if (curMonth > 12) { curMonth = 1; curYear++; }
-    }
-    return carryOverTotal;
-}
 
 // ==========================================================================
 // Calculations Engine
@@ -1424,7 +1460,7 @@ function calculateTotals() {
         }
     });
 
-    const carryOver = calculateCarryOver(state.selectedMonth, state.selectedYear);
+    const carryOver = state.carryOverAmount || 0;
     let displayClaimable, displayNonClaimable, displayGrand;
 
     if (state.calculationMode === 'claim') {
@@ -1827,7 +1863,7 @@ function renderSpreadsheet() {
         }
     });
 
-    const carryOver = calculateCarryOver(state.selectedMonth, state.selectedYear);
+    const carryOver = state.carryOverAmount || 0;
     const totals = calculateTotals();
     const rowsCount = Math.max(20, 12 + monthlyExp.length + monthlyAttach.length);
 
@@ -5612,6 +5648,9 @@ const PERMISSION_ACTIONS = [
     { action: 'updateUser',          label: 'แก้ไขผู้ใช้งาน',                   category: 'ผู้ใช้งานและระบบ' },
     { action: 'getSystemConfig',     label: 'ดูการตั้งค่าระบบ',                 category: 'ผู้ใช้งานและระบบ' },
     { action: 'updateSystemConfig',  label: 'แก้ไขการตั้งค่าระบบ',              category: 'ผู้ใช้งานและระบบ' },
+    { action: 'getCarryOverAmount',  label: 'ดูยอดยกไปจากเดือนก่อน',           category: 'รายงาน' },
+    { action: 'getMonthStatuses',    label: 'ดูสถานะเบิกจ่ายรายเดือน',          category: 'รายงาน' },
+    { action: 'toggleMonthStatus',   label: 'สลับสถานะเบิกจ่ายรายเดือน',        category: 'รายงาน' },
 ];
 
 // ค่าเริ่มต้น = มิเรอร์ของ PERMISSIONS ใน backend/Config.gs (admin ไม่ต้องเก็บ เพราะ full access เสมอ)
@@ -5634,6 +5673,9 @@ const DEFAULT_PERMISSION_MATRIX = {
     updateUser:          { manager: false, staff: false, viewer: false },
     getSystemConfig:     { manager: false, staff: false, viewer: false },
     updateSystemConfig:  { manager: false, staff: false, viewer: false },
+    getCarryOverAmount:  { manager: true,  staff: true,  viewer: true  },
+    getMonthStatuses:    { manager: true,  staff: true,  viewer: true  },
+    toggleMonthStatus:   { manager: true,  staff: false, viewer: false },
 };
 
 async function renderPermissionMatrix() {
