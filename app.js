@@ -209,6 +209,7 @@ function getDefaultState() {
             { id: "FS001", name: "เงินสำรองจ่าย(เงินเก็บนักเรียน)" },
             { id: "FS002", name: "เงินสะสมหอพัก" }
         ],
+        organizations: [],
 
         // ---- Expense Records ----
         expenses: [],
@@ -243,7 +244,8 @@ function getDefaultState() {
             { id: "unitPrice", label: "ราคาหน่วย", visible: true, custom: false },
             { id: "amount", label: "รวม", visible: true, custom: false },
             { id: "claimable", label: "ประเภท", visible: true, custom: false },
-            { id: "attachment", label: "หลักฐาน", visible: true, custom: false }
+            { id: "attachment", label: "หลักฐาน", visible: true, custom: false },
+            { id: "organizationId", label: "สถานศึกษา", visible: false, custom: false }
         ],
         loginBg: "",
         loginBgMode: "slideshow"
@@ -498,6 +500,7 @@ async function initAppWithAPI() {
         state.categories = (master.categories || []).map(c => ({ ...c, name: c.categoryName || c.name }));
         state.vendors = (master.vendors || []).map(v => ({ ...v, name: v.vendorName || v.name }));
         state.fundSources = (master.fundSources || []).map(f => ({ ...f, name: f.name || f.fundSourceName }));
+        state.organizations = (master.organizations || []).map(o => ({ ...o, name: o.nameTh || o.name }));
         
         // 2. ดึงค่าใช้จ่าย (Expenses) ของเดือนที่เลือก
         const gYear = state.selectedYear - 543;
@@ -556,7 +559,15 @@ function loadState() {
             state.signatures = parsed.signatures || { prepared: null, checked: null, approved: null };
             state.loginBg = parsed.loginBg || '';
             state.loginBgMode = parsed.loginBgMode || 'slideshow';
-            if (parsed.columns) state.columns = parsed.columns;
+            if (parsed.columns) {
+                state.columns = parsed.columns;
+                // เติมคอลัมน์ default ใหม่ที่ยังไม่มีใน settings เก่าที่ผู้ใช้บันทึกไว้ (เช่น organizationId ที่เพิ่งเพิ่ม)
+                defaults.columns.forEach(defCol => {
+                    if (!state.columns.some(c => c.id === defCol.id)) {
+                        state.columns.push({ ...defCol });
+                    }
+                });
+            }
         } catch (e) {
             console.error("Failed to parse saved UI settings", e);
         }
@@ -613,6 +624,10 @@ function getVendorName(id) {
 function getFundSourceName(id) {
     const f = state.fundSources.find(x => x.id === id);
     return f ? f.name : (id || '-');
+}
+function getOrgName(id) {
+    const o = (state.organizations || []).find(x => x.id === id);
+    return o ? o.name : (id || '-');
 }
 
 // ==========================================================================
@@ -946,6 +961,23 @@ async function renderSummaryView() {
     const selectedYear = parseInt((yearSelect && yearSelect.value) || state.selectedYear, 10);
     const ceYear = selectedYear - 543;
 
+    // ตัวกรององค์กร — เห็นเฉพาะ admin เพราะมีแค่ admin ที่เห็นข้อมูลข้ามสถานศึกษา
+    const orgFilterWrap = document.getElementById('summary-org-filter-wrap');
+    const orgFilterSel = document.getElementById('summary-org-filter');
+    let orgFilter = '';
+    if (orgFilterWrap && orgFilterSel) {
+        if (getCurrentUserRole() === 'admin') {
+            orgFilterWrap.style.display = 'flex';
+            if (orgFilterSel.options.length === 0) {
+                orgFilterSel.innerHTML = '<option value="">ทั้งหมด (รวมทุกสถานศึกษา)</option>' +
+                    (state.organizations || []).map(o => `<option value="${o.id}">${escapeHTML(o.name)}</option>`).join('');
+            }
+            orgFilter = orgFilterSel.value;
+        } else {
+            orgFilterWrap.style.display = 'none';
+        }
+    }
+
     const monthTbody = document.getElementById('summary-by-month-tbody');
     const projectTbody = document.getElementById('summary-by-project-tbody');
     const totalEl = document.getElementById('summary-year-total');
@@ -965,13 +997,15 @@ async function renderSummaryView() {
         return;
     }
     try {
-        const statusRes = await apiCall('getMonthStatuses', { year: ceYear });
+        const statusRes = await apiCall('getMonthStatuses', { year: ceYear, organizationId: orgFilter || undefined });
         monthStatuses = statusRes.statuses || {};
     } catch (err) {
         // โหลดสถานะไม่สำเร็จ — แสดงเป็น "เบิกแล้ว" (ค่าเริ่มต้น) ไปก่อน ไม่ล้มทั้งหน้า
     }
 
-    const yearExpenses = allExpenses.filter(e => e.expenseDate && e.expenseDate.startsWith(String(ceYear)));
+    const yearExpenses = allExpenses.filter(e =>
+        e.expenseDate && e.expenseDate.startsWith(String(ceYear)) &&
+        (!orgFilter || e.organizationId === orgFilter));
 
     const thMonths = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
     const byMonth = Array.from({ length: 12 }, () => ({ count: 0, amount: 0 }));
@@ -1028,7 +1062,9 @@ async function renderSummaryView() {
 // สลับสถานะเบิกจ่ายของเดือนใดก็ได้จากหน้ารายงานสรุปรายปี (monthKey = ค.ศ. "YYYY-MM")
 async function toggleMonthClaimStatus(monthKey) {
     try {
-        await apiCall('toggleMonthStatus', { month: monthKey });
+        const orgFilterSel = document.getElementById('summary-org-filter');
+        const orgFilter = (orgFilterSel && getCurrentUserRole() === 'admin') ? orgFilterSel.value : '';
+        await apiCall('toggleMonthStatus', { month: monthKey, organizationId: orgFilter || undefined });
         await renderSummaryView();
 
         // ถ้าเดือนที่สลับอยู่ก่อนเดือนที่กำลังเลือกอยู่บนหน้าบันทึกบิล ให้รีเฟรชยอดยกไปที่นั่นด้วย
@@ -2414,7 +2450,11 @@ async function handleExpenseSubmit(e) {
     const unitPrice = Math.max(0, parseFloat(document.getElementById('bill-price').value) || 0);
 
     const user = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
-    const orgId = user.organizationId || 'ORG001';
+    const orgId = user.organizationId;
+    if (!orgId) {
+        appAlert('ไม่พบข้อมูลหน่วยงานของผู้ใช้ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่', 'error');
+        return;
+    }
 
     showLoading(true);
     try {
@@ -2712,7 +2752,11 @@ async function handleAttachmentSubmit(e) {
     const amount = Math.max(0, parseFloat(document.getElementById('attach-amount').value) || 0);
 
     const user = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
-    const orgId = user.organizationId || 'ORG001';
+    const orgId = user.organizationId;
+    if (!orgId) {
+        appAlert('ไม่พบข้อมูลหน่วยงานของผู้ใช้ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่', 'error');
+        return;
+    }
 
     const attachData = {
         expenseDate: document.getElementById('attach-date').value,
@@ -3256,16 +3300,19 @@ function renderExpenseRow(exp, idx, tbody) {
                     td.innerHTML = `<button class="btn btn-icon btn-icon-attach" data-exp-id="${exp.id}" title="แนบไฟล์หลักฐาน"><i data-lucide="upload-cloud" style="width:14px; height:14px;"></i></button>`;
                 }
                 break;
+            case 'organizationId':
+                td.textContent = getOrgName(exp.organizationId);
+                break;
             default:
                 if (col.custom) {
                     td.textContent = parsedNote.customFields[col.label] || '-';
                 }
                 break;
         }
-        
+
         tr.appendChild(td);
     });
-    
+
     const toolsTd = document.createElement('td');
     toolsTd.className = 'text-center';
     toolsTd.innerHTML = `
@@ -3355,6 +3402,9 @@ function renderAttachmentRow(a, idx, tbody) {
                     td.innerHTML = `<button class="btn btn-icon btn-icon-attach" data-exp-id="${a.id}" title="แนบไฟล์หลักฐาน"><i data-lucide="upload-cloud" style="width:14px; height:14px;"></i></button>`;
                 }
                 break;
+            case 'organizationId':
+                td.textContent = getOrgName(a.organizationId);
+                break;
             default:
                 if (col.custom) {
                     td.textContent = parsedNote.customFields[col.label] || '-';
@@ -3363,7 +3413,7 @@ function renderAttachmentRow(a, idx, tbody) {
         }
         tr.appendChild(td);
     });
-    
+
     const toolsTd = document.createElement('td');
     toolsTd.className = 'text-center';
     toolsTd.innerHTML = `
@@ -3643,9 +3693,13 @@ async function saveInlineRow(prefix) {
     const noteStr = formatNoteData('', customFields, multiItems);
 
     const inlineUser = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
+    if (!inlineUser.organizationId) {
+        appAlert('ไม่พบข้อมูลหน่วยงานของผู้ใช้ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่', 'error');
+        return;
+    }
     const payload = {
         expenseDate: dateVal,
-        organizationId: inlineUser.organizationId || 'ORG001',
+        organizationId: inlineUser.organizationId,
         projectId: projId,
         categoryId: catId,
         fundSourceId: fundId,
@@ -4752,11 +4806,7 @@ function initLoginParticles() {
 let EXPORT_DICTIONARY = {};
 
 let currentExportState = {
-    context: 'dashboard',
-    selectedCategories: new Set(),
-    selectedProjects: new Set(),
-    selectedFields: new Set(),
-    smartDisplay: true
+    context: 'dashboard'
 };
 
 // 1. Dynamic Field Generator
@@ -4930,11 +4980,7 @@ function buildDynamicExportDictionary(context) {
 function openExportModal(context) {
     currentExportState.context = context || 'dashboard';
     (document.getElementById('pdf-export-mode') || {}).value = currentExportState.context;
-    
-    EXPORT_DICTIONARY = buildDynamicExportDictionary(currentExportState.context);
-    
-    currentExportState.selectedCategories = new Set(Object.keys(EXPORT_DICTIONARY));
-    
+
     // Auto titles
     const titleInput = document.getElementById('pdf-report-title');
     const titles = {
@@ -4946,14 +4992,25 @@ function openExportModal(context) {
     };
     titleInput.value = titles[currentExportState.context] || 'รายงานสรุป';
 
-    buildExportCategoryUI();
-    buildExportProjectUI();
-    buildExportFieldsUI();
-    
+    // ตัวกรององค์กร — เห็นเฉพาะ admin เพราะมีแค่ admin ที่เห็นข้อมูลข้ามสถานศึกษา
+    const orgFilterWrap = document.getElementById('export-org-filter-wrap');
+    const orgFilterSel = document.getElementById('export-org-filter');
+    if (orgFilterWrap && orgFilterSel) {
+        if (getCurrentUserRole() === 'admin') {
+            orgFilterWrap.style.display = '';
+            if (orgFilterSel.options.length === 0) {
+                orgFilterSel.innerHTML = '<option value="">ทั้งหมด (รวมทุกสถานศึกษา)</option>' +
+                    (state.organizations || []).map(o => `<option value="${o.id}">${escapeHTML(o.name)}</option>`).join('');
+            }
+        } else {
+            orgFilterWrap.style.display = 'none';
+        }
+    }
+
     const modal = document.getElementById('modal-export-pdf');
     modal.style.display = 'flex';
     modal.classList.add('active');
-    
+
     loadExportTemplatesList();
     renderExportPreview();
 }
@@ -4964,270 +5021,105 @@ function closeExportModal() {
     modal.classList.remove('active');
 }
 
-function buildExportCategoryUI() {
-    const container = document.getElementById('export-category-selection');
-    if(container) container.innerHTML = '';
-    
-    let hasCategories = false;
-    Object.keys(EXPORT_DICTIONARY).forEach(key => {
-        const data = EXPORT_DICTIONARY[key].getData();
-        if (data.length === 0) return; // Smart Auto-Hide Empty
-        
-        hasCategories = true;
-        const div = document.createElement('label');
-        div.style.cssText = 'display:flex; gap:8px; cursor:pointer; font-size:13px; align-items:center;';
-        
-        const isChecked = currentExportState.selectedCategories.has(key) ? 'checked' : '';
-        div.innerHTML = `<input type="checkbox" class="export-cat-chk" value="${key}" ${isChecked} onchange="toggleExportCategory('${key}', this.checked)"> ${EXPORT_DICTIONARY[key].label} (${data.length} รายการ)`;
-        if(container) container.appendChild(div);
-    });
-    
-    if (!hasCategories) {
-        if(container) container.innerHTML = '<div style="color:red; font-size:12px;">ไม่มีข้อมูลในหมวดหมู่นี้</div>';
-    }
-}
+// ==========================================================================
+// Export data source — single source of truth shared by preview, PDF, Excel/CSV
+// and the per-section "ดาวน์โหลด" buttons. Reads from `state` (filtered by the
+// month picked in #export-report-month), never from the DOM, so it can't pick
+// up stray rows like the always-present inline quick-add row.
+// ==========================================================================
+function buildExportSectionData(section) {
+    const reportMonth = (document.getElementById('export-report-month') || {}).value || '';
+    const inMonth = (dateStr) => !reportMonth || (dateStr && String(dateStr).startsWith(reportMonth));
 
-function toggleExportCategory(key, checked) {
-    if (checked) currentExportState.selectedCategories.add(key);
-    else currentExportState.selectedCategories.delete(key);
-    
-    buildExportProjectUI();
-    buildExportFieldsUI();
-    renderExportPreview();
-}
+    // ตัวกรององค์กร — มีผลเฉพาะ admin (เห็นข้อมูลข้ามสถานศึกษาอยู่แล้ว), ผู้ใช้ทั่วไปไม่มี dropdown นี้อยู่แล้ว
+    const orgFilterSel = document.getElementById('export-org-filter');
+    const orgFilter = (orgFilterSel && getCurrentUserRole() === 'admin') ? orgFilterSel.value : '';
+    const inOrg = (x) => !orgFilter || x.organizationId === orgFilter;
 
-function buildExportProjectUI() {
-    const container = document.getElementById('export-project-selection');
-    if(container) container.innerHTML = '';
-    currentExportState.selectedProjects.clear();
-    
-    let allProjects = new Set();
-    currentExportState.selectedCategories.forEach(cat => {
-        const data = EXPORT_DICTIONARY[cat].getData();
-        data.forEach(item => {
-            if (item.projectId) allProjects.add(item.projectId);
-        });
-    });
-    
-    if (allProjects.size === 0) {
-        if(container) container.innerHTML = '<div style="color:#666; font-size:12px;">ไม่มีข้อมูลโครงการ</div>';
-        return;
-    }
-    
-    allProjects.forEach(pid => {
-        currentExportState.selectedProjects.add(pid);
-        const pName = getProjectName(pid);
-        const div = document.createElement('label');
-        div.style.cssText = 'display:flex; gap:8px; cursor:pointer; font-size:13px; margin-bottom:4px;';
-        div.innerHTML = `<input type="checkbox" class="export-proj-chk" value="${pid}" checked onchange="toggleExportProject('${pid}', this.checked)"> ${escapeHTML(pName)}`;
-        if(container) container.appendChild(div);
-    });
-}
+    if (section === 'bills' || section === 'attach') {
+        const source = section === 'bills' ? (state.expenses || []) : (state.attachments || []);
+        const rows = source
+            .filter(x => inMonth(x.expenseDate) && inOrg(x))
+            .map(x => ({
+                id: x.id,
+                docNo: x.documentNo || '',
+                date: x.expenseDate || '',
+                project: getProjectName(x.projectId),
+                category: getCategoryName(x.categoryId),
+                vendor: getVendorName(x.vendorId),
+                amount: parseFloat(x.amount) || 0,
+                claimType: x.claimable ? 'เบิกมูลนิธิ' : 'ไม่เบิก',
+                attachmentsCount: (attachmentStore[x.id] || []).length
+            }));
 
-function toggleExportProject(pid, checked) {
-    if (checked) currentExportState.selectedProjects.add(pid);
-    else currentExportState.selectedProjects.delete(pid);
-    renderExportPreview();
-}
-
-function buildExportFieldsUI() {
-    const container = document.getElementById('export-field-selection');
-    if(container) container.innerHTML = '';
-    
-    let combinedFields = new Map();
-    currentExportState.selectedCategories.forEach(cat => {
-        EXPORT_DICTIONARY[cat].fields.forEach(f => {
-            if (!combinedFields.has(f.id)) {
-                combinedFields.set(f.id, f);
-            }
-        });
-    });
-    
-    const allData = getFilteredExportData(false);
-    
-    combinedFields.forEach(f => {
-        let hasData = false;
-        if (currentExportState.smartDisplay) {
-            for (let i = 0; i < allData.length; i++) {
-                if (allData[i][f.id] !== undefined && allData[i][f.id] !== null && allData[i][f.id] !== '') {
-                    hasData = true;
-                    break;
-                }
-            }
-        } else {
-            hasData = true;
-        }
-        
-        if (!hasData) return; // Smart Hide
-        
-        if (f.default) currentExportState.selectedFields.add(f.id);
-        
-        const div = document.createElement('label');
-        div.style.cssText = 'display:flex; gap:6px; cursor:pointer; font-size:12px;';
-        const isChecked = currentExportState.selectedFields.has(f.id) ? 'checked' : '';
-        div.innerHTML = `<input type="checkbox" class="export-field-chk" value="${f.id}" ${isChecked} onchange="toggleExportField('${f.id}', this.checked)"> ${escapeHTML(f.label)}`;
-        if(container) container.appendChild(div);
-    });
-}
-
-function toggleExportField(id, checked) {
-    if (checked) currentExportState.selectedFields.add(id);
-    else currentExportState.selectedFields.delete(id);
-    renderExportPreview();
-}
-
-function toggleAllExportCheckboxes(check) {
-    document.querySelectorAll('.export-proj-chk').forEach(el => { el.checked = check; toggleExportProject(el.value, check); });
-    document.querySelectorAll('.export-field-chk').forEach(el => { el.checked = check; toggleExportField(el.value, check); });
-    renderExportPreview();
-}
-
-function getFilteredExportData(applySort = true) {
-    let result = [];
-    currentExportState.selectedCategories.forEach(cat => {
-        const data = EXPORT_DICTIONARY[cat].getData();
-        data.forEach(item => {
-            if (item.projectId && !currentExportState.selectedProjects.has(item.projectId)) return;
-            
-            let normalized = { ...item, _categoryConfig: cat };
-            if (cat === 'food' && item.month) {
-                normalized.expenseDate = `${item.month}/${item.year}`;
-            }
-            result.push(normalized);
-        });
-    });
-    
-    if (applySort && result.length > 0 && typeof result[0] === 'object') {
-        const sortBy = document.getElementById('export-sort-by') ? document.getElementById('export-sort-by').value : null;
-        const sortOrder = document.getElementById('export-sort-order') ? document.getElementById('export-sort-order').value : 'asc';
-        
-        if(sortBy) {
-            result.sort((a, b) => {
-                let valA = a[sortBy] || '';
-                let valB = b[sortBy] || '';
-                
-                if (sortBy === 'amount' || sortBy === 'totalAmount') {
-                    valA = parseFloat(valA) || 0;
-                    valB = parseFloat(valB) || 0;
-                }
-                
-                if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
-                if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
+        if (section === 'bills') {
+            const sortBy = (document.getElementById('export-sort-by') || {}).value || 'date';
+            const sortOrder = (document.getElementById('export-sort-order') || {}).value || 'asc';
+            rows.sort((a, b) => {
+                let va = a[sortBy], vb = b[sortBy];
+                if (sortBy === 'amount') { va = va || 0; vb = vb || 0; }
+                else { va = String(va || ''); vb = String(vb || ''); }
+                if (va < vb) return sortOrder === 'asc' ? -1 : 1;
+                if (va > vb) return sortOrder === 'asc' ? 1 : -1;
                 return 0;
             });
         }
+        return rows;
     }
-    
-    return result;
+
+    if (section === 'food') {
+        return (state.foodExpenses || [])
+            .filter(x => inMonth(x.date) && inOrg(x))
+            .map(x => ({
+                id: x.id,
+                foodDate: x.date || '',
+                foodName: x.name || '',
+                foodCategory: x.category || '',
+                foodAmount: parseFloat(x.totalAmount) || 0
+            }))
+            .sort((a, b) => String(a.foodDate || '').localeCompare(String(b.foodDate || '')));
+    }
+
+    return [];
 }
 
-// 3. Smart Preview Engine
-function renderExportPreview() {
-    const container = document.getElementById('export-preview-page');
-    if(!container) return;
-    
-    const title = document.getElementById('pdf-report-title').value;
-    const includeSig = document.getElementById('pdf-include-signature') ? document.getElementById('pdf-include-signature').checked : false;
-    const prep = document.getElementById('pdf-preparer-name') ? document.getElementById('pdf-preparer-name').value : '';
-    const rev = document.getElementById('pdf-reviewer-name') ? document.getElementById('pdf-reviewer-name').value : '';
-    const appSig = document.getElementById('pdf-approver-name') ? document.getElementById('pdf-approver-name').value : '';
-    
-    const data = getFilteredExportData(true);
-    const logoPath = 'RDForiginal.png';
-    
-    let html = `
-        <div style="display:flex; align-items:center; flex-direction:column; margin-bottom:20px; text-align:center;">
-            <img src="${logoPath}" alt="Logo" style="height:60px; margin-bottom:12px; object-fit:contain;" onerror="this.style.display='none'">
-            <h2 style="margin:0 0 4px 0; font-size:20px;">${escapeHTML(title)}</h2>
-            <p style="font-size:12px; color:#666;">วันที่พิมพ์: ${formatDateThai(new Date().toISOString())} | จำนวน: ${data.length} รายการ</p>
-        </div>
-    `;
+// Which .export-col-chk / .export-food-col values are currently checked
+function getExportSelectedColumns(selector) {
+    return Array.from(document.querySelectorAll(selector))
+        .filter(el => el.checked)
+        .map(el => el.value);
+}
 
-    let visibleFields = [];
-    currentExportState.selectedCategories.forEach(cat => {
-        EXPORT_DICTIONARY[cat].fields.forEach(f => {
-            if (currentExportState.selectedFields.has(f.id) && !visibleFields.find(vf => vf.id === f.id)) {
-                visibleFields.push(f);
-            }
-        });
-    });
-    
-    if (data.length === 0) {
-        html += '<div style="text-align:center; padding:40px; border:1px solid #ccc;">ไม่มีข้อมูลตามเงื่อนไขที่เลือก หรือ ยังไม่ได้เลือกข้อมูล</div>';
-    } else {
-        html += `
-            <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:20px;">
-                <thead>
-                    <tr style="background:#f1f5f9; border: 1px solid #000;">
-        `;
-        visibleFields.forEach(f => {
-            html += `<th style="border:1px solid #000; padding:6px; text-align:${f.type==='currency'?'right':'left'};">${escapeHTML(f.label)}</th>`;
-        });
-        html += `</tr></thead><tbody>`;
-        
-        let totalAmount = 0;
-        data.forEach(row => {
-            html += `<tr>`;
-            visibleFields.forEach(f => {
-                let val = row[f.id] || '';
-                if (f.id === 'amount' && !val) val = row.totalAmount;
-                if (f.type === 'date') val = formatDateThai(val);
-                if (f.type === 'currency' || (f.type === 'number' && typeof val === 'number')) {
-                    val = parseFloat(val) || 0;
-                    if (f.id === 'amount' || f.id === 'totalAmount' || f.id === 'value') totalAmount += val;
-                    val = formatNumber(val);
-                }
-                if (f.source === 'projects') val = getProjectName(val);
-                if (f.source === 'categories') val = getCategoryName(val);
-                if (f.type === 'status') val = val === 'pending' ? 'รอพิจารณา' : 'อนุมัติแล้ว';
-                
-                html += `<td style="border:1px solid #000; padding:6px; text-align:${f.type==='currency'?'right':'left'};">${escapeHTML(String(val))}</td>`;
-            });
-            html += `</tr>`;
-        });
-        
-        // Dynamic Footers
-        html += `</tbody><tfoot><tr>`;
-        const colSpan = Math.max(1, visibleFields.length - 1);
-        html += `<td colspan="${colSpan}" style="border:1px solid #000; padding:6px; text-align:right; font-weight:bold;">ยอดรวมทั้งสิ้น</td>`;
-        if (visibleFields.find(f => f.type === 'currency' || f.id === 'amount' || f.id === 'value' || f.id === 'totalAmount')) {
-            html += `<td style="border:1px solid #000; padding:6px; text-align:right; font-weight:bold;">${formatNumber(totalAmount)}</td>`;
-        } else {
-             html += `<td style="border:1px solid #000; padding:6px; text-align:right; font-weight:bold;"></td>`;
-        }
-        html += `</tr></tfoot></table>`;
-    }
-    
-    if (includeSig && currentExportState.context !== 'master-data') {
-        html += `
-            <div style="display:flex; justify-content:space-between; font-size:12px; text-align:center; margin-top:40px; page-break-inside: avoid;">
-                <div><p>ผู้จัดทำ</p><br><br><br><p>ลงชื่อ........................................</p><p>(${escapeHTML(prep || '.........................')})</p></div>
-                <div><p>ผู้ตรวจสอบ</p><br><br><br><p>ลงชื่อ........................................</p><p>(${escapeHTML(rev || '.........................')})</p></div>
-                <div><p>ผู้อนุมัติ</p><br><br><br><p>ลงชื่อ........................................</p><p>(${escapeHTML(appSig || '.........................')})</p></div>
-            </div>
-        `;
-    }
-    
-    if(container) container.innerHTML = html;
+// Footer "เลือกทั้งหมด" / "ยกเลิกทั้งหมด" — toggles every column checkbox in the modal
+function toggleAllExportCheckboxes(check) {
+    document.querySelectorAll('.export-col-chk, .export-food-col, .att-chk').forEach(el => { el.checked = check; });
+    renderExportPreview();
 }
 
 // 4. Report Templates
 function saveExportTemplate() {
     const templateName = prompt('ตั้งชื่อ Template นี้ (เช่น รายงานส่งมูลนิธิ RDF):');
     if (!templateName) return;
-    
+
     let templates = JSON.parse(localStorage.getItem('rdf_export_templates') || '{}');
     templates[templateName] = {
         context: currentExportState.context,
         title: document.getElementById('pdf-report-title').value,
-        type: document.getElementById('export-report-type').value,
-        sortBy: document.getElementById('export-sort-by').value,
-        sortOrder: document.getElementById('export-sort-order').value,
-        categories: Array.from(currentExportState.selectedCategories),
-        fields: Array.from(currentExportState.selectedFields),
+        orgName: (document.getElementById('export-org-name') || {}).value || '',
+        docNumber: (document.getElementById('export-doc-number') || {}).value || '',
+        headerDetail: (document.getElementById('export-header-detail') || {}).value || '',
+        type: (document.getElementById('export-report-type') || {}).value || 'summary',
+        sortBy: (document.getElementById('export-sort-by') || {}).value || 'date',
+        sortOrder: (document.getElementById('export-sort-order') || {}).value || 'asc',
+        inclBills: (document.getElementById('export-chk-bills') || {}).checked,
+        inclFood: (document.getElementById('export-chk-food') || {}).checked,
+        inclAttach: (document.getElementById('export-chk-attach') || {}).checked,
+        billCols: getExportSelectedColumns('.export-col-chk'),
+        foodCols: getExportSelectedColumns('.export-food-col'),
         att: {
             img: document.querySelector('.att-chk[value="show_img"]') ? document.querySelector('.att-chk[value="show_img"]').checked : false,
-            pdf: document.querySelector('.att-chk[value="show_pdf"]') ? document.querySelector('.att-chk[value="show_pdf"]').checked : false
+            pdf: document.querySelector('.att-chk[value="show_pdf"]') ? document.querySelector('.att-chk[value="show_pdf"]').checked : false,
+            qr: document.querySelector('.att-chk[value="show_qr"]') ? document.querySelector('.att-chk[value="show_qr"]').checked : false
         }
     };
     localStorage.setItem('rdf_export_templates', JSON.stringify(templates));
@@ -5250,70 +5142,74 @@ function loadExportTemplate(name) {
     let templates = JSON.parse(localStorage.getItem('rdf_export_templates') || '{}');
     let t = templates[name];
     if (!t) return;
-    
-    // Switch Context if necessary
-    if(t.context && t.context !== currentExportState.context) {
-        currentExportState.context = t.context;
-        EXPORT_DICTIONARY = buildDynamicExportDictionary(t.context);
-    }
-    
+
+    currentExportState.context = t.context || currentExportState.context;
+
     (document.getElementById('pdf-report-title') || {}).value = t.title || '';
+    (document.getElementById('export-org-name') || {}).value = t.orgName || '';
+    (document.getElementById('export-doc-number') || {}).value = t.docNumber || '';
+    (document.getElementById('export-header-detail') || {}).value = t.headerDetail || '';
     if(document.getElementById('export-report-type')) (document.getElementById('export-report-type') || {}).value = t.type || 'summary';
     if(document.getElementById('export-sort-by')) (document.getElementById('export-sort-by') || {}).value = t.sortBy || 'date';
     if(document.getElementById('export-sort-order')) (document.getElementById('export-sort-order') || {}).value = t.sortOrder || 'asc';
-    
-    currentExportState.selectedCategories = new Set(t.categories || []);
-    currentExportState.selectedFields = new Set(t.fields || []);
-    
+
+    (document.getElementById('export-chk-bills') || {}).checked = t.inclBills !== false;
+    (document.getElementById('export-chk-food') || {}).checked = t.inclFood !== false;
+    (document.getElementById('export-chk-attach') || {}).checked = t.inclAttach !== false;
+
+    document.querySelectorAll('.export-col-chk').forEach(el => {
+        el.checked = !t.billCols || t.billCols.includes(el.value);
+    });
+    document.querySelectorAll('.export-food-col').forEach(el => {
+        el.checked = !t.foodCols || t.foodCols.includes(el.value);
+    });
+
     if (t.att) {
         if(document.querySelector('.att-chk[value="show_img"]')) document.querySelector('.att-chk[value="show_img"]').checked = t.att.img;
         if(document.querySelector('.att-chk[value="show_pdf"]')) document.querySelector('.att-chk[value="show_pdf"]').checked = t.att.pdf;
+        if(document.querySelector('.att-chk[value="show_qr"]')) document.querySelector('.att-chk[value="show_qr"]').checked = t.att.qr;
     }
-    
-    buildExportCategoryUI();
-    buildExportProjectUI();
-    buildExportFieldsUI();
+
     renderExportPreview();
 }
 
-// 5. Exporters
+// 5. Exporters — column definitions (EXPORT_BILL_COLUMNS / EXPORT_FOOD_COLUMNS)
+// are the same ones the preview renders from, so Excel/CSV always matches what's shown.
 function executeDynamicExport(format) {
-    const data = getFilteredExportData();
-    if (data.length === 0) {
+    const inclBills = (document.getElementById('export-chk-bills') || {}).checked;
+    const inclFood = (document.getElementById('export-chk-food') || {}).checked;
+    const inclAttach = (document.getElementById('export-chk-attach') || {}).checked;
+
+    const billCols = getExportSelectedColumns('.export-col-chk');
+    const foodCols = getExportSelectedColumns('.export-food-col');
+
+    const sections = [];
+    if (inclBills) sections.push({ label: 'รายการบิล', rows: buildExportSectionData('bills'), cols: EXPORT_BILL_COLUMNS.filter(c => billCols.includes(c.id)) });
+    if (inclFood) sections.push({ label: 'ค่าอาหารประจำเดือน', rows: buildExportSectionData('food'), cols: EXPORT_FOOD_COLUMNS.filter(c => foodCols.includes(c.id)) });
+    if (inclAttach) sections.push({ label: 'บิลแนบ / ค่าสาธารณูปโภค', rows: buildExportSectionData('attach'), cols: EXPORT_BILL_COLUMNS.filter(c => billCols.includes(c.id)) });
+
+    const hasAnyData = sections.some(s => s.rows.length > 0 && s.cols.length > 0);
+    if (!hasAnyData) {
         appAlert('ระบบไม่สามารถดำเนินการได้: ไม่มีข้อมูลสำหรับส่งออก (Empty Data)');
         return;
     }
-    
+
     if (format === 'excel' || format === 'csv') {
-        let visibleFields = [];
-        currentExportState.selectedCategories.forEach(cat => {
-            EXPORT_DICTIONARY[cat].fields.forEach(f => {
-                if (currentExportState.selectedFields.has(f.id) && !visibleFields.find(vf => vf.id === f.id)) {
-                    visibleFields.push(f);
-                }
-            });
-        });
-        
-        const exportData = data.map(row => {
-            let obj = {};
-            visibleFields.forEach(f => {
-                let val = row[f.id] || '';
-                if (f.id === 'amount' && !val) val = row.totalAmount;
-                if (f.type === 'date') val = formatDateThai(val);
-                if (f.source === 'projects') val = getProjectName(val);
-                if (f.source === 'categories') val = getCategoryName(val);
-                if (f.type === 'status') val = val === 'pending' ? 'รอพิจารณา' : 'อนุมัติแล้ว';
-                obj[f.label] = val;
-            });
-            return obj;
-        });
-        
-        const ws = XLSX.utils.json_to_sheet(exportData);
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "DynamicReport");
-        
+        sections.forEach(section => {
+            if (section.rows.length === 0 || section.cols.length === 0) return;
+            const exportData = section.rows.map(row => {
+                let obj = {};
+                section.cols.forEach(c => { obj[c.label] = c.get(row) ?? ''; });
+                return obj;
+            });
+            const ws = XLSX.utils.json_to_sheet(exportData);
+            XLSX.utils.book_append_sheet(wb, ws, section.label.substring(0, 31));
+        });
+
         if (format === 'csv') {
-            const csv = XLSX.utils.sheet_to_csv(ws);
+            const firstSheet = wb.SheetNames[0];
+            const csv = XLSX.utils.sheet_to_csv(wb.Sheets[firstSheet]);
             const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csv], {type: "text/csv;charset=utf-8"});
             const link = document.createElement("a");
             link.href = URL.createObjectURL(blob);
@@ -5352,14 +5248,6 @@ function executeDynamicExport(format) {
             </html>
         `);
         iframe.contentWindow.document.close();
-    }
-}
-
-function toggleSmartExportSetting(checked) {
-    currentExportState.smartDisplay = checked;
-    if ((document.getElementById('modal-export-pdf') || {style:{}}).style.display === 'flex') {
-        buildExportFieldsUI();
-        renderExportPreview();
     }
 }
 
@@ -6539,32 +6427,100 @@ function updateExportSectionBadges() {
     if (ab) ab.textContent = attachN + ' รายการ';
 }
 
+/* Column definitions shared by preview, PDF and per-section download —
+   each id matches a checkbox `value` in the modal so selection state maps 1:1. */
+const EXPORT_BILL_COLUMNS = [
+    { id: 'docNo', label: 'เลขบิล', align: 'left', get: r => r.docNo },
+    { id: 'date', label: 'วันที่', align: 'left', get: r => formatDateThai(r.date) },
+    { id: 'project', label: 'โครงการ', align: 'left', get: r => r.project },
+    { id: 'category', label: 'หมวดหมู่', align: 'left', get: r => r.category },
+    { id: 'vendor', label: 'ผู้ขาย', align: 'left', get: r => r.vendor },
+    { id: 'amount', label: 'ยอดรวม', align: 'right', get: r => formatNumber(r.amount), isAmount: true },
+    { id: 'claimType', label: 'ประเภทเบิก', align: 'left', get: r => r.claimType },
+    { id: 'attachments', label: 'หลักฐานแนบ', align: 'center', get: r => r.attachmentsCount > 0 ? (r.attachmentsCount + ' ไฟล์') : '-' }
+];
+const EXPORT_FOOD_COLUMNS = [
+    { id: 'foodDate', label: 'วันที่', align: 'left', get: r => formatDateThai(r.foodDate) },
+    { id: 'foodName', label: 'รายการ', align: 'left', get: r => r.foodName },
+    { id: 'foodCategory', label: 'หมวดหมู่', align: 'left', get: r => r.foodCategory },
+    { id: 'foodAmount', label: 'ยอดเงิน', align: 'right', get: r => formatNumber(r.foodAmount), isAmount: true }
+];
+
+/* Builds one preview table from clean row data — never touches the DOM of
+   the main app tables, so it can't pick up the inline quick-add row or
+   whatever columns happen to be visible/hidden/reordered there. */
+function buildExportTableHtml(rows, columnDefs, selectedIds, emptyLabel, detailed) {
+    const cols = columnDefs.filter(c => selectedIds.includes(c.id));
+    if (cols.length === 0) {
+        return '<div style="font-size:11px; color:#9ca3af; font-style:italic; padding:8px;">ยังไม่ได้เลือกคอลัมน์ที่จะแสดง</div>';
+    }
+    const detailCols = detailed ? columnDefs.filter(c => !selectedIds.includes(c.id)) : [];
+
+    let html = '<table style="width:100%; border-collapse:collapse; font-size:11px;"><thead><tr style="background:#e5e7eb;">';
+    cols.forEach(c => { html += `<th style="padding:5px 8px; text-align:${c.align}; border:1px solid #d1d5db;">${escapeHTML(c.label)}</th>`; });
+    html += '</tr></thead><tbody>';
+
+    if (rows.length === 0) {
+        html += `<tr><td colspan="${cols.length}" style="padding:8px; text-align:center; color:#9ca3af; border:1px solid #d1d5db; font-style:italic;">${emptyLabel}</td></tr>`;
+    } else {
+        const amountColIdx = cols.findIndex(c => c.isAmount);
+        rows.forEach(row => {
+            html += '<tr style="border-bottom:1px solid #f3f4f6;">';
+            cols.forEach(c => {
+                const val = c.get(row);
+                html += `<td style="padding:4px 8px; border:1px solid #d1d5db; text-align:${c.align};">${escapeHTML(String(val ?? ''))}</td>`;
+            });
+            html += '</tr>';
+            if (detailCols.length > 0) {
+                const detailText = detailCols.map(c => `${c.label}: ${String(c.get(row) ?? '')}`).join(' · ');
+                html += `<tr><td colspan="${cols.length}" style="padding:2px 8px 6px; border:1px solid #d1d5db; border-top:none; font-size:10px; color:#6b7280; font-style:italic;">${escapeHTML(detailText)}</td></tr>`;
+            }
+        });
+        if (amountColIdx >= 0) {
+            const rawTotal = rows.reduce((s, r) => s + (parseFloat(cols[amountColIdx].id === 'amount' ? r.amount : r.foodAmount) || 0), 0);
+            html += '<tr style="background:#f9fafb; font-weight:700;">';
+            if (amountColIdx > 0) html += `<td colspan="${amountColIdx}" style="padding:5px 8px; border:1px solid #d1d5db; text-align:right;">รวมทั้งหมด</td>`;
+            html += `<td style="padding:5px 8px; border:1px solid #d1d5db; text-align:right; color:#059669;">${formatNumber(rawTotal)}</td>`;
+            const afterCount = cols.length - amountColIdx - 1;
+            for (let i = 0; i < afterCount; i++) html += '<td style="padding:5px 8px; border:1px solid #d1d5db;"></td>';
+            html += '</tr>';
+        }
+    }
+    html += '</tbody></table>';
+    return html;
+}
+
 /* Patch renderExportPreview to include logo + enhanced header */
 const _origRenderExportPreview = window.renderExportPreview;
 window.renderExportPreview = function() {
     const page = document.getElementById('export-preview-page');
     if (!page) return;
-    
+
     // Gather settings
     const orgName = document.getElementById('export-org-name')?.value || '';
     const title = document.getElementById('pdf-report-title')?.value || 'รายงานค่าใช้จ่าย';
     const subHeading = document.getElementById('export-header-detail')?.value || '';
     const docNum = document.getElementById('export-doc-number')?.value || '';
     const reportMonth = document.getElementById('export-report-month')?.value || '';
+    const reportType = document.getElementById('export-report-type')?.value || 'summary';
     const logoPreview = document.getElementById('export-logo-preview');
     const logoSrc = logoPreview?.dataset?.logoSrc || '';
-    
+
     // Signature
     const inclSig = document.getElementById('pdf-include-signature')?.checked;
     const preparer = document.getElementById('pdf-preparer-name')?.value || '';
     const reviewer = document.getElementById('pdf-reviewer-name')?.value || '';
     const approver = document.getElementById('pdf-approver-name')?.value || '';
-    
+
     // Section toggles
     const inclBills = document.getElementById('export-chk-bills')?.checked;
     const inclFood = document.getElementById('export-chk-food')?.checked;
     const inclAttach = document.getElementById('export-chk-attach')?.checked;
-    
+
+    const billCols = getExportSelectedColumns('.export-col-chk');
+    const foodCols = getExportSelectedColumns('.export-food-col');
+    const detailed = reportType === 'detailed';
+
     // Month label
     let monthLabel = '';
     if (reportMonth) {
@@ -6572,100 +6528,51 @@ window.renderExportPreview = function() {
         const thMonths = ['','มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
         monthLabel = thMonths[parseInt(m)] + ' พ.ศ. ' + (parseInt(y) + 543);
     }
-    
+
     // Build preview HTML
     let html = '';
-    
+
     // Document header
     html += '<div style="display:flex; align-items:center; gap:16px; margin-bottom:16px; border-bottom:2px solid #1a1a2e; padding-bottom:14px;">';
     if (logoSrc) {
         html += '<img src="' + logoSrc + '" style="width:64px;height:64px;object-fit:contain; flex-shrink:0;">';
     }
     html += '<div style="flex:1;">';
-    if (orgName) html += '<div style="font-size:14px; font-weight:700; color:#1a1a2e;">' + orgName + '</div>';
-    html += '<div style="font-size:18px; font-weight:800; color:#1a1a2e; margin:2px 0;">' + title + '</div>';
+    if (orgName) html += '<div style="font-size:14px; font-weight:700; color:#1a1a2e;">' + escapeHTML(orgName) + '</div>';
+    html += '<div style="font-size:18px; font-weight:800; color:#1a1a2e; margin:2px 0;">' + escapeHTML(title) + '</div>';
     if (monthLabel) html += '<div style="font-size:12px; color:#4b5563;">ประจำ' + monthLabel + '</div>';
-    if (subHeading) html += '<div style="font-size:11px; color:#6b7280; margin-top:2px;">' + subHeading + '</div>';
+    if (subHeading) html += '<div style="font-size:11px; color:#6b7280; margin-top:2px;">' + escapeHTML(subHeading) + '</div>';
     html += '</div>';
-    if (docNum) html += '<div style="text-align:right; font-size:11px; color:#6b7280;">เลขที่: <strong>' + docNum + '</strong></div>';
+    if (docNum) html += '<div style="text-align:right; font-size:11px; color:#6b7280;">เลขที่: <strong>' + escapeHTML(docNum) + '</strong></div>';
     html += '</div>';
-    
+
     // Bills section preview
     if (inclBills) {
-        const billsRows = document.getElementById('full-bills-table')?.querySelectorAll('tbody tr') || [];
-        const visibleRows = Array.from(billsRows).filter(r => !r.querySelector('td[colspan]'));
+        const billRows = buildExportSectionData('bills');
         html += '<div style="margin-bottom:16px;">';
-        const _billsMonthLabel = (() => { const mi = document.getElementById('export-report-month')?.value; if (!mi) return ''; const [y,m]=mi.split('-'); const thM=['','มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม']; return 'ประจำเดือน' + thM[parseInt(m)] + ' พ.ศ. ' + (parseInt(y)+543); })();
-        html += '<div style="font-size:13px; font-weight:700; color:#1a1a2e; background:#f3f4f6; padding:6px 10px; border-radius:4px; margin-bottom:8px; border-left:3px solid #059669;">📄 รายการบิล' + _billsMonthLabel + '</div>';
-        html += '<table style="width:100%; border-collapse:collapse; font-size:11px;">';
-        html += '<thead><tr style="background:#e5e7eb;">';
-        html += '<th style="padding:5px 8px; text-align:left; border:1px solid #d1d5db;">เลขบิล</th>';
-        html += '<th style="padding:5px 8px; text-align:left; border:1px solid #d1d5db;">วันที่</th>';
-        html += '<th style="padding:5px 8px; text-align:left; border:1px solid #d1d5db;">โครงการ</th>';
-        html += '<th style="padding:5px 8px; text-align:left; border:1px solid #d1d5db;">หมวดหมู่</th>';
-        html += '<th style="padding:5px 8px; text-align:right; border:1px solid #d1d5db;">ยอดรวม</th>';
-        html += '</tr></thead><tbody>';
-        
-        if (visibleRows.length === 0) {
-            html += '<tr><td colspan="5" style="padding:8px; text-align:center; color:#9ca3af; border:1px solid #d1d5db; font-style:italic;">ไม่มีข้อมูล</td></tr>';
-        } else {
-            let total = 0;
-            visibleRows.slice(0, 8).forEach(row => {
-                const cells = row.querySelectorAll('td');
-                if (cells.length >= 10) {
-                    const amtText = cells[9]?.textContent?.trim() || '0';
-                    const amt = parseFloat(amtText.replace(/,/g, '')) || 0;
-                    total += amt;
-                    html += '<tr style="border-bottom:1px solid #f3f4f6;">';
-                    html += '<td style="padding:4px 8px; border:1px solid #d1d5db; font-size:10px;">' + (cells[0]?.textContent?.trim() || '') + '</td>';
-                    html += '<td style="padding:4px 8px; border:1px solid #d1d5db;">' + (cells[1]?.textContent?.trim() || '') + '</td>';
-                    html += '<td style="padding:4px 8px; border:1px solid #d1d5db;">' + (cells[2]?.textContent?.trim() || '') + '</td>';
-                    html += '<td style="padding:4px 8px; border:1px solid #d1d5db;">' + (cells[3]?.textContent?.trim() || '') + '</td>';
-                    html += '<td style="padding:4px 8px; border:1px solid #d1d5db; text-align:right;">' + (cells[9]?.textContent?.trim() || '') + '</td>';
-                    html += '</tr>';
-                }
-            });
-            if (visibleRows.length > 8) {
-                html += '<tr><td colspan="5" style="padding:4px 8px; text-align:center; color:#6b7280; font-style:italic; font-size:10px; border:1px solid #d1d5db;">... และอีก ' + (visibleRows.length - 8) + ' รายการ (แสดงในไฟล์จริง)</td></tr>';
-            }
-            html += '<tr style="background:#f9fafb; font-weight:700;"><td colspan="4" style="padding:5px 8px; border:1px solid #d1d5db; text-align:right;">รวมทั้งหมด</td><td style="padding:5px 8px; border:1px solid #d1d5db; text-align:right; color:#059669;">' + total.toLocaleString('th-TH', {minimumFractionDigits:2}) + '</td></tr>';
-        }
-        html += '</tbody></table></div>';
+        html += '<div style="font-size:13px; font-weight:700; color:#1a1a2e; background:#f3f4f6; padding:6px 10px; border-radius:4px; margin-bottom:8px; border-left:3px solid #059669;">📄 รายการบิล' + (monthLabel ? 'ประจำ' + monthLabel : '') + '</div>';
+        html += buildExportTableHtml(billRows, EXPORT_BILL_COLUMNS, billCols, 'ไม่มีข้อมูล', detailed);
+        html += '</div>';
     }
-    
+
     // Food section preview
     if (inclFood) {
-        const foodRows = document.getElementById('food-bills-table')?.querySelectorAll('tbody tr') || [];
-        const visibleFoodRows = Array.from(foodRows).filter(r => !r.querySelector('td[colspan]'));
+        const foodRows = buildExportSectionData('food');
         html += '<div style="margin-bottom:16px;">';
         html += '<div style="font-size:13px; font-weight:700; color:#1a1a2e; background:#fef3c7; padding:6px 10px; border-radius:4px; margin-bottom:8px; border-left:3px solid #f59e0b;">🍽️ ค่าอาหารประจำเดือน</div>';
-        if (visibleFoodRows.length === 0) {
-            html += '<div style="font-size:11px; color:#9ca3af; font-style:italic; padding:8px;">ไม่มีข้อมูลค่าอาหาร</div>';
-        } else {
-            html += '<table style="width:100%; border-collapse:collapse; font-size:11px;">';
-            html += '<thead><tr style="background:#e5e7eb;"><th style="padding:5px 8px; border:1px solid #d1d5db;">วันที่</th><th style="padding:5px 8px; border:1px solid #d1d5db;">รายการ</th><th style="padding:5px 8px; border:1px solid #d1d5db;">หมวดหมู่</th><th style="padding:5px 8px; text-align:right; border:1px solid #d1d5db;">ยอดเงิน</th></tr></thead><tbody>';
-            visibleFoodRows.slice(0, 5).forEach(row => {
-                const cells = row.querySelectorAll('td');
-                html += '<tr><td style="padding:4px 8px;border:1px solid #d1d5db;">' + (cells[1]?.textContent?.trim()||'') + '</td><td style="padding:4px 8px;border:1px solid #d1d5db;">' + (cells[2]?.textContent?.trim()||'') + '</td><td style="padding:4px 8px;border:1px solid #d1d5db;">' + (cells[3]?.textContent?.trim()||'') + '</td><td style="padding:4px 8px;border:1px solid #d1d5db;text-align:right;">' + (cells[6]?.textContent?.trim()||'') + '</td></tr>';
-            });
-            if (visibleFoodRows.length > 5) html += '<tr><td colspan="4" style="padding:4px 8px;text-align:center;color:#9ca3af;font-size:10px;border:1px solid #d1d5db;font-style:italic;">... และอีก ' + (visibleFoodRows.length - 5) + ' รายการ</td></tr>';
-            html += '</tbody></table>';
-        }
+        html += buildExportTableHtml(foodRows, EXPORT_FOOD_COLUMNS, foodCols, 'ไม่มีข้อมูลค่าอาหาร', detailed);
         html += '</div>';
     }
 
     // Attach section preview
     if (inclAttach) {
-        const attachRows = document.getElementById('attached-bills-table')?.querySelectorAll('tbody tr') || [];
-        const visibleAttachRows = Array.from(attachRows).filter(r => !r.querySelector('td[colspan]'));
-        if (visibleAttachRows.length > 0) {
-            html += '<div style="margin-bottom:16px;">';
-            html += '<div style="font-size:13px; font-weight:700; color:#1a1a2e; background:#ede9fe; padding:6px 10px; border-radius:4px; margin-bottom:8px; border-left:3px solid #8b5cf6;">📎 บิลแนบ / ค่าสาธารณูปโภค</div>';
-            html += '<div style="font-size:11px; color:#6b7280;">' + visibleAttachRows.length + ' รายการ (แสดงในไฟล์จริง)</div>';
-            html += '</div>';
-        }
+        const attachRows = buildExportSectionData('attach');
+        html += '<div style="margin-bottom:16px;">';
+        html += '<div style="font-size:13px; font-weight:700; color:#1a1a2e; background:#ede9fe; padding:6px 10px; border-radius:4px; margin-bottom:8px; border-left:3px solid #8b5cf6;">📎 บิลแนบ / ค่าสาธารณูปโภค</div>';
+        html += buildExportTableHtml(attachRows, EXPORT_BILL_COLUMNS, billCols, 'ไม่มีข้อมูล', detailed);
+        html += '</div>';
     }
-    
+
     // Signature section
     if (inclSig && (preparer || reviewer || approver)) {
         html += '<div style="margin-top:40px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:20px;">';
@@ -6706,8 +6613,6 @@ document.addEventListener('DOMContentLoaded', () => {
    Export Single Section - individual file download per section
    ========================================================================== */
 window.exportSingleSection = function(section) {
-    const format = document.getElementById('export-bills-format')?.value || 
-                   document.getElementById('export-report-type') ? 'excel' : 'excel';
     const monthInput = document.getElementById('export-report-month');
     const reportMonth = monthInput?.value || '';
     let monthLabel = '';
@@ -6722,38 +6627,28 @@ window.exportSingleSection = function(section) {
         food: 'ค่าอาหารประจำเดือน',
         attach: 'บิลแนบ_สาธารณูปโภค'
     };
-    const tableIds = {
-        bills: 'full-bills-table',
-        food: 'food-bills-table',
-        attach: 'attached-bills-table'
-    };
 
-    const tableEl = document.getElementById(tableIds[section]);
-    if (!tableEl) {
-        if (typeof showToast === 'function') showToast('ไม่พบข้อมูลในหัวข้อนี้', 'error');
+    const rows = buildExportSectionData(section);
+    if (rows.length === 0) {
+        if (typeof showToast === 'function') showToast('ไม่มีข้อมูลในหัวข้อนี้', 'warning');
         return;
     }
 
-    const rows = Array.from(tableEl.querySelectorAll('tbody tr'))
-        .filter(r => !r.querySelector('td[colspan]'));
-
-    if (rows.length === 0) {
-        if (typeof showToast === 'function') showToast('ไม่มีข้อมูลในหัวข้อนี้', 'warning');
+    const isFood = section === 'food';
+    const columnDefs = isFood ? EXPORT_FOOD_COLUMNS : EXPORT_BILL_COLUMNS;
+    const selectedIds = isFood ? getExportSelectedColumns('.export-food-col') : getExportSelectedColumns('.export-col-chk');
+    const cols = columnDefs.filter(c => selectedIds.includes(c.id));
+    if (cols.length === 0) {
+        if (typeof showToast === 'function') showToast('กรุณาเลือกคอลัมน์ที่จะดาวน์โหลดอย่างน้อย 1 คอลัมน์', 'warning');
         return;
     }
 
     const fileName = (sectionNames[section] || section) + (monthLabel ? '_' + monthLabel : '');
 
     // Build CSV
-    const headers = Array.from(tableEl.querySelectorAll('thead th'))
-        .map(th => th.textContent.trim())
-        .filter(h => h && h !== 'เครื่องมือ' && h !== 'หลักฐาน');
-    
-    let csvContent = headers.map(h => '"' + h.replace(/"/g, '""') + '"').join(',') + '\n';
+    let csvContent = cols.map(c => '"' + c.label.replace(/"/g, '""') + '"').join(',') + '\n';
     rows.forEach(row => {
-        const cells = Array.from(row.querySelectorAll('td'))
-            .slice(0, headers.length)
-            .map(td => '"' + (td.textContent.trim().replace(/"/g, '""')) + '"');
+        const cells = cols.map(c => '"' + String(c.get(row) ?? '').replace(/"/g, '""') + '"');
         csvContent += cells.join(',') + '\n';
     });
 

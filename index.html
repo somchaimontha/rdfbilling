@@ -573,6 +573,10 @@
             <div class="header-filters" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-color); padding-bottom:16px;">
                 <h2 class="widget-title" style="margin-bottom:0;">รายงานสรุปรายปี</h2>
                 <div style="display:flex; align-items:center; gap:12px;">
+                    <div id="summary-org-filter-wrap" style="display:none; align-items:center; gap:8px;">
+                        <label>สถานศึกษา:</label>
+                        <select id="summary-org-filter" class="form-input" onchange="renderSummaryView()"></select>
+                    </div>
                     <label>ปีงบประมาณ:</label>
                     <select id="summary-year-select" class="form-input" onchange="renderSummaryView()"></select>
                 </div>
@@ -1530,6 +1534,10 @@
                                 <label class="form-label" style="font-size:11px;">เลขที่เอกสาร (ถ้ามี)</label>
                                 <input type="text" id="export-doc-number" class="form-input" style="font-size:13px;padding:6px 8px;" placeholder="RDF-2568-06" oninput="renderExportPreview()">
                             </div>
+                        </div>
+                        <div id="export-org-filter-wrap" class="form-group" style="display:none; margin-bottom:8px;">
+                            <label class="form-label" style="font-size:11px;">สถานศึกษา (สำหรับรายงานนี้)</label>
+                            <select id="export-org-filter" class="form-select" style="font-size:13px;padding:6px 10px;" onchange="renderExportPreview()"></select>
                         </div>
                         <div class="form-group" style="margin-bottom:0;">
                             <label class="form-label" style="font-size:11px;">รายละเอียดส่วนหัว (Sub-heading)</label>
