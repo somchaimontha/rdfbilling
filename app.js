@@ -5397,6 +5397,23 @@ function renderUserManagementRows() {
     if (window.lucide) lucide.createIcons();
 }
 
+// เติม dropdown เลือกสถานศึกษาในฟอร์มเพิ่ม/แก้ไขผู้ใช้ — ซ่อนไว้ถ้ามีองค์กรเดียว (ไม่มีอะไรให้เลือก)
+function setupAdminUserOrgSelect(selectedOrgId) {
+    const wrap = document.getElementById('admin-user-org-wrap');
+    const sel = document.getElementById('admin-user-org');
+    if (!wrap || !sel) return;
+    const orgs = state.organizations || [];
+    if (orgs.length <= 1) {
+        wrap.style.display = 'none';
+        return;
+    }
+    wrap.style.display = '';
+    const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
+    const defaultOrgId = selectedOrgId || (currentUser && currentUser.organizationId) || orgs[0].id;
+    sel.innerHTML = orgs.map(o => `<option value="${o.id}">${escapeHTML(o.name)}</option>`).join('');
+    sel.value = defaultOrgId;
+}
+
 function openCreateUserModal() {
     (document.getElementById('admin-user-modal-title') || {}).textContent = 'เพิ่มผู้ใช้งานใหม่';
     (document.getElementById('admin-user-mode') || {}).value = 'create';
@@ -5409,6 +5426,7 @@ function openCreateUserModal() {
     (document.getElementById('admin-user-role') || {}).value = 'staff';
     (document.getElementById('admin-user-pw-hint') || {}).textContent = '(จำเป็น)';
     (document.getElementById('admin-user-role-warning') || {}).style.display = 'none';
+    setupAdminUserOrgSelect();
     const modal = document.getElementById('modal-admin-user');
     modal.style.display = 'flex'; modal.classList.add('active');
 }
@@ -5431,6 +5449,7 @@ function openEditUserModal(userId) {
     (document.getElementById('admin-user-role') || {}).value = isKnownRole ? currentRole : 'staff';
     (document.getElementById('admin-user-role-warning') || {}).style.display = isKnownRole ? 'none' : 'block';
     (document.getElementById('admin-user-pw-hint') || {}).textContent = '(เว้นว่างถ้าไม่ต้องการเปลี่ยน)';
+    setupAdminUserOrgSelect(u.organizationId);
     const modal = document.getElementById('modal-admin-user');
     modal.style.display = 'flex'; modal.classList.add('active');
 }
@@ -5454,18 +5473,24 @@ async function saveAdminUser() {
     if (!fullName) { appAlert('กรุณาระบุชื่อ-นามสกุล', 'error'); return; }
     if (mode === 'create' && !password) { appAlert('กรุณาตั้งรหัสผ่านสำหรับผู้ใช้ใหม่', 'error'); return; }
 
+    const orgSel = document.getElementById('admin-user-org');
+    const selectedOrgId = orgSel && orgSel.value ? orgSel.value : null;
+
     try {
         if (mode === 'create') {
             const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
             const passwordHash = await sha256(password);
             await apiCall('createUser', {
                 username, passwordHash, fullName, role, email,
-                organizationId: currentUser && currentUser.organizationId
+                organizationId: selectedOrgId || (currentUser && currentUser.organizationId)
             });
         } else {
             const editingUser = adminUserList.find(u => u.username === username);
             if (!editingUser) throw new Error('ไม่พบผู้ใช้งานนี้ในระบบ');
-            await apiCall('updateUser', { id: editingUser.id, fullName, role, email });
+            await apiCall('updateUser', {
+                id: editingUser.id, fullName, role, email,
+                ...(selectedOrgId && { organizationId: selectedOrgId })
+            });
             if (password) {
                 const passwordHash = await sha256(password);
                 await apiCall('changePassword', { id: editingUser.id, passwordHash });
