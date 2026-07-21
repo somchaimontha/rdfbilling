@@ -660,21 +660,23 @@
 
         <!-- TAB: User Management -->
         <div class="tab-content" id="tab-user-management">
-            <h3 style="margin:0 0 16px;">จัดการผู้ใช้งาน</h3>
+            <div style="position:sticky; top:0; z-index:5; background:var(--bg-main); padding-bottom:12px;">
+                <h3 style="margin:0 0 16px;">จัดการผู้ใช้งาน</h3>
 
-            <div class="settings-tabbar">
-                <button type="button" class="settings-tab-btn active" data-usermgmt-tab="users" onclick="switchUserMgmtTab('users')">
-                    <i data-lucide="users" class="settings-tab-icon"></i>
-                    <span>รายชื่อผู้ใช้งาน</span>
-                </button>
-                <button type="button" class="settings-tab-btn" data-usermgmt-tab="roles" onclick="switchUserMgmtTab('roles')">
-                    <i data-lucide="shield" class="settings-tab-icon"></i>
-                    <span>อธิบายสิทธิ์</span>
-                </button>
-                <button type="button" class="settings-tab-btn" data-usermgmt-tab="matrix" onclick="switchUserMgmtTab('matrix')">
-                    <i data-lucide="table-2" class="settings-tab-icon"></i>
-                    <span>Permission Matrix</span>
-                </button>
+                <div class="settings-tabbar">
+                    <button type="button" class="settings-tab-btn active" data-usermgmt-tab="users" onclick="switchUserMgmtTab('users')">
+                        <i data-lucide="users" class="settings-tab-icon"></i>
+                        <span>รายชื่อผู้ใช้งาน</span>
+                    </button>
+                    <button type="button" class="settings-tab-btn" data-usermgmt-tab="roles" onclick="switchUserMgmtTab('roles')">
+                        <i data-lucide="shield" class="settings-tab-icon"></i>
+                        <span>อธิบายสิทธิ์</span>
+                    </button>
+                    <button type="button" class="settings-tab-btn" data-usermgmt-tab="matrix" onclick="switchUserMgmtTab('matrix')">
+                        <i data-lucide="table-2" class="settings-tab-icon"></i>
+                        <span>Permission Matrix</span>
+                    </button>
+                </div>
             </div>
 
             <!-- PANEL: Users list -->
@@ -809,7 +811,7 @@
 
     <!-- TAB: Settings -->
     <div class="tab-content" id="tab-settings-view">
-        <div class="settings-header" style="background: linear-gradient(135deg, #4f46e5, #7c3aed); padding: 24px 30px; border-radius: 16px; color: white; margin-bottom: 24px; box-shadow: 0 10px 25px rgba(79, 70, 229, 0.25); position: relative; overflow: hidden;">
+        <div class="settings-header" style="background: linear-gradient(135deg, #4f46e5, #7c3aed); padding: 24px 30px; border-radius: 16px; color: white; margin-bottom: 24px; box-shadow: 0 10px 25px rgba(79, 70, 229, 0.25); position: sticky; top: 0; z-index: 5; overflow: hidden;">
             <div style="position: absolute; right: -20px; top: -20px; opacity: 0.1;">
                 <i data-lucide="settings" style="width: 150px; height: 150px;"></i>
             </div>
@@ -1930,8 +1932,8 @@
 
 
     <!-- MODAL: My Profile -->
-    <div class="modal" id="modal-user-profile" style="display:none;">
-        <div class="modal-content" style="max-width:440px; border-radius:16px; overflow:hidden;">
+    <div class="modal-overlay" id="modal-user-profile">
+        <div class="modal-card" style="max-width:440px; border-radius:16px; overflow:hidden;">
             <div class="modal-header" style="background:linear-gradient(135deg,var(--primary),var(--primary-dark));color:white;padding:20px 24px;">
                 <h2 style="font-size:16px;font-weight:700;margin:0; color:white;"><i data-lucide="user-circle" style="width:18px;height:18px;vertical-align:middle;"></i> ข้อมูลส่วนตัว</h2>
                 <button onclick="closeUserProfileModal()" style="background:rgba(255,255,255,0.2);border:none;border-radius:8px;padding:6px;cursor:pointer;color:white;"><i data-lucide="x" style="width:16px;height:16px;"></i></button>
@@ -1972,8 +1974,8 @@
     </div>
 
     <!-- MODAL: Create/Edit User (Admin) -->
-    <div class="modal" id="modal-admin-user" style="display:none;">
-        <div class="modal-content" style="max-width:440px; border-radius:16px; overflow:hidden;">
+    <div class="modal-overlay" id="modal-admin-user">
+        <div class="modal-card" style="max-width:440px; border-radius:16px; overflow:hidden;">
             <div class="modal-header" style="background:linear-gradient(135deg,var(--primary),var(--primary-dark));color:white;padding:20px 24px;">
                 <h2 id="admin-user-modal-title" style="font-size:16px;font-weight:700;margin:0;color:white;">เพิ่มผู้ใช้งานนน</h2>
                 <button onclick="closeAdminUserModal()" style="background:rgba(255,255,255,0.2);border:none;border-radius:8px;padding:6px;cursor:pointer;color:white;"><i data-lucide="x" style="width:16px;height:16px;"></i></button>

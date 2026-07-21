@@ -5277,14 +5277,13 @@ function openUserProfileModal() {
     (document.getElementById('profile-modal-avatar') || {}).value = '';
     
     const modal = document.getElementById('modal-user-profile');
-    modal.style.display = 'flex';
     modal.classList.add('active');
 }
 
 function closeUserProfileModal() {
     const modal = document.getElementById('modal-user-profile');
-    modal.style.display = 'none';
     modal.classList.remove('active');
+    modal.style.display = '';
 }
 
 function previewProfileAvatar(input) {
@@ -5428,7 +5427,7 @@ function openCreateUserModal() {
     (document.getElementById('admin-user-role-warning') || {}).style.display = 'none';
     setupAdminUserOrgSelect();
     const modal = document.getElementById('modal-admin-user');
-    modal.style.display = 'flex'; modal.classList.add('active');
+    modal.classList.add('active');
 }
 
 const VALID_USER_ROLES = ['admin', 'manager', 'staff', 'viewer'];
@@ -5451,12 +5450,12 @@ function openEditUserModal(userId) {
     (document.getElementById('admin-user-pw-hint') || {}).textContent = '(เว้นว่างถ้าไม่ต้องการเปลี่ยน)';
     setupAdminUserOrgSelect(u.organizationId);
     const modal = document.getElementById('modal-admin-user');
-    modal.style.display = 'flex'; modal.classList.add('active');
+    modal.classList.add('active');
 }
 
 function closeAdminUserModal() {
     const modal = document.getElementById('modal-admin-user');
-    if (modal) { modal.style.display = 'none'; modal.classList.remove('active'); }
+    if (modal) { modal.classList.remove('active'); modal.style.display = ''; }
 }
 
 async function saveAdminUser() {
