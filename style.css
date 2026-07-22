@@ -1082,6 +1082,7 @@ button, input, select, textarea {
 .icon-category { background: rgba(99,102,241,0.12); color: #6366f1; }
 .icon-vendor { background: rgba(16,185,129,0.12); color: #10b981; }
 .icon-fund { background: var(--warning-light); color: var(--warning); }
+.icon-org { background: rgba(14,165,233,0.12); color: #0ea5e9; }
 
 .master-add-btn {
     padding: 6px 14px !important;

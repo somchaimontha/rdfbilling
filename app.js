@@ -2108,6 +2108,7 @@ function renderMasterData() {
     renderMasterCategories();
     renderMasterVendors();
     renderMasterFundSources();
+    renderMasterOrganizations();
     renderLoginBgSettingsUI();
     initializeLucide();
 }
@@ -2217,6 +2218,32 @@ function renderMasterFundSources() {
     bindMasterActionButtons();
 }
 
+function renderMasterOrganizations() {
+    const tbody = document.querySelector('#master-organizations-table tbody');
+    if (!tbody) return;
+    const countEl = document.getElementById('master-organizations-count');
+    if (countEl) countEl.textContent = (state.organizations || []).length;
+    tbody.innerHTML = '';
+    (state.organizations || []).forEach((o, idx) => {
+        const tr = document.createElement('tr');
+        const meta = [o.id, o.shortName ? `รหัส ${o.shortName}` : null].filter(Boolean).join(' · ');
+        tr.innerHTML = `
+            <td>
+                <div style="font-weight:600;">${o.name}</div>
+                <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${meta}</div>
+            </td>
+            <td class="text-center">
+                <div class="action-buttons" style="justify-content:center;">
+                    <button class="btn-icon btn-icon-edit" data-master="organization" data-idx="${idx}"><i data-lucide="edit"></i></button>
+                    <button class="btn-icon btn-icon-delete" data-master="organization" data-idx="${idx}"><i data-lucide="trash-2"></i></button>
+                </div>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+    bindMasterActionButtons();
+}
+
 function bindMasterActionButtons() {
     document.querySelectorAll('[data-master]').forEach(btn => {
         // Avoid re-binding
@@ -2252,7 +2279,7 @@ function openMasterModal(master, editIdx = null) {
     modal.setAttribute('data-master', master);
     modal.setAttribute('data-edit-idx', editIdx !== null ? editIdx : '');
 
-    const titles = { project: 'โครงการ', category: 'หมวดหมู่', vendor: 'ผู้ขาย/ร้านค้า', fundsource: 'แหล่งเงิน' };
+    const titles = { project: 'โครงการ', category: 'หมวดหมู่', vendor: 'ผู้ขาย/ร้านค้า', fundsource: 'แหล่งเงิน', organization: 'สถานศึกษา' };
     title.textContent = (editIdx !== null ? 'แก้ไข' : 'เพิ่ม') + titles[master];
 
     body.innerHTML = '';
@@ -2281,6 +2308,15 @@ function openMasterModal(master, editIdx = null) {
     } else if (master === 'fundsource') {
         const item = editIdx !== null ? state.fundSources[editIdx] : null;
         body.innerHTML = `<div class="form-group"><label class="form-label">ชื่อแหล่งเงิน</label><input type="text" id="mf-name" class="form-input" value="${item ? item.name : ''}" required></div>`;
+    } else if (master === 'organization') {
+        const item = editIdx !== null ? state.organizations[editIdx] : null;
+        body.innerHTML = `
+            <div class="form-group"><label class="form-label">ชื่อสถานศึกษา</label><input type="text" id="mf-name" class="form-input" value="${item ? item.name : ''}" required></div>
+            <div class="form-group"><label class="form-label">รหัสย่อ (ใช้ขึ้นต้นเลขที่เอกสาร เช่น MSB)</label><input type="text" id="mf-shortname" class="form-input" value="${item ? (item.shortName || '') : ''}" required></div>
+            <div class="form-group"><label class="form-label">ที่อยู่</label><input type="text" id="mf-address" class="form-input" value="${item ? (item.addressTh || '') : ''}"></div>
+            <div class="form-group"><label class="form-label">เบอร์โทรศัพท์</label><input type="text" id="mf-phone" class="form-input" value="${item ? (item.phone || '') : ''}"></div>
+            <div class="form-group"><label class="form-label">ชื่อผู้อำนวยการ/ผู้บริหาร</label><input type="text" id="mf-director" class="form-input" value="${item ? (item.directorName || '') : ''}"></div>
+        `;
     }
 
     modal.classList.add('active');
@@ -2317,6 +2353,13 @@ async function handleMasterSubmit(e) {
             await apiCall('createVendor', { vendorName: name, phone });
         } else if (master === 'fundsource') {
             await apiCall('createFundSource', { fundSourceName: name });
+        } else if (master === 'organization') {
+            const shortName = (document.getElementById('mf-shortname') || {}).value.trim();
+            if (!shortName) { appAlert('กรุณาระบุรหัสย่อ'); showLoading(false); return; }
+            const addressTh = (document.getElementById('mf-address') || {}).value.trim();
+            const phone = (document.getElementById('mf-phone') || {}).value.trim();
+            const directorName = (document.getElementById('mf-director') || {}).value.trim();
+            await apiCall('createOrganization', { nameTh: name, shortName, addressTh, phone, directorName });
         }
         appAlert('เพิ่มข้อมูลหลักสำเร็จ!');
         closeMasterModal();
