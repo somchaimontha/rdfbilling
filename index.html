@@ -11,8 +11,10 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pdfmake@0.3.11/build/pdfmake.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pdfmake@0.3.11/build/vfs_fonts.js"></script>
+    <!-- ฟอนต์ไทย Sarabun ฝัง base64 ไว้ในไฟล์นี้สำหรับ pdfmake (pdfMake.addFonts รับ URL ตรงๆ ไม่ได้ในเวอร์ชันนี้ ต้องลงทะเบียนผ่าน vfs) -->
+    <script src="fonts/sarabun-vfs.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         /* Extra inline styles */
@@ -1555,8 +1557,8 @@
                                 <input type="month" id="export-report-month" class="form-input" style="font-size:13px;padding:6px 8px;" onchange="renderExportPreview()">
                             </div>
                             <div class="form-group" style="margin:0;">
-                                <label class="form-label" style="font-size:11px;">เลขที่เอกสาร (ถ้ามี)</label>
-                                <input type="text" id="export-doc-number" class="form-input" style="font-size:13px;padding:6px 8px;" placeholder="RDF-2568-06" oninput="renderExportPreview()">
+                                <label class="form-label" style="font-size:11px;">เลขที่เอกสาร (ระบบออกอัตโนมัติจากสถานศึกษา+เดือน)</label>
+                                <input type="text" id="export-doc-number" class="form-input" style="font-size:13px;padding:6px 8px;background:var(--bg-main);color:var(--text-secondary);cursor:not-allowed;" placeholder="เลือกเดือนเพื่อออกเลขอัตโนมัติ" readonly title="ระบบออกเลขให้อัตโนมัติเพื่อลดข้อผิดพลาดในการตรวจสอบย้อนกลับ">
                             </div>
                         </div>
                         <div id="export-org-filter-wrap" class="form-group" style="display:none; margin-bottom:8px;">
@@ -1597,7 +1599,6 @@
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="vendor" checked onchange="renderExportPreview()"> ร้านค้า/ผู้ขาย</label>
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="amount" checked onchange="renderExportPreview()"> ยอดรวม</label>
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="claimType" checked onchange="renderExportPreview()"> ประเภทเบิก</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="attachments" onchange="renderExportPreview()"> แสดงหลักฐานแนบ</label>
                             </div>
                         </div>
 
@@ -1678,7 +1679,7 @@
                         <div style="display:flex; flex-direction:column; gap:8px; border:1px solid var(--border-color); border-radius:8px; padding:10px 12px; background:var(--bg-main);">
                             <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_img" checked onchange="renderExportPreview()"> แสดงรูปหลักฐาน</label>
                             <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_pdf" checked onchange="renderExportPreview()"> แสดง PDF หลักฐาน</label>
-                            <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_qr" onchange="renderExportPreview()"> แสดง QR Code</label>
+                            <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_qr" checked onchange="renderExportPreview()"> แสดง QR Code (ต้องกรอกเลขที่เอกสาร)</label>
                         </div>
                     </div>
                 </div>
@@ -1724,10 +1725,12 @@
                 <input type="hidden" id="pdf-export-mode" value="dashboard">
             </div>
 
-            <!-- ===== RIGHT PANEL: Live Preview ===== -->
-            <div style="overflow-y:auto; background:#e2e8f0; display:flex; justify-content:center; padding:24px;">
-                <div id="export-preview-page" style="background:white; width:210mm; min-height:297mm; padding:15mm; box-shadow:0 10px 30px rgba(0,0,0,0.15); font-family:'Sarabun',sans-serif; position:relative; border-radius:4px;">
-                    <!-- Live preview rendered here -->
+            <!-- ===== RIGHT PANEL: Live Preview — PDF จริงจาก pdfmake ฝังในกรอบ (ตรงกับไฟล์ที่ดาวน์โหลดเสมอ) ===== -->
+            <div style="overflow-y:auto; background:#e2e8f0; display:flex; justify-content:center; align-items:flex-start; padding:24px; position:relative;">
+                <iframe id="export-preview-frame" title="ตัวอย่างรายงาน" style="background:white; width:210mm; min-height:297mm; box-shadow:0 10px 30px rgba(0,0,0,0.15); border:none; border-radius:4px;"></iframe>
+                <div id="export-preview-loading" style="display:none; position:absolute; inset:0; align-items:center; justify-content:center; flex-direction:column; gap:14px; background:rgba(226,232,240,0.9); padding:20px; text-align:center;">
+                    <div id="export-preview-spinner" style="width:44px; height:44px; border:4px solid rgba(79,70,229,0.2); border-top-color:var(--primary); border-radius:50%; animation:spin 1s linear infinite;"></div>
+                    <div id="export-preview-loading-text" style="font-weight:600; font-size:13px; color:var(--text-secondary); max-width:320px;">กำลังสร้างตัวอย่าง PDF...</div>
                 </div>
             </div>
         </div>

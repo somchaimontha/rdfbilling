@@ -272,6 +272,15 @@ function initVerifyModeIfPresent() {
     const code = params.get('verify_code');
     if (!type || !code) return false;
 
+    // รายงาน export: ไม่แสดงสรุปแบบ public แต่บังคับ login ก่อนแล้วพาไปดูรายการบิลของเดือนนั้นในระบบ
+    // เก็บ pending ไว้ resolve หลัง login สำเร็จ (ดู resolvePendingExportVerify) แล้วปล่อยให้ flow ปกติทำงานต่อ
+    if (type === 'export') {
+        try { sessionStorage.setItem('rdf_pending_export_verify', JSON.stringify({ code })); } catch (e) {}
+        // ล้าง query param ออกจาก URL กันสแกนซ้ำ/รีเฟรชแล้ววนลูป (ข้อมูล pending อยู่ใน sessionStorage แล้ว)
+        try { window.history.replaceState({}, '', window.location.pathname); } catch (e) {}
+        return false;
+    }
+
     const loginOverlay = document.getElementById('login-overlay');
     const appShell = document.getElementById('app-shell');
     const verifyView = document.getElementById('verify-result-view');
@@ -343,6 +352,36 @@ function renderVerifyResult(result, type) {
     if (window.lucide) lucide.createIcons();
 }
 
+// สแกน QR ของรายงาน export → หลัง login สำเร็จ พาไปดูรายการบิลของเดือนนั้นในระบบ (ตามสิทธิ์ผู้ล็อกอิน)
+// เรียกจากท้าย checkUserSession() และ handleLoginSubmit() หลัง initAppWithAPI() สำเร็จ
+async function resolvePendingExportVerify() {
+    let pending = null;
+    try { pending = JSON.parse(sessionStorage.getItem('rdf_pending_export_verify') || 'null'); } catch (e) {}
+    if (!pending || !pending.code) return;
+    sessionStorage.removeItem('rdf_pending_export_verify'); // กันวนลูป — ล้างก่อนเสมอ
+
+    try {
+        const res = await apiCall('verifyDocument', { type: 'export', code: pending.code });
+        const month = (res && res.month) || ''; // "YYYY-MM" (ค.ศ.)
+        if (!month) {
+            appAlert('ไม่พบเอกสารเลขที่ ' + pending.code + ' ในระบบ — อาจถูกลบหรือรหัสไม่ถูกต้อง', 'error');
+            return;
+        }
+        const [ceY, mm] = month.split('-');
+        state.selectedYear = (parseInt(ceY, 10) || 0) + 543;
+        state.selectedMonth = parseInt(mm, 10) || state.selectedMonth;
+        const ys = document.getElementById('select-year'); if (ys) ys.value = state.selectedYear;
+        const msel = document.getElementById('select-month'); if (msel) msel.value = state.selectedMonth;
+        saveState();
+        switchTab('bills-table');
+        await initAppWithAPI();
+        const thM = THAI_MONTH_NAMES[state.selectedMonth - 1] || '';
+        appAlert('เปิดเอกสารเลขที่ ' + ((res && res.docNumber) || pending.code) + ' — แสดงรายการบิลประจำ' + thM + ' ' + state.selectedYear, 'success');
+    } catch (err) {
+        appAlert('ไม่สามารถเปิดเอกสารได้: ' + ((err && err.message) || 'เกิดข้อผิดพลาด'), 'error');
+    }
+}
+
 // ==========================================================================
 // Initialization & Lifecycle
 // ==========================================================================
@@ -386,6 +425,7 @@ async function checkUserSession() {
             if (loginOverlay) loginOverlay.style.display = 'none';
             showUserProfile(user);
             await initAppWithAPI();
+            await resolvePendingExportVerify(); // สแกน QR ตอน login อยู่แล้ว → เปิดเอกสาร
         } catch (e) {
             handleSessionExpired();
         }
@@ -433,9 +473,10 @@ async function handleLoginSubmit(e) {
             if (loginOverlay) loginOverlay.style.display = 'none';
             
             showUserProfile(result.data.user);
-            
+
             // โหลดข้อมูลแอปพลิเคชันจากฐานข้อมูลจริง
             await initAppWithAPI();
+            await resolvePendingExportVerify(); // สแกน QR แล้วเพิ่ง login → เปิดเอกสารเดือนนั้น
         } else {
             if (errorMsg) {
                 errorMsg.textContent = result.message || (result.error && result.error.message) || 'Unknown error';
@@ -5126,11 +5167,96 @@ function buildExportSectionData(section) {
     return [];
 }
 
+// เติม attachmentStore ให้ครบสำหรับแถวที่จะส่งออก — attachmentStore ปกติจะมีแค่บิลที่ผู้ใช้เคยเปิดมอดัลดูระหว่าง
+// เซสชันนี้เท่านั้น (แคชแบบ lazy) ตอนสร้างรายงานจึงต้องเรียก endpoint เดิม (getAttachments/getFoodExpenseById)
+// เติมของที่ยังไม่มีในแคชก่อนเสมอ ไม่ได้เพิ่ม endpoint ใหม่ แค่เรียกของเดิมเป็นชุด
+async function ensureAttachmentsLoaded(rows, section) {
+    const missing = rows.filter(r => !attachmentStore[r.id]);
+    if (missing.length === 0) return;
+
+    if (section === 'food') {
+        await Promise.all(missing.map(async r => {
+            try {
+                const res = await apiCall('getFoodExpenseById', { id: r.id });
+                const files = [];
+                (res.items || []).forEach(item => (item.attachments || []).forEach(a => files.push(a)));
+                attachmentStore[r.id] = files;
+            } catch (err) {
+                attachmentStore[r.id] = [];
+            }
+        }));
+    } else {
+        await Promise.all(missing.map(async r => {
+            try {
+                const res = await apiCall('getAttachments', { expenseId: r.id });
+                attachmentStore[r.id] = res.attachments || [];
+            } catch (err) {
+                attachmentStore[r.id] = [];
+            }
+        }));
+    }
+}
+
+// ดึงรูปจาก URL (ไฟล์ Google Drive) มาแปลงเป็น base64 data URL — pdfmake ฝังรูปในเอกสารได้เฉพาะ base64
+// เท่านั้น ไม่รองรับ URL ภายนอกตรงๆ — ถ้าดึงไม่สำเร็จ (เครือข่าย/CORS/ไฟล์ถูกลบ) คืน null แบบ graceful
+// ให้ผู้เรียกใส่ลิงก์อ้างอิงแทนรูปแทน ไม่ทำให้การสร้างรายงานทั้งฉบับล้ม
+async function fetchImageAsDataUrl(url) {
+    if (!url) return null;
+    try {
+        const res = await fetch(url, { headers: { Accept: 'image/*' } });
+        if (!res.ok) return null;
+        const blob = await res.blob();
+        if (!blob.type || !blob.type.startsWith('image/')) return null;
+        return await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+        });
+    } catch (err) {
+        return null;
+    }
+}
+
 // Which .export-col-chk / .export-food-col values are currently checked
 function getExportSelectedColumns(selector) {
     return Array.from(document.querySelectorAll(selector))
         .filter(el => el.checked)
         .map(el => el.value);
+}
+
+// เลขที่เอกสารอัตโนมัติ — ผูกกับ (สถานศึกษา + เดือน) แบบ deterministic (ไม่มี running number)
+// รูปแบบ RDF-<รหัสย่อสถานศึกษา>-<พ.ศ.><เดือน 2 หลัก> เช่น RDF-MIS-256907
+// องค์กร+เดือนเดียวกันได้เลขเดิมเสมอ → QR ตรวจสอบผูกกับเลขนี้ → เอกสารชุดเดิมได้ QR เดิม
+function computeExportDocNumber() {
+    const reportMonth = (document.getElementById('export-report-month') || {}).value || '';
+    if (!reportMonth) return '';
+    const [ceYearStr, mm] = reportMonth.split('-');
+    const beYear = (parseInt(ceYearStr, 10) || 0) + 543;
+
+    // หา org context: admin ใช้ตัวกรองในมอดัล (ถ้าเลือก), ผู้ใช้ทั่วไปใช้องค์กรตัวเอง
+    const orgFilterSel = document.getElementById('export-org-filter');
+    const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
+    let orgId = '';
+    if (orgFilterSel && getCurrentUserRole() === 'admin' && orgFilterSel.value) {
+        orgId = orgFilterSel.value;
+    } else if (getCurrentUserRole() !== 'admin') {
+        orgId = currentUser.organizationId || '';
+    }
+
+    let short = 'ALL'; // admin ดูรวมทุกสถานศึกษา หรือหา short ไม่เจอ
+    if (orgId) {
+        const org = (state.organizations || []).find(o => o.id === orgId);
+        short = (org && (org.shortName || org.short_name)) || orgId;
+    }
+    return `RDF-${short}-${beYear}${mm}`;
+}
+
+// เติมเลขที่เอกสารอัตโนมัติลงช่อง (readonly) — เรียกทุกครั้งที่ตั้งค่ารายงานเปลี่ยน (เดือน/องค์กร)
+function autoFillExportDocNumber() {
+    const el = document.getElementById('export-doc-number');
+    if (!el) return;
+    el.value = computeExportDocNumber();
 }
 
 // Footer "เลือกทั้งหมด" / "ยกเลิกทั้งหมด" — toggles every column checkbox in the modal
@@ -5216,9 +5342,132 @@ function loadExportTemplate(name) {
     renderExportPreview();
 }
 
+// ==========================================================================
+// รายงาน (PDF) — Section "หลักฐานแนบ": สำหรับแต่ละแถวที่มีไฟล์แนบจริง สร้างชุด
+// {รายละเอียด 7 ฟิลด์, รูปที่ฝังได้เป็น base64, ไฟล์ที่ฝังไม่ได้ให้ใช้ลิงก์อ้างอิงแทน}
+// ==========================================================================
+async function buildAttachmentItems(rows, section, showImg, showPdf) {
+    if (!showImg && !showPdf) return [];
+    const columnDefs = section === 'food' ? EXPORT_FOOD_COLUMNS : EXPORT_BILL_COLUMNS;
+    const items = [];
+    for (const row of rows) {
+        const files = attachmentStore[row.id] || [];
+        if (files.length === 0) continue;
+
+        const images = [];
+        const fileRefs = [];
+        for (const f of files) {
+            const mime = f.fileType || f.mimeType || '';
+            const url = f.fileUrl || f.viewUrl || '';
+            const name = f.originalFileName || f.fileName || 'ไฟล์แนบ';
+            if (mime.startsWith('image/')) {
+                if (!showImg) continue;
+                const dataUrl = await fetchImageAsDataUrl(url);
+                if (dataUrl) images.push(dataUrl);
+                else fileRefs.push({ name, url, note: 'ไม่สามารถฝังรูปในเอกสารได้ — ดูไฟล์ต้นฉบับที่ลิงก์นี้' });
+            } else if (mime === 'application/pdf') {
+                if (!showPdf) continue;
+                fileRefs.push({ name, url, note: '' });
+            }
+        }
+        if (images.length === 0 && fileRefs.length === 0) continue;
+
+        const detail = columnDefs.map(c => ({ label: c.label, value: c.get(row) }));
+        items.push({ detail, images, fileRefs });
+    }
+    return items;
+}
+
+// ==========================================================================
+// Report Model — ชั้นกลางเดียวที่พรีวิว (PDF จริงในกรอบ) และปุ่มส่งออก PDF ใช้ร่วมกัน
+// เพื่อไม่ให้ข้อมูลที่เห็นในพรีวิวกับไฟล์ที่ดาวน์โหลดจริงเพี้ยนกัน
+// ==========================================================================
+async function buildReportModel() {
+    const orgName = (document.getElementById('export-org-name') || {}).value || '';
+    const title = (document.getElementById('pdf-report-title') || {}).value || 'รายงานค่าใช้จ่าย';
+    const subHeading = (document.getElementById('export-header-detail') || {}).value || '';
+    const docNum = (document.getElementById('export-doc-number') || {}).value || '';
+    const reportMonth = (document.getElementById('export-report-month') || {}).value || '';
+    const reportType = (document.getElementById('export-report-type') || {}).value || 'summary';
+    const logoSrc = (document.getElementById('export-logo-preview') || {}).dataset?.logoSrc || '';
+    const detailed = reportType === 'detailed';
+
+    const inclSig = (document.getElementById('pdf-include-signature') || {}).checked;
+    const preparer = (document.getElementById('pdf-preparer-name') || {}).value || '';
+    const reviewer = (document.getElementById('pdf-reviewer-name') || {}).value || '';
+    const approver = (document.getElementById('pdf-approver-name') || {}).value || '';
+
+    const inclBills = (document.getElementById('export-chk-bills') || {}).checked;
+    const inclFood = (document.getElementById('export-chk-food') || {}).checked;
+    const inclAttach = (document.getElementById('export-chk-attach') || {}).checked;
+
+    const billCols = getExportSelectedColumns('.export-col-chk');
+    const foodCols = getExportSelectedColumns('.export-food-col');
+
+    const showImg = !!document.querySelector('.att-chk[value="show_img"]')?.checked;
+    const showPdf = !!document.querySelector('.att-chk[value="show_pdf"]')?.checked;
+    const showQr = !!document.querySelector('.att-chk[value="show_qr"]')?.checked;
+
+    let monthLabel = '';
+    if (reportMonth) {
+        const [y, m] = reportMonth.split('-');
+        const thMonths = ['','มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
+        monthLabel = thMonths[parseInt(m)] + ' พ.ศ. ' + (parseInt(y) + 543);
+    }
+
+    const sections = [];
+    // ไม่ใช้ emoji ในหัวข้อ (ฟอนต์ Sarabun ไม่มี glyph emoji → แสดงเป็นกล่องว่างใน PDF) ใช้แถบสี accent ซ้ายแทน
+    const specs = [
+        { on: inclBills, key: 'bills', label: 'รายการบิล', accent: '#059669', columnDefs: EXPORT_BILL_COLUMNS, selCols: billCols },
+        { on: inclFood, key: 'food', label: 'ค่าอาหารประจำเดือน', accent: '#f59e0b', columnDefs: EXPORT_FOOD_COLUMNS, selCols: foodCols },
+        { on: inclAttach, key: 'attach', label: 'บิลแนบ / ค่าสาธารณูปโภค', accent: '#8b5cf6', columnDefs: EXPORT_BILL_COLUMNS, selCols: billCols },
+    ];
+    for (const spec of specs) {
+        if (!spec.on) continue;
+        const rows = buildExportSectionData(spec.key);
+        if (showImg || showPdf) await ensureAttachmentsLoaded(rows, spec.key);
+        const attachmentItems = await buildAttachmentItems(rows, spec.key, showImg, showPdf);
+        sections.push({
+            key: spec.key,
+            label: spec.label + (spec.key === 'bills' && monthLabel ? 'ประจำ' + monthLabel : ''),
+            accent: spec.accent,
+            columns: spec.columnDefs.filter(c => spec.selCols.includes(c.id)),
+            rows, detailed, attachmentItems,
+        });
+    }
+
+    let qrDataUrl = '';
+    if (!showQr) {
+        console.log('[export-preview] ข้าม QR — ไม่ได้ติ๊ก "แสดง QR Code" (หัวข้อ 3 ในมอดัล)');
+    } else if (!docNum) {
+        console.log('[export-preview] ข้าม QR — ยังไม่ได้กรอก "เลขที่เอกสาร" (จำเป็นสำหรับ QR ตรวจสอบชุดเอกสาร)');
+    } else {
+        try {
+            const itemCount = sections.reduce((s, sec) => s + sec.rows.length, 0);
+            const totalAmount = sections.reduce((s, sec) => s + sec.rows.reduce((s2, r) => s2 + (parseFloat(r.amount ?? r.foodAmount) || 0), 0), 0);
+            const orgFilterSel = document.getElementById('export-org-filter');
+            const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
+            const orgId = (orgFilterSel && getCurrentUserRole() === 'admin' && orgFilterSel.value) ? orgFilterSel.value : (currentUser.organizationId || '');
+            const res = await apiCall('getExportVerifyCode', { docNumber: docNum, month: reportMonth, orgId, itemCount, totalAmount });
+            qrDataUrl = await generateVerifyQR('export', res.code);
+            console.log('[export-preview] สร้าง QR ตรวจสอบเอกสารสำเร็จ, code:', res.code);
+        } catch (err) {
+            // สาเหตุที่พบบ่อยสุด: backend ยังไม่ deploy action getExportVerifyCode (ต้อง clasp push + deploy รอบใหม่)
+            console.warn('[export-preview] สร้าง QR ไม่สำเร็จ — ตรวจว่า deploy backend (action getExportVerifyCode) แล้วหรือยัง:', err && err.message);
+            qrDataUrl = '';
+        }
+    }
+
+    return {
+        header: { orgName, title, subHeading, docNum, monthLabel, logoSrc, qrDataUrl },
+        signature: inclSig ? { preparer, reviewer, approver } : null,
+        sections,
+    };
+}
+
 // 5. Exporters — column definitions (EXPORT_BILL_COLUMNS / EXPORT_FOOD_COLUMNS)
 // are the same ones the preview renders from, so Excel/CSV always matches what's shown.
-function executeDynamicExport(format) {
+async function executeDynamicExport(format) {
     const inclBills = (document.getElementById('export-chk-bills') || {}).checked;
     const inclFood = (document.getElementById('export-chk-food') || {}).checked;
     const inclAttach = (document.getElementById('export-chk-attach') || {}).checked;
@@ -5262,35 +5511,18 @@ function executeDynamicExport(format) {
             XLSX.writeFile(wb, `DynamicReport_${new Date().getTime()}.xlsx`);
         }
     } else if (format === 'pdf') {
-        const previewHtml = document.getElementById('export-preview-page').innerHTML;
-        const iframe = document.createElement('iframe');
-        iframe.style.visibility = 'hidden';
-        iframe.style.position = 'fixed';
-        iframe.style.right = '0';
-        iframe.style.bottom = '0';
-        document.body.appendChild(iframe);
-        
-        iframe.contentWindow.document.open();
-        iframe.contentWindow.document.write(`
-            <html>
-            <head>
-                <title>Export PDF - ${document.getElementById('pdf-report-title').value}</title>
-                <style>
-                    body { font-family: 'Sarabun', sans-serif; padding: 20px; font-size: 12px; }
-                    table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-                    th, td { border: 1px solid #000; padding: 8px; }
-                    @media print {
-                        @page { margin: 15mm; size: auto; }
-                        body { padding: 0; }
-                    }
-                </style>
-            </head>
-            <body onload="window.print(); setTimeout(()=>window.parent.document.body.removeChild(window.frameElement), 2000);">
-                ${previewHtml}
-            </body>
-            </html>
-        `);
-        iframe.contentWindow.document.close();
+        showLoading(true);
+        try {
+            const model = await buildReportModel();
+            const docDef = buildPdfDocDefinition(model);
+            const filename = (model.header.docNum || model.header.title || 'DynamicReport').replace(/[\\/:*?"<>|]/g, '_') + '.pdf';
+            // download() เป็น async ใน pdfmake 0.3.x — ต้อง await เพื่อให้ error เข้า catch และ showLoading(false) รอจนเสร็จจริง
+            await pdfMake.createPdf(docDef).download(filename);
+        } catch (err) {
+            appAlert('สร้าง PDF ไม่สำเร็จ: ' + err.message, 'error');
+        } finally {
+            showLoading(false);
+        }
     }
 }
 
@@ -5736,6 +5968,7 @@ async function handleGoogleLogin(response) {
 
             showUserProfile(result.data.user);
             await initAppWithAPI();
+            await resolvePendingExportVerify(); // สแกน QR แล้ว login ด้วย Google → เปิดเอกสารเดือนนั้น
         } else if (errorMsg) {
             errorMsg.textContent = (result.error && result.error.message) || 'เข้าสู่ระบบด้วย Google ไม่สำเร็จ';
             errorMsg.style.display = 'block';
@@ -6413,22 +6646,15 @@ window.closeExportModal = function() {
 };
 
 // updateExportSectionBadges helper
+// นับจาก buildExportSectionData (แหล่งข้อมูลเดียวกับที่ PDF ใช้) เพื่อให้ badge ตรงกับตารางใน PDF เสมอ
+// — เดิมนับจาก DOM table ทำให้รวมแถว "เพิ่มข้อมูล" (inline-add) เกินมาด้วย และไม่ได้กรองตามเดือนของรายงาน
 window.updateExportSectionBadges = function() {
-    const countRows = id => {
-        const t = document.getElementById(id);
-        if (!t) return 0;
-        return Array.from(t.querySelectorAll('tbody tr'))
-            .filter(r => !r.querySelector('td[colspan]')).length;
-    };
-    const badges = {
-        'export-bills-badge': countRows('full-bills-table'),
-        'export-food-badge':  countRows('food-bills-table'),
-        'export-attach-badge': countRows('attached-bills-table')
-    };
-    Object.entries(badges).forEach(([id, n]) => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = n + ' รายการ';
-    });
+    const set = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n + ' รายการ'; };
+    try {
+        set('export-bills-badge', buildExportSectionData('bills').length);
+        set('export-food-badge', buildExportSectionData('food').length);
+        set('export-attach-badge', buildExportSectionData('attach').length);
+    } catch (e) { /* state อาจยังไม่พร้อมตอนเรียกครั้งแรก — ปล่อยผ่าน */ }
 };
 
 /* ==========================================================================
@@ -6474,18 +6700,12 @@ window.clearExportLogo = function() {
 /* Sync export modal month from main filter when opening */
 // [REMOVED: _origOpenExportModal override chain - was wrapping the original function and blocking close]
 
-/* Count current table rows */
+/* Count report rows (นับจากแหล่งเดียวกับ PDF — ดูหมายเหตุที่ window.updateExportSectionBadges) */
 function updateExportSectionBadges() {
-    const countRows = (tableId) => {
-        const t = document.getElementById(tableId);
-        if (!t) return 0;
-        return Array.from(t.querySelectorAll('tbody tr'))
-            .filter(r => !r.querySelector('td[colspan]')).length;
-    };
-    const billsN = countRows('full-bills-table');
-    const foodN = countRows('food-bills-table');
-    const attachN = countRows('attached-bills-table');
-    
+    const billsN = buildExportSectionData('bills').length;
+    const foodN = buildExportSectionData('food').length;
+    const attachN = buildExportSectionData('attach').length;
+
     const bb = document.getElementById('export-bills-badge');
     const fb = document.getElementById('export-food-badge');
     const ab = document.getElementById('export-attach-badge');
@@ -6503,8 +6723,7 @@ const EXPORT_BILL_COLUMNS = [
     { id: 'category', label: 'หมวดหมู่', align: 'left', get: r => r.category },
     { id: 'vendor', label: 'ผู้ขาย', align: 'left', get: r => r.vendor },
     { id: 'amount', label: 'ยอดรวม', align: 'right', get: r => formatNumber(r.amount), isAmount: true },
-    { id: 'claimType', label: 'ประเภทเบิก', align: 'left', get: r => r.claimType },
-    { id: 'attachments', label: 'หลักฐานแนบ', align: 'center', get: r => r.attachmentsCount > 0 ? (r.attachmentsCount + ' ไฟล์') : '-' }
+    { id: 'claimType', label: 'ประเภทเบิก', align: 'left', get: r => r.claimType }
 ];
 const EXPORT_FOOD_COLUMNS = [
     { id: 'foodDate', label: 'วันที่', align: 'left', get: r => formatDateThai(r.foodDate) },
@@ -6513,154 +6732,214 @@ const EXPORT_FOOD_COLUMNS = [
     { id: 'foodAmount', label: 'ยอดเงิน', align: 'right', get: r => formatNumber(r.foodAmount), isAmount: true }
 ];
 
-/* Builds one preview table from clean row data — never touches the DOM of
-   the main app tables, so it can't pick up the inline quick-add row or
-   whatever columns happen to be visible/hidden/reordered there. */
-function buildExportTableHtml(rows, columnDefs, selectedIds, emptyLabel, detailed) {
-    const cols = columnDefs.filter(c => selectedIds.includes(c.id));
-    if (cols.length === 0) {
-        return '<div style="font-size:11px; color:#9ca3af; font-style:italic; padding:8px;">ยังไม่ได้เลือกคอลัมน์ที่จะแสดง</div>';
-    }
-    const detailCols = detailed ? columnDefs.filter(c => !selectedIds.includes(c.id)) : [];
+/* ==========================================================================
+   pdfmake docDefinition builder — ชั้นเดียวที่รู้จัก "หน้าตา" ของ PDF จริง
+   ใช้ทั้งพรีวิว (getDataUrl เข้า iframe) และปุ่มดาวน์โหลด (download) จาก
+   report model ตัวเดียวกันเสมอ ไม่มีทางพรีวิวกับไฟล์จริงเพี้ยนกันได้อีก
+   ========================================================================== */
+const PDF_PAGE_WIDTH = 595.28; // A4 pt
+const PDF_MARGIN = [40, 40, 40, 56];
 
-    let html = '<table style="width:100%; border-collapse:collapse; font-size:11px;"><thead><tr style="background:#e5e7eb;">';
-    cols.forEach(c => { html += `<th style="padding:5px 8px; text-align:${c.align}; border:1px solid #d1d5db;">${escapeHTML(c.label)}</th>`; });
-    html += '</tr></thead><tbody>';
+// ฟอนต์ Sarabun ถูกฝัง base64 + ลงทะเบียนแล้วโดย fonts/sarabun-vfs.js (โหลดก่อน app.js ใน index.html)
+// ผ่าน pdfMake.addVirtualFileSystem()+addFonts() (วิธีเดียวกับที่ vfs_fonts.js ของ pdfmake เองใช้ลงทะเบียน
+// Roboto — ยืนยันจาก source จริงของ pdfmake แล้ว) — pdfMake.addFonts({...URL...}) เฉยๆ โดยไม่มี VFS ไม่พอ
+// เพราะเวอร์ชันนี้อ่านไฟล์ฟอนต์จาก virtual file system เท่านั้น ไม่ได้ fetch จาก URL ตรงๆ
 
-    if (rows.length === 0) {
-        html += `<tr><td colspan="${cols.length}" style="padding:8px; text-align:center; color:#9ca3af; border:1px solid #d1d5db; font-style:italic;">${emptyLabel}</td></tr>`;
-    } else {
-        const amountColIdx = cols.findIndex(c => c.isAmount);
-        rows.forEach(row => {
-            html += '<tr style="border-bottom:1px solid #f3f4f6;">';
-            cols.forEach(c => {
-                const val = c.get(row);
-                html += `<td style="padding:4px 8px; border:1px solid #d1d5db; text-align:${c.align};">${escapeHTML(String(val ?? ''))}</td>`;
-            });
-            html += '</tr>';
-            if (detailCols.length > 0) {
-                const detailText = detailCols.map(c => `${c.label}: ${String(c.get(row) ?? '')}`).join(' · ');
-                html += `<tr><td colspan="${cols.length}" style="padding:2px 8px 6px; border:1px solid #d1d5db; border-top:none; font-size:10px; color:#6b7280; font-style:italic;">${escapeHTML(detailText)}</td></tr>`;
-            }
+function buildPdfDocDefinition(model) {
+    const { header, sections, signature } = model;
+    const contentWidth = PDF_PAGE_WIDTH - PDF_MARGIN[0] - PDF_MARGIN[2];
+    const content = [];
+
+    // หัวเอกสาร: โลโก้ + ชื่อหน่วยงาน/ชื่อเรื่อง + เลขที่เอกสาร (QR วางแยกเป็น background เฉพาะหน้าแรก ด้านล่าง)
+    const headerCols = [];
+    if (header.logoSrc) headerCols.push({ image: header.logoSrc, width: 46, height: 46, margin: [0, 0, 10, 0] });
+    const titleStack = { stack: [], width: '*' };
+    if (header.orgName) titleStack.stack.push({ text: header.orgName, bold: true, fontSize: 12, color: '#1a1a2e' });
+    titleStack.stack.push({ text: header.title, bold: true, fontSize: 16, color: '#1a1a2e', margin: [0, 2, 0, 0] });
+    if (header.monthLabel) titleStack.stack.push({ text: 'ประจำ' + header.monthLabel, fontSize: 9, color: '#4b5563' });
+    if (header.subHeading) titleStack.stack.push({ text: header.subHeading, fontSize: 8, color: '#6b7280', margin: [0, 2, 0, 0] });
+    headerCols.push(titleStack);
+    if (header.docNum) headerCols.push({ text: 'เลขที่: ' + header.docNum, fontSize: 9, color: '#6b7280', alignment: 'right', width: 100 });
+
+    content.push({ columns: headerCols, columnGap: 10 });
+    content.push({ canvas: [{ type: 'line', x1: 0, y1: 0, x2: contentWidth, y2: 0, lineWidth: 1.2, lineColor: '#1a1a2e' }], margin: [0, 8, 0, 14] });
+
+    sections.forEach(section => {
+        // หัวข้อ section: พื้นเทาอ่อน + แถบสี accent ซ้าย (แทน emoji ที่ Sarabun ไม่มี glyph)
+        content.push({
+            table: { widths: ['*'], body: [[{ text: section.label, fontSize: 12, bold: true, color: '#1a1a2e', fillColor: '#f3f4f6', margin: [8, 5, 8, 5] }]] },
+            layout: {
+                hLineWidth: () => 0,
+                vLineWidth: (i) => i === 0 ? 3 : 0,
+                vLineColor: () => section.accent || '#1a1a2e',
+                paddingLeft: () => 0, paddingRight: () => 0, paddingTop: () => 0, paddingBottom: () => 0,
+            },
+            margin: [0, 2, 0, 6],
+            unbreakable: true,
         });
-        if (amountColIdx >= 0) {
-            const rawTotal = rows.reduce((s, r) => s + (parseFloat(cols[amountColIdx].id === 'amount' ? r.amount : r.foodAmount) || 0), 0);
-            html += '<tr style="background:#f9fafb; font-weight:700;">';
-            if (amountColIdx > 0) html += `<td colspan="${amountColIdx}" style="padding:5px 8px; border:1px solid #d1d5db; text-align:right;">รวมทั้งหมด</td>`;
-            html += `<td style="padding:5px 8px; border:1px solid #d1d5db; text-align:right; color:#059669;">${formatNumber(rawTotal)}</td>`;
-            const afterCount = cols.length - amountColIdx - 1;
-            for (let i = 0; i < afterCount; i++) html += '<td style="padding:5px 8px; border:1px solid #d1d5db;"></td>';
-            html += '</tr>';
+
+        if (section.columns.length === 0) {
+            content.push({ text: 'ยังไม่ได้เลือกคอลัมน์ที่จะแสดง', italics: true, color: '#9ca3af', fontSize: 9, margin: [0, 6, 0, 14] });
+        } else {
+            const cols = section.columns;
+            const amtIdx = cols.findIndex(c => c.isAmount);
+            const widths = cols.map(c => c.isAmount ? 70 : '*');
+            const body = [cols.map(c => ({ text: c.label, bold: true, fontSize: 9, fillColor: '#e5e7eb', alignment: c.align }))];
+
+            if (section.rows.length === 0) {
+                body.push([{ text: 'ไม่มีข้อมูล', colSpan: cols.length, alignment: 'center', italics: true, color: '#9ca3af', fontSize: 9 }, ...cols.slice(1).map(() => ({}))]);
+            } else {
+                section.rows.forEach(row => {
+                    body.push(cols.map(c => ({ text: String(c.get(row) ?? ''), alignment: c.align, fontSize: 9 })));
+                    if (section.detailed) {
+                        const missingCols = (section.key === 'food' ? EXPORT_FOOD_COLUMNS : EXPORT_BILL_COLUMNS).filter(c => !cols.includes(c));
+                        if (missingCols.length > 0) {
+                            const detailText = missingCols.map(c => `${c.label}: ${c.get(row) ?? ''}`).join('   ');
+                            body.push([{ text: detailText, colSpan: cols.length, italics: true, fontSize: 8, color: '#6b7280' }, ...cols.slice(1).map(() => ({}))]);
+                        }
+                    }
+                });
+                if (amtIdx >= 0) {
+                    const total = section.rows.reduce((s, r) => s + (parseFloat(r.amount ?? r.foodAmount) || 0), 0);
+                    const totalRow = cols.map((c, i) => {
+                        if (i === amtIdx) return { text: formatNumber(total), bold: true, alignment: 'right', fillColor: '#f9fafb', color: '#059669', fontSize: 9 };
+                        if (i === amtIdx - 1) return { text: 'รวมทั้งหมด', bold: true, alignment: 'right', fillColor: '#f9fafb', fontSize: 9 };
+                        return { text: '', fillColor: '#f9fafb' };
+                    });
+                    body.push(totalRow);
+                }
+            }
+
+            content.push({ table: { headerRows: 1, widths, body }, layout: 'lightHorizontalLines', margin: [0, 4, 0, 14] });
         }
+
+        // Section "หลักฐานแนบ" — ต่อจากตารางเสมอ ไม่แทรกในตาราง
+        if (section.attachmentItems.length > 0) {
+            content.push({ text: 'หลักฐานแนบ', fontSize: 11, bold: true, color: '#1a1a2e', margin: [0, 2, 0, 6], unbreakable: true });
+            section.attachmentItems.forEach((item, idx) => {
+                const stack = [];
+                stack.push({ text: `รายการที่ ${idx + 1}`, bold: true, fontSize: 9, color: '#1a1a2e' });
+                stack.push({
+                    text: item.detail.map(d => `${d.label}: ${d.value ?? '-'}`).join('    '),
+                    fontSize: 8.5, color: '#374151', margin: [0, 2, 0, 6],
+                });
+                item.images.forEach(src => {
+                    stack.push({ image: src, width: 220, alignment: 'center', margin: [0, 4, 0, 4] });
+                });
+                item.fileRefs.forEach(ref => {
+                    // ไม่ใช้ emoji (Sarabun ไม่มี glyph) — ใช้ป้ายข้อความนำหน้าแทน
+                    stack.push({
+                        text: (ref.note ? '[!] ' : '[ไฟล์แนบ] ') + ref.name + (ref.note ? ' — ' + ref.note : ''),
+                        fontSize: 8.5, color: ref.note ? '#b45309' : '#4f46e5', link: ref.url || undefined,
+                        margin: [0, 2, 0, 2],
+                    });
+                });
+                content.push({ stack, unbreakable: true, margin: [0, 0, 0, 12] });
+            });
+        }
+    });
+
+    if (signature && (signature.preparer || signature.reviewer || signature.approver)) {
+        const sigBlock = (role, name) => ({
+            stack: [
+                { text: ' ', margin: [0, 30, 0, 0] },
+                { text: '........................................', alignment: 'center', fontSize: 9 },
+                { text: '(' + (name || '.........................') + ')', alignment: 'center', fontSize: 9, margin: [0, 2, 0, 0] },
+                { text: role, alignment: 'center', fontSize: 9, color: '#6b7280' },
+            ],
+        });
+        content.push({
+            columns: [
+                sigBlock('ผู้จัดทำ', signature.preparer),
+                sigBlock('ผู้ตรวจสอบ', signature.reviewer),
+                sigBlock('ผู้อนุมัติ', signature.approver),
+            ],
+            unbreakable: true,
+            margin: [0, 20, 0, 0],
+        });
     }
-    html += '</tbody></table>';
-    return html;
+
+    return {
+        pageSize: 'A4',
+        pageMargins: PDF_MARGIN,
+        defaultStyle: { font: 'Sarabun', fontSize: 10 },
+        content,
+        background: (currentPage) => {
+            if (currentPage !== 1 || !header.qrDataUrl) return null;
+            return { image: header.qrDataUrl, width: 55, absolutePosition: { x: PDF_PAGE_WIDTH - PDF_MARGIN[2] - 55, y: 18 } };
+        },
+        footer: (currentPage, pageCount) => ({
+            text: `หน้า ${currentPage} / ${pageCount}`,
+            alignment: 'center', fontSize: 8, color: '#9ca3af', margin: [0, 14, 0, 0],
+        }),
+    };
 }
 
-/* Patch renderExportPreview to include logo + enhanced header */
-const _origRenderExportPreview = window.renderExportPreview;
+/* Preview: สร้าง PDF จริงด้วย pdfmake แล้วฝังใน iframe — debounce กันเรียกถี่เกินไปตอนพิมพ์ในฟอร์ม
+   generation counter กันผลลัพธ์เก่า (ที่ยังรอ fetch รูปอยู่) มาทับผลลัพธ์ใหม่กว่าที่เสร็จก่อน */
+let _previewDebounceTimer = null;
+let _previewGeneration = 0;
 window.renderExportPreview = function() {
-    const page = document.getElementById('export-preview-page');
-    if (!page) return;
-
-    // Gather settings
-    const orgName = document.getElementById('export-org-name')?.value || '';
-    const title = document.getElementById('pdf-report-title')?.value || 'รายงานค่าใช้จ่าย';
-    const subHeading = document.getElementById('export-header-detail')?.value || '';
-    const docNum = document.getElementById('export-doc-number')?.value || '';
-    const reportMonth = document.getElementById('export-report-month')?.value || '';
-    const reportType = document.getElementById('export-report-type')?.value || 'summary';
-    const logoPreview = document.getElementById('export-logo-preview');
-    const logoSrc = logoPreview?.dataset?.logoSrc || '';
-
-    // Signature
-    const inclSig = document.getElementById('pdf-include-signature')?.checked;
-    const preparer = document.getElementById('pdf-preparer-name')?.value || '';
-    const reviewer = document.getElementById('pdf-reviewer-name')?.value || '';
-    const approver = document.getElementById('pdf-approver-name')?.value || '';
-
-    // Section toggles
-    const inclBills = document.getElementById('export-chk-bills')?.checked;
-    const inclFood = document.getElementById('export-chk-food')?.checked;
-    const inclAttach = document.getElementById('export-chk-attach')?.checked;
-
-    const billCols = getExportSelectedColumns('.export-col-chk');
-    const foodCols = getExportSelectedColumns('.export-food-col');
-    const detailed = reportType === 'detailed';
-
-    // Month label
-    let monthLabel = '';
-    if (reportMonth) {
-        const [y, m] = reportMonth.split('-');
-        const thMonths = ['','มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
-        monthLabel = thMonths[parseInt(m)] + ' พ.ศ. ' + (parseInt(y) + 543);
-    }
-
-    // Build preview HTML
-    let html = '';
-
-    // Document header
-    html += '<div style="display:flex; align-items:center; gap:16px; margin-bottom:16px; border-bottom:2px solid #1a1a2e; padding-bottom:14px;">';
-    if (logoSrc) {
-        html += '<img src="' + logoSrc + '" style="width:64px;height:64px;object-fit:contain; flex-shrink:0;">';
-    }
-    html += '<div style="flex:1;">';
-    if (orgName) html += '<div style="font-size:14px; font-weight:700; color:#1a1a2e;">' + escapeHTML(orgName) + '</div>';
-    html += '<div style="font-size:18px; font-weight:800; color:#1a1a2e; margin:2px 0;">' + escapeHTML(title) + '</div>';
-    if (monthLabel) html += '<div style="font-size:12px; color:#4b5563;">ประจำ' + monthLabel + '</div>';
-    if (subHeading) html += '<div style="font-size:11px; color:#6b7280; margin-top:2px;">' + escapeHTML(subHeading) + '</div>';
-    html += '</div>';
-    if (docNum) html += '<div style="text-align:right; font-size:11px; color:#6b7280;">เลขที่: <strong>' + escapeHTML(docNum) + '</strong></div>';
-    html += '</div>';
-
-    // Bills section preview
-    if (inclBills) {
-        const billRows = buildExportSectionData('bills');
-        html += '<div style="margin-bottom:16px;">';
-        html += '<div style="font-size:13px; font-weight:700; color:#1a1a2e; background:#f3f4f6; padding:6px 10px; border-radius:4px; margin-bottom:8px; border-left:3px solid #059669;">📄 รายการบิล' + (monthLabel ? 'ประจำ' + monthLabel : '') + '</div>';
-        html += buildExportTableHtml(billRows, EXPORT_BILL_COLUMNS, billCols, 'ไม่มีข้อมูล', detailed);
-        html += '</div>';
-    }
-
-    // Food section preview
-    if (inclFood) {
-        const foodRows = buildExportSectionData('food');
-        html += '<div style="margin-bottom:16px;">';
-        html += '<div style="font-size:13px; font-weight:700; color:#1a1a2e; background:#fef3c7; padding:6px 10px; border-radius:4px; margin-bottom:8px; border-left:3px solid #f59e0b;">🍽️ ค่าอาหารประจำเดือน</div>';
-        html += buildExportTableHtml(foodRows, EXPORT_FOOD_COLUMNS, foodCols, 'ไม่มีข้อมูลค่าอาหาร', detailed);
-        html += '</div>';
-    }
-
-    // Attach section preview
-    if (inclAttach) {
-        const attachRows = buildExportSectionData('attach');
-        html += '<div style="margin-bottom:16px;">';
-        html += '<div style="font-size:13px; font-weight:700; color:#1a1a2e; background:#ede9fe; padding:6px 10px; border-radius:4px; margin-bottom:8px; border-left:3px solid #8b5cf6;">📎 บิลแนบ / ค่าสาธารณูปโภค</div>';
-        html += buildExportTableHtml(attachRows, EXPORT_BILL_COLUMNS, billCols, 'ไม่มีข้อมูล', detailed);
-        html += '</div>';
-    }
-
-    // Signature section
-    if (inclSig && (preparer || reviewer || approver)) {
-        html += '<div style="margin-top:40px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:20px;">';
-        [['ผู้จัดทำ', preparer], ['ผู้ตรวจสอบ', reviewer], ['ผู้อนุมัติ', approver]].forEach(([role, name]) => {
-            html += '<div style="text-align:center;">';
-            html += '<div style="border-bottom:1px solid #9ca3af; margin-bottom:6px; padding-bottom:32px;"></div>';
-            if (name) html += '<div style="font-size:12px; font-weight:600;">' + name + '</div>';
-            html += '<div style="font-size:11px; color:#6b7280;">(' + role + ')</div>';
-            html += '</div>';
-        });
-        html += '</div>';
-    }
-    
-    // Page footer
-    html += '<div style="position:absolute; bottom:10mm; left:15mm; right:15mm; display:flex; justify-content:space-between; font-size:9px; color:#9ca3af; border-top:1px solid #e5e7eb; padding-top:6px;">';
-    html += '<span>จัดทำโดย RDF Expense System</span>';
-    html += '<span>พิมพ์เมื่อ: ' + new Date().toLocaleDateString('th-TH', {year:'numeric',month:'long',day:'numeric'}) + '</span>';
-    html += '</div>';
-    
-    page.innerHTML = html;
+    // อัปเดตเลขที่เอกสารอัตโนมัติทันที (ไม่ debounce) ให้ผู้ใช้เห็นเลขเปลี่ยนตามเดือน/องค์กรทันที
+    // ต้องมาก่อน buildReportModel เพราะ QR/เอกสารอ่านเลขจากช่องนี้
+    autoFillExportDocNumber();
+    clearTimeout(_previewDebounceTimer);
+    _previewDebounceTimer = setTimeout(() => generateAndShowPreview(), 450);
 };
+
+function setPreviewLoadingText(text, isError) {
+    const el = document.getElementById('export-preview-loading-text');
+    if (el) {
+        el.textContent = text;
+        el.style.color = isError ? '#b91c1c' : '';
+    }
+    const spinner = document.getElementById('export-preview-spinner');
+    if (spinner) spinner.style.display = isError ? 'none' : '';
+}
+
+function withTimeout(promise, ms, label) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} ใช้เวลานานเกินไป (เกิน ${ms / 1000} วินาที) — อาจเป็นปัญหาเครือข่ายหรือเข้าถึงไฟล์แนบไม่ได้`)), ms)),
+    ]);
+}
+
+async function generateAndShowPreview() {
+    const frame = document.getElementById('export-preview-frame');
+    const loading = document.getElementById('export-preview-loading');
+    if (!frame) return;
+    const myGeneration = ++_previewGeneration;
+    if (loading) loading.style.display = 'flex';
+    setPreviewLoadingText('กำลังสร้างตัวอย่าง PDF...');
+    console.log('[export-preview] เริ่มสร้าง generation', myGeneration);
+    try {
+        console.log('[export-preview] กำลังรวบรวมข้อมูล (buildReportModel)...');
+        const model = await withTimeout(buildReportModel(), 20000, 'การรวบรวมข้อมูล/ไฟล์แนบ');
+        console.log('[export-preview] buildReportModel เสร็จแล้ว', model);
+        if (myGeneration !== _previewGeneration) { console.log('[export-preview] ยกเลิก — มีคำขอใหม่กว่าเข้ามาแล้ว'); return; }
+
+        const docDef = buildPdfDocDefinition(model);
+        console.log('[export-preview] buildPdfDocDefinition เสร็จแล้ว, เรียก pdfMake.createPdf...');
+
+        // pdfmake 0.3.x: getDataUrl() เป็น async คืน Promise<string> โดยตรง (ไม่ใช่ callback แบบเวอร์ชันเก่า)
+        // ยืนยันจาก source จริง src/OutputDocument.js@0.3.11 → `async getDataUrl()`
+        const dataUrl = await withTimeout(
+            pdfMake.createPdf(docDef).getDataUrl(),
+            15000,
+            'การสร้างไฟล์ PDF (pdfmake)'
+        );
+        console.log('[export-preview] pdfMake สร้าง PDF สำเร็จ, ความยาว dataUrl:', dataUrl ? dataUrl.length : 0);
+
+        if (myGeneration !== _previewGeneration) return;
+        frame.src = dataUrl;
+        if (loading) loading.style.display = 'none';
+    } catch (err) {
+        console.error('[export-preview] สร้างตัวอย่าง PDF ไม่สำเร็จ:', err);
+        if (myGeneration === _previewGeneration) {
+            setPreviewLoadingText('สร้างตัวอย่างไม่สำเร็จ: ' + err.message + ' (ดูรายละเอียดใน Console — กด F12)', true);
+        }
+    }
+}
 
 /* Wire up close buttons */
 document.addEventListener('DOMContentLoaded', () => {
