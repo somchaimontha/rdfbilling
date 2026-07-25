@@ -6750,7 +6750,9 @@ function buildPdfDocDefinition(model) {
     const contentWidth = PDF_PAGE_WIDTH - PDF_MARGIN[0] - PDF_MARGIN[2];
     const content = [];
 
-    // หัวเอกสาร: โลโก้ + ชื่อหน่วยงาน/ชื่อเรื่อง + เลขที่เอกสาร (QR วางแยกเป็น background เฉพาะหน้าแรก ด้านล่าง)
+    // หัวเอกสาร: โลโก้ | ชื่อหน่วยงาน/ชื่อเรื่อง | (เลขที่เอกสาร + QR ตรวจสอบ) มุมขวา
+    // QR วางเป็น image ในหัวเอกสาร (content ปกติ) — อยู่หน้าแรกครั้งเดียวอยู่แล้ว และ image ใน content
+    // render ได้จริงเสมอ (ต่างจาก background callback ที่ commit ที่ (0,0) ทำให้ absolutePosition ไม่ทำงาน)
     const headerCols = [];
     if (header.logoSrc) headerCols.push({ image: header.logoSrc, width: 46, height: 46, margin: [0, 0, 10, 0] });
     const titleStack = { stack: [], width: '*' };
@@ -6759,7 +6761,14 @@ function buildPdfDocDefinition(model) {
     if (header.monthLabel) titleStack.stack.push({ text: 'ประจำ' + header.monthLabel, fontSize: 9, color: '#4b5563' });
     if (header.subHeading) titleStack.stack.push({ text: header.subHeading, fontSize: 8, color: '#6b7280', margin: [0, 2, 0, 0] });
     headerCols.push(titleStack);
-    if (header.docNum) headerCols.push({ text: 'เลขที่: ' + header.docNum, fontSize: 9, color: '#6b7280', alignment: 'right', width: 100 });
+
+    const rightStack = [];
+    if (header.docNum) rightStack.push({ text: 'เลขที่: ' + header.docNum, fontSize: 9, color: '#6b7280', alignment: 'right' });
+    if (header.qrDataUrl) {
+        rightStack.push({ image: header.qrDataUrl, width: 62, alignment: 'right', margin: [0, 4, 0, 0] });
+        rightStack.push({ text: 'สแกนเพื่อตรวจสอบ', fontSize: 6.5, color: '#9ca3af', alignment: 'right', margin: [0, 1, 0, 0] });
+    }
+    if (rightStack.length) headerCols.push({ width: 'auto', stack: rightStack });
 
     content.push({ columns: headerCols, columnGap: 10 });
     content.push({ canvas: [{ type: 'line', x1: 0, y1: 0, x2: contentWidth, y2: 0, lineWidth: 1.2, lineColor: '#1a1a2e' }], margin: [0, 8, 0, 14] });
@@ -6864,10 +6873,7 @@ function buildPdfDocDefinition(model) {
         pageMargins: PDF_MARGIN,
         defaultStyle: { font: 'Sarabun', fontSize: 10 },
         content,
-        background: (currentPage) => {
-            if (currentPage !== 1 || !header.qrDataUrl) return null;
-            return { image: header.qrDataUrl, width: 55, absolutePosition: { x: PDF_PAGE_WIDTH - PDF_MARGIN[2] - 55, y: 18 } };
-        },
+        // QR ย้ายไปอยู่ในหัวเอกสาร (content) แล้ว — ไม่ใช้ background callback เพราะ absolutePosition ไม่ทำงานในนั้น
         footer: (currentPage, pageCount) => ({
             text: `หน้า ${currentPage} / ${pageCount}`,
             alignment: 'center', fontSize: 8, color: '#9ca3af', margin: [0, 14, 0, 0],
