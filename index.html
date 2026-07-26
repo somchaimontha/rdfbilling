@@ -10,7 +10,13 @@
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <!-- node-qrcode (MIT) ไม่มี browser UMD build — path build/qrcode.min.js เดิม 404 มาตลอด (QRCode จึง undefined)
+         โหลดผ่าน ESM bundle ของ jsdelivr (CommonJS→ESM) แล้ว expose เป็น window.QRCode ให้โค้ดเดิมใช้ได้ -->
+    <script type="module">
+      import QRCode from 'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/+esm';
+      window.QRCode = QRCode;
+      document.dispatchEvent(new Event('qrcode-ready'));
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/pdfmake@0.3.11/build/pdfmake.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/pdfmake@0.3.11/build/vfs_fonts.js"></script>
     <!-- ฟอนต์ไทย Sarabun ฝัง base64 ไว้ในไฟล์นี้สำหรับ pdfmake (pdfMake.addFonts รับ URL ตรงๆ ไม่ได้ในเวอร์ชันนี้ ต้องลงทะเบียนผ่าน vfs) -->

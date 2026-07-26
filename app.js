@@ -64,6 +64,15 @@ async function generateVerifyQR(type, code) {
 }
 window.generateVerifyQR = generateVerifyQR;
 
+// ไลบรารี QRCode โหลดแบบ ESM (async) — ถ้าโหลดเสร็จตอนมอดัล Export เปิดค้างอยู่พอดี ให้ render พรีวิวใหม่
+// เพื่อให้ QR ที่เพิ่งใช้งานได้โผล่ขึ้นมา (กรณีปกติ QRCode พร้อมก่อนผู้ใช้เปิด export นานแล้ว)
+document.addEventListener('qrcode-ready', () => {
+    const modal = document.getElementById('modal-export-pdf');
+    if (modal && modal.classList.contains('active') && typeof renderExportPreview === 'function') {
+        renderExportPreview();
+    }
+});
+
 // SweetAlert2 wrappers
 async function appConfirm(message, title = 'ยืนยัน') {
     const result = await Swal.fire({
@@ -5437,11 +5446,7 @@ async function buildReportModel() {
     }
 
     let qrDataUrl = '';
-    if (!showQr) {
-        console.log('[export-preview] ข้าม QR — ไม่ได้ติ๊ก "แสดง QR Code" (หัวข้อ 3 ในมอดัล)');
-    } else if (!docNum) {
-        console.log('[export-preview] ข้าม QR — ยังไม่ได้กรอก "เลขที่เอกสาร" (จำเป็นสำหรับ QR ตรวจสอบชุดเอกสาร)');
-    } else {
+    if (showQr && docNum) {
         try {
             const itemCount = sections.reduce((s, sec) => s + sec.rows.length, 0);
             const totalAmount = sections.reduce((s, sec) => s + sec.rows.reduce((s2, r) => s2 + (parseFloat(r.amount ?? r.foodAmount) || 0), 0), 0);
@@ -5450,10 +5455,8 @@ async function buildReportModel() {
             const orgId = (orgFilterSel && getCurrentUserRole() === 'admin' && orgFilterSel.value) ? orgFilterSel.value : (currentUser.organizationId || '');
             const res = await apiCall('getExportVerifyCode', { docNumber: docNum, month: reportMonth, orgId, itemCount, totalAmount });
             qrDataUrl = await generateVerifyQR('export', res.code);
-            console.log('[export-preview] สร้าง QR ตรวจสอบเอกสารสำเร็จ, code:', res.code);
         } catch (err) {
-            // สาเหตุที่พบบ่อยสุด: backend ยังไม่ deploy action getExportVerifyCode (ต้อง clasp push + deploy รอบใหม่)
-            console.warn('[export-preview] สร้าง QR ไม่สำเร็จ — ตรวจว่า deploy backend (action getExportVerifyCode) แล้วหรือยัง:', err && err.message);
+            console.warn('[export] สร้าง QR ตรวจสอบไม่สำเร็จ:', err && err.message);
             qrDataUrl = '';
         }
     }
@@ -6750,11 +6753,23 @@ function buildPdfDocDefinition(model) {
     const contentWidth = PDF_PAGE_WIDTH - PDF_MARGIN[0] - PDF_MARGIN[2];
     const content = [];
 
+    // pdfmake 0.3.11 ต้องอ้างรูปผ่าน images dictionary (key → dataURL) เท่านั้น — มันจะแปลง base64→Buffer
+    // ให้ก่อนส่งเข้า openImage (รับ Buffer ได้) ส่วนการใส่ dataURL inline ตรงๆ ({image:'data:...'}) ส่ง string
+    // ดิบเข้า openImage ที่ไม่รองรับ → รูปหายเงียบ (ยืนยันจาก src/PDFDocument.js@0.3.11 realImageSrc/provideImage)
+    const images = {};
+    let _imgSeq = 0;
+    const registerImage = (dataUrl) => {
+        if (!dataUrl) return null;
+        const key = 'img' + (_imgSeq++);
+        images[key] = dataUrl;
+        return key;
+    };
+
     // หัวเอกสาร: โลโก้ | ชื่อหน่วยงาน/ชื่อเรื่อง | (เลขที่เอกสาร + QR ตรวจสอบ) มุมขวา
     // QR วางเป็น image ในหัวเอกสาร (content ปกติ) — อยู่หน้าแรกครั้งเดียวอยู่แล้ว และ image ใน content
     // render ได้จริงเสมอ (ต่างจาก background callback ที่ commit ที่ (0,0) ทำให้ absolutePosition ไม่ทำงาน)
     const headerCols = [];
-    if (header.logoSrc) headerCols.push({ image: header.logoSrc, width: 46, height: 46, margin: [0, 0, 10, 0] });
+    if (header.logoSrc) headerCols.push({ image: registerImage(header.logoSrc), width: 46, height: 46, margin: [0, 0, 10, 0] });
     const titleStack = { stack: [], width: '*' };
     if (header.orgName) titleStack.stack.push({ text: header.orgName, bold: true, fontSize: 12, color: '#1a1a2e' });
     titleStack.stack.push({ text: header.title, bold: true, fontSize: 16, color: '#1a1a2e', margin: [0, 2, 0, 0] });
@@ -6765,7 +6780,7 @@ function buildPdfDocDefinition(model) {
     const rightStack = [];
     if (header.docNum) rightStack.push({ text: 'เลขที่: ' + header.docNum, fontSize: 9, color: '#6b7280', alignment: 'right' });
     if (header.qrDataUrl) {
-        rightStack.push({ image: header.qrDataUrl, width: 62, alignment: 'right', margin: [0, 4, 0, 0] });
+        rightStack.push({ image: registerImage(header.qrDataUrl), width: 62, alignment: 'right', margin: [0, 4, 0, 0] });
         rightStack.push({ text: 'สแกนเพื่อตรวจสอบ', fontSize: 6.5, color: '#9ca3af', alignment: 'right', margin: [0, 1, 0, 0] });
     }
     if (rightStack.length) headerCols.push({ width: 'auto', stack: rightStack });
@@ -6833,7 +6848,7 @@ function buildPdfDocDefinition(model) {
                     fontSize: 8.5, color: '#374151', margin: [0, 2, 0, 6],
                 });
                 item.images.forEach(src => {
-                    stack.push({ image: src, width: 220, alignment: 'center', margin: [0, 4, 0, 4] });
+                    stack.push({ image: registerImage(src), width: 220, alignment: 'center', margin: [0, 4, 0, 4] });
                 });
                 item.fileRefs.forEach(ref => {
                     // ไม่ใช้ emoji (Sarabun ไม่มี glyph) — ใช้ป้ายข้อความนำหน้าแทน
@@ -6872,6 +6887,7 @@ function buildPdfDocDefinition(model) {
         pageSize: 'A4',
         pageMargins: PDF_MARGIN,
         defaultStyle: { font: 'Sarabun', fontSize: 10 },
+        images, // ทุกรูป (QR/โลโก้/หลักฐานแนบ) ลงทะเบียนไว้ที่นี่ แล้ว content อ้างด้วย key
         content,
         // QR ย้ายไปอยู่ในหัวเอกสาร (content) แล้ว — ไม่ใช้ background callback เพราะ absolutePosition ไม่ทำงานในนั้น
         footer: (currentPage, pageCount) => ({
@@ -6917,30 +6933,23 @@ async function generateAndShowPreview() {
     const myGeneration = ++_previewGeneration;
     if (loading) loading.style.display = 'flex';
     setPreviewLoadingText('กำลังสร้างตัวอย่าง PDF...');
-    console.log('[export-preview] เริ่มสร้าง generation', myGeneration);
     try {
-        console.log('[export-preview] กำลังรวบรวมข้อมูล (buildReportModel)...');
         const model = await withTimeout(buildReportModel(), 20000, 'การรวบรวมข้อมูล/ไฟล์แนบ');
-        console.log('[export-preview] buildReportModel เสร็จแล้ว', model);
-        if (myGeneration !== _previewGeneration) { console.log('[export-preview] ยกเลิก — มีคำขอใหม่กว่าเข้ามาแล้ว'); return; }
+        if (myGeneration !== _previewGeneration) return; // มีคำขอใหม่กว่าเข้ามาแล้ว
 
         const docDef = buildPdfDocDefinition(model);
-        console.log('[export-preview] buildPdfDocDefinition เสร็จแล้ว, เรียก pdfMake.createPdf...');
-
         // pdfmake 0.3.x: getDataUrl() เป็น async คืน Promise<string> โดยตรง (ไม่ใช่ callback แบบเวอร์ชันเก่า)
-        // ยืนยันจาก source จริง src/OutputDocument.js@0.3.11 → `async getDataUrl()`
         const dataUrl = await withTimeout(
             pdfMake.createPdf(docDef).getDataUrl(),
             15000,
             'การสร้างไฟล์ PDF (pdfmake)'
         );
-        console.log('[export-preview] pdfMake สร้าง PDF สำเร็จ, ความยาว dataUrl:', dataUrl ? dataUrl.length : 0);
 
         if (myGeneration !== _previewGeneration) return;
         frame.src = dataUrl;
         if (loading) loading.style.display = 'none';
     } catch (err) {
-        console.error('[export-preview] สร้างตัวอย่าง PDF ไม่สำเร็จ:', err);
+        console.error('[export] สร้างตัวอย่าง PDF ไม่สำเร็จ:', err);
         if (myGeneration === _previewGeneration) {
             setPreviewLoadingText('สร้างตัวอย่างไม่สำเร็จ: ' + err.message + ' (ดูรายละเอียดใน Console — กด F12)', true);
         }
