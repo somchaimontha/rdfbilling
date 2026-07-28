@@ -50,6 +50,75 @@ function escapeHTML(str) {
         .replace(/'/g, '&#039;');
 }
 
+// ==========================================================================
+// Lazy-load ไลบรารีหนักที่ใช้เฉพาะตอน "ส่งออกรายงาน" (pdfmake + vfs_fonts + sarabun + xlsx ~3.2MB)
+// ย้ายออกจาก <head> (เดิม blocking ทำให้หน้าแรกโหลดช้า) → โหลดครั้งแรกที่ต้องใช้จริง
+// - เบราว์เซอร์ HTTP-cache สคริปต์เหล่านี้อยู่แล้ว → เข้าครั้งต่อไปดึงจากแคช ไม่โหลดซ้ำ
+// - หลังหน้าแรกแสดงเสร็จ จะ "แอบโหลดเบื้องหลัง" ตอนเบราว์เซอร์ว่าง (ดู window 'load' ท้ายไฟล์)
+//   เพื่อให้กดส่งออกครั้งแรกได้ทันที โดยไม่บล็อกการโหลดหน้าแรก
+// ==========================================================================
+let _exportLibsPromise = null;
+
+function loadScriptOnce(src) {
+    return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = () => reject(new Error('โหลดไม่สำเร็จ: ' + src));
+        document.head.appendChild(s);
+    });
+}
+
+// แถบสถานะเล็กๆ กลางล่างจอ (ไม่บังการใช้งาน) — แจ้งความคืบหน้าการโหลดเบื้องหลัง
+function showLibStatus(text, state) {
+    if (!document.getElementById('lib-status-style')) {
+        const st = document.createElement('style');
+        st.id = 'lib-status-style';
+        st.textContent = '@keyframes libpulse{0%,100%{opacity:1}50%{opacity:.3}}';
+        document.head.appendChild(st);
+    }
+    let bar = document.getElementById('lib-status-bar');
+    if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'lib-status-bar';
+        bar.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:9999;display:flex;align-items:center;gap:9px;background:rgba(30,41,59,.94);color:#fff;font-size:13px;padding:8px 16px;border-radius:999px;box-shadow:0 4px 16px rgba(0,0,0,.25);opacity:0;transition:opacity .25s;pointer-events:none;max-width:90vw;';
+        bar.innerHTML = '<span class="lib-status-dot" style="width:9px;height:9px;border-radius:50%;background:#38bdf8;flex:none;"></span><span class="lib-status-text"></span>';
+        document.body.appendChild(bar);
+    }
+    const dot = bar.querySelector('.lib-status-dot');
+    bar.querySelector('.lib-status-text').textContent = text;
+    dot.style.background = state === 'error' ? '#f87171' : state === 'done' ? '#4ade80' : '#38bdf8';
+    dot.style.animation = state === 'loading' ? 'libpulse 1s ease-in-out infinite' : 'none';
+    bar.style.opacity = '1';
+    clearTimeout(bar._hideTimer);
+    if (state === 'done' || state === 'error') {
+        bar._hideTimer = setTimeout(() => { bar.style.opacity = '0'; }, state === 'error' ? 4500 : 1600);
+    }
+}
+
+// โหลดไลบรารีส่งออกครั้งเดียว (cache promise) — เรียกซ้ำได้ปลอดภัย, resolve ทันทีถ้าโหลดไว้แล้ว
+async function ensureExportLibs(label) {
+    if (_exportLibsPromise) return _exportLibsPromise;
+    _exportLibsPromise = (async () => {
+        showLibStatus(label || 'กำลังเตรียมเครื่องมือส่งออกรายงาน...', 'loading');
+        try {
+            // pdfmake ต้องมาก่อน เพราะ vfs_fonts.js / sarabun-vfs.js เรียก pdfMake.* ตอนโหลด
+            await loadScriptOnce('https://cdn.jsdelivr.net/npm/pdfmake@0.3.11/build/pdfmake.min.js');
+            await Promise.all([
+                loadScriptOnce('https://cdn.jsdelivr.net/npm/pdfmake@0.3.11/build/vfs_fonts.js'),
+                loadScriptOnce('fonts/sarabun-vfs.js'),
+                loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'),
+            ]);
+            showLibStatus('พร้อมส่งออกรายงานแล้ว', 'done');
+        } catch (err) {
+            _exportLibsPromise = null;   // ให้ลองใหม่ได้ครั้งหน้า
+            showLibStatus('โหลดเครื่องมือส่งออกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง', 'error');
+            throw err;
+        }
+    })();
+    return _exportLibsPromise;
+}
+
 // สร้าง QR code ตรวจสอบเอกสารย้อนกลับ — ทำงานฝั่ง client ล้วนๆ (ไลบรารี qrcode จาก CDN)
 // ข้อมูลไม่ออกจากเบราว์เซอร์เลยตอนสร้างรูป ต่างจากการเรียก API ภายนอกสร้าง QR image
 async function generateVerifyQR(type, code) {
@@ -3984,11 +4053,13 @@ function saveMultiItems() {
 // ==========================================================================
 // Excel Export XLSX (Phase 2)
 // ==========================================================================
-function exportExcelXLSX() {
+async function exportExcelXLSX() {
     const table = document.getElementById('excel-grid');
     if (!table) return appAlert('ไม่พบตารางข้อมูลสเปรดชีตสำหรับส่งออก!');
-    
+
     try {
+        // โหลด xlsx แบบ lazy (ปกติเตรียมไว้เบื้องหลังแล้ว → resolve ทันที)
+        await ensureExportLibs();
         const wb = XLSX.utils.table_to_book(table, { raw: true });
         const dateStr = `${state.selectedYear}-${state.selectedMonth}`;
         XLSX.writeFile(wb, `rdf_billing_report_${dateStr}.xlsx`);
@@ -5489,6 +5560,14 @@ async function executeDynamicExport(format) {
         return;
     }
 
+    // โหลด xlsx/pdfmake แบบ lazy (ปกติเตรียมไว้เบื้องหลังแล้ว → resolve ทันที)
+    try {
+        await ensureExportLibs();
+    } catch (err) {
+        appAlert('โหลดเครื่องมือส่งออกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง: ' + err.message, 'error');
+        return;
+    }
+
     if (format === 'excel' || format === 'csv') {
         const wb = XLSX.utils.book_new();
         sections.forEach(section => {
@@ -6932,8 +7011,11 @@ async function generateAndShowPreview() {
     if (!frame) return;
     const myGeneration = ++_previewGeneration;
     if (loading) loading.style.display = 'flex';
-    setPreviewLoadingText('กำลังสร้างตัวอย่าง PDF...');
+    setPreviewLoadingText('กำลังเตรียมเครื่องมือสร้าง PDF...');
     try {
+        // โหลด pdfmake/ฟอนต์แบบ lazy (ปกติเตรียมไว้เบื้องหลังแล้ว → resolve ทันที)
+        await ensureExportLibs();
+        setPreviewLoadingText('กำลังสร้างตัวอย่าง PDF...');
         const model = await withTimeout(buildReportModel(), 20000, 'การรวบรวมข้อมูล/ไฟล์แนบ');
         if (myGeneration !== _previewGeneration) return; // มีคำขอใหม่กว่าเข้ามาแล้ว
 
@@ -7291,3 +7373,12 @@ window.renderSettingsTab = async function() {
         lastLoginEl.textContent = loginTime ? formatThaiDate(loginTime) : '-';
     }
 };
+
+// แอบเตรียมเครื่องมือส่งออก (pdfmake/xlsx/ฟอนต์) ไว้ล่วงหน้าเบื้องหลัง
+// เริ่มหลังหน้าแรกแสดงเสร็จ ('load') + ตอนเบราว์เซอร์ว่าง (requestIdleCallback)
+// → กดส่งออกครั้งแรกได้ทันที โดยไม่บล็อกการโหลด/แสดงผลหน้าแรก
+window.addEventListener('load', () => {
+    const preload = () => ensureExportLibs('กำลังเตรียมเครื่องมือส่งออกเบื้องหลัง...').catch(() => {});
+    if ('requestIdleCallback' in window) requestIdleCallback(preload, { timeout: 5000 });
+    else setTimeout(preload, 2000);
+});
