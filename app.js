@@ -51,8 +51,10 @@ function escapeHTML(str) {
 }
 
 // ==========================================================================
-// Lazy-load ไลบรารีหนักที่ใช้เฉพาะตอน "ส่งออกรายงาน" (pdfmake + vfs_fonts + sarabun + xlsx ~3.2MB)
+// Lazy-load ไลบรารีหนักที่ใช้เฉพาะตอน "ส่งออกรายงาน" (pdfmake + sarabun + xlsx ~2.4MB)
 // ย้ายออกจาก <head> (เดิม blocking ทำให้หน้าแรกโหลดช้า) → โหลดครั้งแรกที่ต้องใช้จริง
+// ไม่โหลด vfs_fonts.js (Roboto ~834KB) เพราะเราใช้ Sarabun ล้วน — พิสูจน์ด้วย pdfmake 0.3.11 จริงแล้วว่า
+// createPdf ทำงานได้โดยไม่ต้องมี Roboto เมื่อ defaultStyle.font='Sarabun' (ดู [[project_preview_export_report_overhaul]])
 // - เบราว์เซอร์ HTTP-cache สคริปต์เหล่านี้อยู่แล้ว → เข้าครั้งต่อไปดึงจากแคช ไม่โหลดซ้ำ
 // - หลังหน้าแรกแสดงเสร็จ จะ "แอบโหลดเบื้องหลัง" ตอนเบราว์เซอร์ว่าง (ดู window 'load' ท้ายไฟล์)
 //   เพื่อให้กดส่งออกครั้งแรกได้ทันที โดยไม่บล็อกการโหลดหน้าแรก
@@ -102,10 +104,9 @@ async function ensureExportLibs(label) {
     _exportLibsPromise = (async () => {
         showLibStatus(label || 'กำลังเตรียมเครื่องมือส่งออกรายงาน...', 'loading');
         try {
-            // pdfmake ต้องมาก่อน เพราะ vfs_fonts.js / sarabun-vfs.js เรียก pdfMake.* ตอนโหลด
+            // pdfmake ต้องมาก่อน เพราะ sarabun-vfs.js เรียก pdfMake.addVirtualFileSystem()/addFonts() ตอนโหลด
             await loadScriptOnce('https://cdn.jsdelivr.net/npm/pdfmake@0.3.11/build/pdfmake.min.js');
             await Promise.all([
-                loadScriptOnce('https://cdn.jsdelivr.net/npm/pdfmake@0.3.11/build/vfs_fonts.js'),
                 loadScriptOnce('fonts/sarabun-vfs.js'),
                 loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'),
             ]);

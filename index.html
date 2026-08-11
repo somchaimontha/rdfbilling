@@ -17,8 +17,9 @@
       window.QRCode = QRCode;
       document.dispatchEvent(new Event('qrcode-ready'));
     </script>
-    <!-- pdfmake (~1MB) + vfs_fonts (~834KB) + sarabun-vfs (~489KB) + xlsx (~900KB) ใช้เฉพาะตอนส่งออกรายงาน
-         ย้ายไป lazy-load ผ่าน ensureExportLibs() ใน app.js (โหลดครั้งแรกที่กดใช้ export) เพื่อไม่ให้บล็อกการโหลดหน้าแรก -->
+    <!-- pdfmake (~1MB) + sarabun-vfs (~489KB) + xlsx (~900KB) ใช้เฉพาะตอนส่งออกรายงาน
+         ย้ายไป lazy-load ผ่าน ensureExportLibs() ใน app.js (โหลดครั้งแรกที่กดใช้ export) เพื่อไม่ให้บล็อกการโหลดหน้าแรก
+         ไม่โหลด vfs_fonts.js (Roboto ~834KB) แล้ว — เราใช้ Sarabun ล้วน (พิสูจน์ว่า pdfmake ไม่ต้องใช้ Roboto) -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         /* Extra inline styles */
