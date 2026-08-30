@@ -78,7 +78,7 @@
 <div class="app-container" id="app-shell">
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
     <!-- Sidebar Navigation -->
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar" aria-label="เมนูหลัก">
         <div class="logo-container" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
             <div style="display: flex; align-items: center; gap: 12px;">
                 <div class="logo-icon"><i data-lucide="wallet"></i></div>
@@ -99,10 +99,11 @@
         </div>
 
         <nav class="nav-menu" style="display: flex; flex-direction: column; flex: 1;">
-            <div class="sidebar-category" style="font-size: 11px; font-weight: 700; color: var(--text-muted); padding: 16px 16px 8px 16px; text-transform: uppercase; letter-spacing: 0.5px;">เมนูหลัก (Main)</div>
+            <div class="sidebar-category">ภาพรวม</div>
             <li class="nav-item active" data-tab="dashboard">
                 <a><i data-lucide="layout-dashboard"></i> แดชบอร์ด</a>
             </li>
+            <div class="sidebar-category">งานรายจ่าย</div>
             <li class="nav-item" data-tab="bills-table">
                 <a><i data-lucide="receipt"></i> บันทึกบิลประจำเดือน</a>
             </li>
@@ -115,11 +116,11 @@
             <li class="nav-item" data-tab="fund-receipts">
                 <a><i data-lucide="graduation-cap"></i> เอกสารรับเงินทุน</a>
             </li>
-            <div class="sidebar-category" style="font-size: 11px; font-weight: 700; color: var(--text-muted); padding: 16px 16px 8px 16px; text-transform: uppercase; letter-spacing: 0.5px;">ค่าอาหาร (Food)</div>
+            <div class="sidebar-category">ค่าอาหาร</div>
             <li class="nav-item" data-tab="food-overview">
                   <a><i data-lucide="utensils"></i> ค่าอาหารประจำเดือน</a>
               </li>
-            <div class="sidebar-category" style="font-size: 11px; font-weight: 700; color: var(--text-muted); padding: 16px 16px 8px 16px; text-transform: uppercase; letter-spacing: 0.5px;">ระบบ (System)</div>
+            <div class="sidebar-category">รายงานและระบบ</div>
             <li class="nav-item" data-tab="summary-view">
                 <a><i data-lucide="calendar-days"></i> รายงานสรุปรายปี</a>
             </li>
@@ -989,6 +990,93 @@
                         </div>
                     </div>
 
+                    <!-- Section: Document & Fiscal Rules -->
+                    <div class="card" style="margin-bottom:20px;">
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+                            <div style="width:40px;height:40px;background:linear-gradient(135deg,#0ea5e9,#2563eb);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                                <i data-lucide="file-text" style="width:20px;height:20px;color:white;"></i>
+                            </div>
+                            <div>
+                                <h3 style="font-size:15px;font-weight:700;margin:0;">เอกสารและปีงบประมาณ</h3>
+                                <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">กำหนดรูปแบบเลขเอกสารและรอบปีที่ใช้กับรายงานทั้งระบบ</p>
+                            </div>
+                        </div>
+                        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">
+                            <div class="form-group">
+                                <label class="form-label">รหัสนำหน้าเลขเอกสาร</label>
+                                <div style="display:flex; gap:8px;">
+                                    <input type="text" id="setting-document-prefix" class="form-input" placeholder="MIS">
+                                    <button class="btn btn-primary" onclick="saveSystemSetting('documentPrefix', document.getElementById('setting-document-prefix').value)" style="white-space:nowrap;padding:0 16px;">บันทึก</button>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">เดือนเริ่มต้นปีงบประมาณ</label>
+                                <div style="display:flex; gap:8px;">
+                                    <select id="setting-fiscal-year-start" class="form-select" style="padding:10px;">
+                                        <option value="1">มกราคม</option>
+                                        <option value="4">เมษายน</option>
+                                        <option value="10">ตุลาคม</option>
+                                    </select>
+                                    <button class="btn btn-primary" onclick="saveSystemSetting('fiscalYearStart', document.getElementById('setting-fiscal-year-start').value)" style="white-space:nowrap;padding:0 16px;">บันทึก</button>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">สกุลเงินหลัก</label>
+                                <div style="display:flex; gap:8px;">
+                                    <select id="setting-default-currency" class="form-select" style="padding:10px;">
+                                        <option value="THB">THB</option>
+                                        <option value="USD">USD</option>
+                                        <option value="EUR">EUR</option>
+                                    </select>
+                                    <button class="btn btn-primary" onclick="saveSystemSetting('defaultCurrency', document.getElementById('setting-default-currency').value)" style="white-space:nowrap;padding:0 16px;">บันทึก</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Section: Security & Validation -->
+                    <div class="card" style="margin-bottom:20px;">
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+                            <div style="width:40px;height:40px;background:linear-gradient(135deg,#10b981,#059669);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+                                <i data-lucide="shield-check" style="width:20px;height:20px;color:white;"></i>
+                            </div>
+                            <div>
+                                <h3 style="font-size:15px;font-weight:700;margin:0;">ความปลอดภัยและเงื่อนไขข้อมูล</h3>
+                                <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0;">กำหนดกติกาการแนบหลักฐานและอายุการเข้าสู่ระบบ</p>
+                            </div>
+                        </div>
+                        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;align-items:end;">
+                            <div class="form-group">
+                                <label class="form-label">อายุ Session Token (ชั่วโมง)</label>
+                                <div style="display:flex; gap:8px;">
+                                    <input type="number" id="setting-token-expiry-hours" class="form-input" min="1" max="24" placeholder="8">
+                                    <button class="btn btn-primary" onclick="saveSystemSetting('tokenExpiryHours', document.getElementById('setting-token-expiry-hours').value)" style="white-space:nowrap;padding:0 16px;">บันทึก</button>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">บังคับแนบหลักฐานอย่างน้อย 1 ไฟล์</label>
+                                <div style="height:42px;display:flex;align-items:center;gap:10px;">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="setting-require-attachment" onchange="saveSystemSetting('requireAttachment', this.checked)">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                    <span id="setting-require-attachment-status" style="font-size:12px;color:var(--text-secondary);">ปิดอยู่</span>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">แสดงข้อมูลสรุปเมื่อสแกน QR รายงาน</label>
+                                <div style="height:42px;display:flex;align-items:center;gap:10px;">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="setting-public-export-verify" onchange="saveSystemSetting('publicExportVerifyEnabled', this.checked)">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                    <span id="setting-public-export-verify-status" style="font-size:12px;color:var(--text-secondary);">ปิดอยู่</span>
+                                </div>
+                                <p style="font-size:11px;color:var(--text-muted);margin:6px 0 0;">เปิดแล้วจะแสดงเฉพาะเลขที่เอกสาร เดือน จำนวนรายการ และยอดรวม รายละเอียดเต็มยังต้องเข้าสู่ระบบ</p>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Section: Bottom Nav Opacity -->
                     <div class="card" style="margin-bottom:20px;">
                         <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
@@ -1125,17 +1213,17 @@
     </main>
 
     <!-- Mobile Bottom Navigation -->
-    <nav class="bottom-nav">
+    <nav class="bottom-nav" aria-label="เมนูมือถือ">
         <!-- 1. Dashboard -->
         <a class="bottom-nav-item active" data-tab="dashboard">
             <i data-lucide="layout-dashboard"></i>
             <span>แดชบอร์ด</span>
         </a>
 
-        <!-- 2. Bills & Claims (Has Submenu) -->
-        <div class="bottom-nav-item has-submenu">
+        <!-- 2. Expense Workflows -->
+        <div class="bottom-nav-item has-submenu" data-nav-group="expenses">
             <i data-lucide="receipt"></i>
-            <span>บิล&เบิก</span>
+            <span>รายจ่าย</span>
             <div class="bottom-nav-submenu">
                 <a class="submenu-item" data-tab="bills-table">
                     <i data-lucide="file-text"></i> บันทึกบิล
@@ -1145,9 +1233,6 @@
                 </a>
                 <a class="submenu-item" data-tab="spreadsheet-view">
                     <i data-lucide="table-2"></i> สเปรดชีต
-                </a>
-                <a class="submenu-item" data-tab="fund-receipts">
-                    <i data-lucide="graduation-cap"></i> เอกสารรับเงินทุน
                 </a>
             </div>
         </div>
@@ -1159,16 +1244,32 @@
         </a>
 
         <!-- 4. Reports -->
-        <a class="bottom-nav-item" data-tab="summary-view">
+        <div class="bottom-nav-item has-submenu" data-nav-group="reports">
             <i data-lucide="calendar-days"></i>
             <span>รายงาน</span>
-        </a>
+            <div class="bottom-nav-submenu">
+                <a class="submenu-item" data-tab="summary-view">
+                    <i data-lucide="bar-chart-3"></i> สรุปรายปี
+                </a>
+                <a class="submenu-item" data-tab="fund-receipts">
+                    <i data-lucide="graduation-cap"></i> รับเงินทุน
+                </a>
+            </div>
+        </div>
 
-        <!-- 5. Settings -->
-        <a class="bottom-nav-item" data-tab="settings-view">
+        <!-- 5. System -->
+        <div class="bottom-nav-item has-submenu align-right" data-nav-group="admin" id="bottom-admin-menu">
             <i data-lucide="settings"></i>
-            <span>ตั้งค่า</span>
-        </a>
+            <span>ระบบ</span>
+            <div class="bottom-nav-submenu">
+                <a class="submenu-item" data-tab="settings-view" id="bottom-nav-settings">
+                    <i data-lucide="settings"></i> ตั้งค่าระบบ
+                </a>
+                <a class="submenu-item" data-tab="user-management" id="bottom-nav-user-management">
+                    <i data-lucide="users"></i> ผู้ใช้งาน
+                </a>
+            </div>
+        </div>
     </nav>
 
 </div>
@@ -1237,17 +1338,23 @@
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="bill-category">หมวดหมู่รายจ่าย</label>
-                        <select id="bill-category" class="form-select w-full" style="padding:10px;"></select>
+                        <input type="hidden" id="bill-category">
+                        <input type="text" id="bill-category-input" class="form-input w-full" list="bill-category-list" placeholder="พิมพ์หรือเลือกหมวดหมู่..." style="padding:10px;" required>
+                        <datalist id="bill-category-list"></datalist>
                     </div>
                 </div>
                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
                     <div class="form-group">
                         <label class="form-label" for="bill-vendor">ผู้ขาย / ร้านค้า</label>
-                        <select id="bill-vendor" class="form-select w-full" style="padding:10px;"></select>
+                        <input type="hidden" id="bill-vendor">
+                        <input type="text" id="bill-vendor-input" class="form-input w-full" list="bill-vendor-list" placeholder="พิมพ์หรือเลือกผู้ขาย..." style="padding:10px;" required>
+                        <datalist id="bill-vendor-list"></datalist>
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="bill-fund-source">แหล่งเงินสำรองจ่าย</label>
-                        <select id="bill-fund-source" class="form-select w-full" style="padding:10px;"></select>
+                        <input type="hidden" id="bill-fund-source">
+                        <input type="text" id="bill-fund-source-input" class="form-input w-full" list="bill-fund-source-list" placeholder="พิมพ์หรือเลือกแหล่งเงิน..." style="padding:10px;" required>
+                        <datalist id="bill-fund-source-list"></datalist>
                     </div>
                 </div>
                 <div class="form-group">
@@ -1343,11 +1450,15 @@
                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
                     <div class="form-group">
                         <label class="form-label" for="attach-category">หมวดหมู่รายจ่าย</label>
-                        <select id="attach-category" class="form-select w-full" style="padding:10px;"></select>
+                        <input type="hidden" id="attach-category">
+                        <input type="text" id="attach-category-input" class="form-input w-full" list="attach-category-list" placeholder="พิมพ์หรือเลือกหมวดหมู่..." style="padding:10px;" required>
+                        <datalist id="attach-category-list"></datalist>
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="attach-fund-source">แหล่งเงินสำรองจ่าย</label>
-                        <select id="attach-fund-source" class="form-select w-full" style="padding:10px;"></select>
+                        <input type="hidden" id="attach-fund-source">
+                        <input type="text" id="attach-fund-source-input" class="form-input w-full" list="attach-fund-source-list" placeholder="พิมพ์หรือเลือกแหล่งเงิน..." style="padding:10px;" required>
+                        <datalist id="attach-fund-source-list"></datalist>
                     </div>
                 </div>
                 <div class="form-group">
@@ -2184,7 +2295,3 @@
 
 </body>
 </html>
-
-
-
-

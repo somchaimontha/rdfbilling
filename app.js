@@ -3,7 +3,8 @@
 // Master Data + Full Expense Schema
 // ==========================================================================
 
-const API_URL = 'https://script.google.com/macros/s/AKfycbwxEEhfMfU8hjiR-iijOqcdPbRR-UOQOf4CMD34B0qVlhjgJYEpFXzGkopJ4inI5RyRnA/exec';
+const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwxEEhfMfU8hjiR-iijOqcdPbRR-UOQOf4CMD34B0qVlhjgJYEpFXzGkopJ4inI5RyRnA/exec';
+const API_URL = ['127.0.0.1', 'localhost'].includes(window.location.hostname) ? '/api' : GAS_API_URL;
 
 // API request router (CORS friendly via text/plain payload)
 async function apiCall(action, data = null, filters = null, pagination = null) {
@@ -124,7 +125,10 @@ async function ensureExportLibs(label) {
 // ข้อมูลไม่ออกจากเบราว์เซอร์เลยตอนสร้างรูป ต่างจากการเรียก API ภายนอกสร้าง QR image
 async function generateVerifyQR(type, code) {
     if (typeof QRCode === 'undefined' || !code) return '';
-    const verifyUrl = `${window.location.origin}${window.location.pathname}?verify_type=${encodeURIComponent(type)}&verify_code=${encodeURIComponent(code)}`;
+    const baseUrl = `${window.location.origin}${window.location.pathname}`;
+    const verifyUrl = type === 'export'
+        ? `${baseUrl}?v=${encodeURIComponent(code)}`
+        : `${baseUrl}?verify_type=${encodeURIComponent(type)}&verify_code=${encodeURIComponent(code)}`;
     try {
         return await QRCode.toDataURL(verifyUrl, { width: 160, margin: 1 });
     } catch (err) {
@@ -204,6 +208,22 @@ function handleSessionExpired() {
     if (profileBox) profileBox.style.display = 'none';
 }
 
+function getCurrentUser() {
+    try {
+        return JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
+    } catch (e) {
+        return null;
+    }
+}
+
+function isAdminUser(user = getCurrentUser()) {
+    return !!(user && user.role && user.role.toLowerCase() === 'admin');
+}
+
+function isConfigEnabled(value) {
+    return value === true || String(value).toLowerCase() === 'true';
+}
+
 // Display logged in user details in sidebar + header
 // (login response shape is {id, name, role, organizationId} — no "username"/"avatar" field, see Auth.gs login())
 function showUserProfile(user) {
@@ -228,9 +248,24 @@ function showUserProfile(user) {
     if (avatarEl) avatarEl.src = user.avatar || ('https://ui-avatars.com/api/?name=' + encodeURIComponent(user.name || user.id || 'User') + '&background=random');
 
     // Check Admin rights
+    const isAdmin = isAdminUser(user);
     const navUserMgt = document.getElementById('nav-user-management');
     if (navUserMgt) {
-        navUserMgt.style.display = (user.role && user.role.toLowerCase() === 'admin') ? 'flex' : 'none';
+        navUserMgt.style.display = isAdmin ? 'flex' : 'none';
+    }
+    const navSettings = document.getElementById('nav-settings');
+    if (navSettings) {
+        navSettings.style.display = isAdmin ? 'flex' : 'none';
+    }
+    const bottomAdminMenu = document.getElementById('bottom-admin-menu');
+    if (bottomAdminMenu) {
+        bottomAdminMenu.style.display = isAdmin ? 'flex' : 'none';
+    }
+    document.querySelectorAll('[data-tab="settings-view"], [data-tab="user-management"]').forEach(item => {
+        if (!item.closest('.nav-menu')) item.style.display = isAdmin ? '' : 'none';
+    });
+    if (!isAdmin && (state.activeTab === 'settings-view' || state.activeTab === 'user-management')) {
+        switchTab('dashboard');
     }
 }
 
@@ -343,21 +378,24 @@ let currentMultiItemsTarget = null;
 // ==========================================================================
 // Public Document Verification (สแกน QR แล้วมาที่นี่ — ไม่ต้อง login)
 // ==========================================================================
-const VERIFY_TYPE_LABELS = { claim: 'ใบเบิก/ชุดส่งเบิก', food: 'รายงานค่าอาหารประจำเดือน', fundreceipt: 'เอกสารรับเงินทุนประจำเดือน' };
+const VERIFY_TYPE_LABELS = { claim: 'ใบเบิก/ชุดส่งเบิก', food: 'รายงานค่าอาหารประจำเดือน', fundreceipt: 'เอกสารรับเงินทุนประจำเดือน', export: 'รายงานส่งออก' };
 
 function initVerifyModeIfPresent() {
     const params = new URLSearchParams(window.location.search);
-    const type = params.get('verify_type');
-    const code = params.get('verify_code');
+    let type = params.get('verify_type');
+    let code = params.get('verify_code');
+    const shortExportCode = params.get('v');
+    if (shortExportCode && !type && !code) {
+        type = 'export';
+        code = shortExportCode;
+    }
     if (!type || !code) return false;
 
     // รายงาน export: ไม่แสดงสรุปแบบ public แต่บังคับ login ก่อนแล้วพาไปดูรายการบิลของเดือนนั้นในระบบ
     // เก็บ pending ไว้ resolve หลัง login สำเร็จ (ดู resolvePendingExportVerify) แล้วปล่อยให้ flow ปกติทำงานต่อ
     if (type === 'export') {
         try { sessionStorage.setItem('rdf_pending_export_verify', JSON.stringify({ code })); } catch (e) {}
-        // ล้าง query param ออกจาก URL กันสแกนซ้ำ/รีเฟรชแล้ววนลูป (ข้อมูล pending อยู่ใน sessionStorage แล้ว)
         try { window.history.replaceState({}, '', window.location.pathname); } catch (e) {}
-        return false;
     }
 
     const loginOverlay = document.getElementById('login-overlay');
@@ -418,6 +456,19 @@ function renderVerifyResult(result, type) {
             <div class="vr-row"><span>เดือน</span><strong>${escapeHTML(d.month || '-')}</strong></div>
             <div class="vr-row"><span>จำนวนเงิน</span><strong>${(parseFloat(d.amount) || 0).toLocaleString('th-TH', {minimumFractionDigits:2})} บาท</strong></div>
             ${d.note ? `<div class="vr-row"><span>หมายเหตุ</span><strong>${escapeHTML(d.note)}</strong></div>` : ''}`;
+    } else if (type === 'export') {
+        if (d.publicSummaryEnabled === false) {
+            rows = `
+                <div class="vr-row"><span>เลขที่เอกสาร</span><strong>${escapeHTML(d.docNumber || '-')}</strong></div>
+                <div class="vr-row"><span>ข้อมูลสรุปสาธารณะ</span><strong>ปิดอยู่</strong></div>
+                <p style="font-size:12px;color:#6b7280;margin:12px 0 0;">ผู้ดูแลระบบปิดการแสดงข้อมูลเบื้องต้นไว้ กรุณาเข้าสู่ระบบเพื่อดูรายละเอียดตามสิทธิ์ของผู้ใช้งาน</p>`;
+        } else {
+            rows = `
+                <div class="vr-row"><span>เลขที่เอกสาร</span><strong>${escapeHTML(d.docNumber || '-')}</strong></div>
+                <div class="vr-row"><span>เดือนรายงาน</span><strong>${escapeHTML(d.month || '-')}</strong></div>
+                <div class="vr-row"><span>จำนวนรายการ</span><strong>${d.itemCount ?? '-'}</strong></div>
+                <div class="vr-row"><span>ยอดรวม</span><strong>${(parseFloat(d.totalAmount) || 0).toLocaleString('th-TH', {minimumFractionDigits:2})} บาท</strong></div>`;
+        }
     }
 
     box.innerHTML = `
@@ -427,9 +478,29 @@ function renderVerifyResult(result, type) {
             <p style="color:#6b7280;font-size:13px;margin-bottom:20px;">${typeLabel} — ข้อมูลนี้ดึงจากระบบจริงแบบเรียลไทม์</p>
         </div>
         <div style="text-align:left;">${rows}</div>
+        ${type === 'export' ? `
+        <div style="display:flex;justify-content:center;margin-top:18px;">
+            <button type="button" class="btn btn-primary" onclick="continueExportVerifyLogin(${JSON.stringify(d.verifyCode || d.docNumber || '').replace(/"/g, '&quot;')})">เข้าสู่ระบบเพื่อดูรายละเอียด</button>
+        </div>` : ''}
         <p style="color:#9ca3af;font-size:11px;text-align:center;margin-top:20px;">RDF Expense System — วิทยาลัยการอาชีพแม่สะเรียง</p>`;
     if (window.lucide) lucide.createIcons();
 }
+
+function continueExportVerifyLogin(code) {
+    if (code) {
+        try { sessionStorage.setItem('rdf_pending_export_verify', JSON.stringify({ code })); } catch (e) {}
+    }
+    const verifyView = document.getElementById('verify-result-view');
+    const loginOverlay = document.getElementById('login-overlay');
+    const appShell = document.getElementById('app-shell');
+    if (verifyView) verifyView.style.display = 'none';
+    if (appShell) appShell.style.display = 'none';
+    if (loginOverlay) {
+        loginOverlay.style.display = 'flex';
+        initLoginFloatingIcons();
+    }
+}
+window.continueExportVerifyLogin = continueExportVerifyLogin;
 
 // สแกน QR ของรายงาน export → หลัง login สำเร็จ พาไปดูรายการบิลของเดือนนั้นในระบบ (ตามสิทธิ์ผู้ล็อกอิน)
 // เรียกจากท้าย checkUserSession() และ handleLoginSubmit() หลัง initAppWithAPI() สำเร็จ
@@ -610,10 +681,12 @@ async function initAppWithAPI() {
         // getSystemConfig เป็น admin-only — role อื่นเรียกแล้วจะโดน FORBIDDEN เสมอ ต้องดักไว้เอง
         // ไม่ให้ล้มทั้งฟังก์ชัน (ไม่งั้น manager/staff/viewer จะโหลดข้อมูลอะไรไม่ได้เลยทั้งแอป)
         try {
-            const settingsRes = await apiCall('getSystemConfig');
-            state.maxUploadSizeMb = (settingsRes.config && settingsRes.config.maxUploadSizeMb) ? parseFloat(settingsRes.config.maxUploadSizeMb) : 2;
+            const runtimeConfig = await apiCall('getRuntimeConfig');
+            state.maxUploadSizeMb = runtimeConfig.maxUploadSizeMb ? parseFloat(runtimeConfig.maxUploadSizeMb) : 2;
+            state.requireAttachment = isConfigEnabled(runtimeConfig.requireAttachment);
         } catch (e) {
             state.maxUploadSizeMb = 2;
+            state.requireAttachment = false;
         }
           const master = await apiCall('getMasterData');
         state.projects = (master.projects || []).map(p => ({ ...p, name: p.projectName || p.name }));
@@ -782,7 +855,8 @@ function setupEventBindings() {
     // Navigation Tabs
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', () => {
-            switchTab(item.getAttribute('data-tab'));
+            const targetTab = item.getAttribute('data-tab');
+            if (targetTab) switchTab(targetTab);
         });
     });
 
@@ -1022,6 +1096,30 @@ function updateMonthStatusCheckboxUI() {
     const status = state.monthStatuses[statusKey] || 'claimed';
     const checkbox = document.getElementById('month-status-unclaimed');
     if (checkbox) checkbox.checked = (status === 'unclaimed');
+}
+
+function getBottomNavGroupForTab(tabName) {
+    if (['bills-table', 'claims-view', 'spreadsheet-view'].includes(tabName)) return 'expenses';
+    if (['summary-view', 'fund-receipts'].includes(tabName)) return 'reports';
+    if (['settings-view', 'user-management'].includes(tabName)) return 'admin';
+    return null;
+}
+
+function syncNavigationActiveState(tabName) {
+    document.querySelectorAll('.nav-item').forEach(item => {
+        item.classList.toggle('active', item.getAttribute('data-tab') === tabName);
+    });
+
+    const activeGroup = getBottomNavGroupForTab(tabName);
+    document.querySelectorAll('.bottom-nav-item').forEach(item => {
+        const directMatch = item.getAttribute('data-tab') === tabName;
+        const groupMatch = activeGroup && item.getAttribute('data-nav-group') === activeGroup;
+        item.classList.toggle('active', !!(directMatch || groupMatch));
+    });
+
+    document.querySelectorAll('.submenu-item').forEach(item => {
+        item.classList.toggle('active', item.getAttribute('data-tab') === tabName);
+    });
 }
 
 // ดึงยอดยกไปจากเดือนก่อนหน้า + สถานะเบิกจ่ายรายเดือนของปีนี้จาก backend เสมอ
@@ -1459,6 +1557,10 @@ function renderFundReceiptsOverview() {
 // Tab Navigation
 // ==========================================================================
 function switchTab(tabName) {
+    if ((tabName === 'settings-view' || tabName === 'user-management') && !isAdminUser()) {
+        appAlert('เมนูนี้สำหรับผู้ดูแลระบบเท่านั้น', 'warning');
+        tabName = 'dashboard';
+    }
     state.activeTab = tabName;
     
     // Close sidebar on mobile after tab click
@@ -1468,10 +1570,11 @@ function switchTab(tabName) {
         sidebar.classList.remove('open');
         if (overlay) overlay.classList.remove('active');
     }
-
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.classList.toggle('active', item.getAttribute('data-tab') === tabName);
+    document.querySelectorAll('.bottom-nav-item.has-submenu.open').forEach(item => {
+        item.classList.remove('open');
     });
+
+    syncNavigationActiveState(tabName);
     document.querySelectorAll('.tab-content').forEach(tab => {
         tab.classList.toggle('active', tab.id === `tab-${tabName}`);
     });
@@ -2385,13 +2488,54 @@ function bindMasterActionButtons() {
     });
 }
 
-function handleMasterDelete(master, idx) {
-    appAlert("การลบข้อมูลหลัก (Master Data) ถูกปฏิเสธเพื่อป้องกันความเสียหายของประวัติการลงบัญชีเก่าในระบบ กรุณาปิดใช้งานหรือลบแถวข้อมูลผ่าน Google Sheets ของท่านโดยตรง");
-}
-
 // ==========================================================================
 // Master Data Modal (Single reusable modal)
 // ==========================================================================
+function getMasterCollection(master) {
+    const map = {
+        project: state.projects,
+        category: state.categories,
+        vendor: state.vendors,
+        fundsource: state.fundSources,
+        organization: state.organizations || []
+    };
+    return map[master] || [];
+}
+
+function getMasterAction(master, mode) {
+    const map = {
+        project: { update: 'updateProject', disable: 'disableProject' },
+        category: { update: 'updateCategory', disable: 'disableCategory' },
+        vendor: { update: 'updateVendor', disable: 'disableVendor' },
+        fundsource: { update: 'updateFundSource', disable: 'disableFundSource' },
+        organization: { update: 'updateOrganization', disable: 'disableOrganization' }
+    };
+    return map[master] && map[master][mode];
+}
+
+function masterFieldValue(item, key, fallback = '') {
+    return escapeHTML(item ? (item[key] ?? fallback) : fallback);
+}
+
+async function handleMasterDelete(master, idx) {
+    const item = getMasterCollection(master)[idx];
+    if (!item || !item.id) return;
+    const confirmed = await appConfirm('ยืนยันการปิดใช้งานรายการนี้? รายการเดิมในประวัติจะยังคงอยู่ แต่จะไม่แสดงให้เลือกในรายการใหม่', 'ปิดใช้งานข้อมูลหลัก');
+    if (!confirmed) return;
+    const action = getMasterAction(master, 'disable');
+    if (!action) return appAlert('ยังไม่รองรับการปิดใช้งานรายการนี้', 'error');
+    showLoading(true);
+    try {
+        await apiCall(action, { id: item.id });
+        appAlert('ปิดใช้งานข้อมูลหลักเรียบร้อยแล้ว', 'success');
+        await initAppWithAPI();
+    } catch (err) {
+        appAlert('ปิดใช้งานไม่สำเร็จ: ' + err.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
 function openMasterModal(master, editIdx = null) {
     const modal = document.getElementById('modal-master');
     const title = document.getElementById('modal-master-title');
@@ -2407,8 +2551,8 @@ function openMasterModal(master, editIdx = null) {
     if (master === 'project') {
         const item = editIdx !== null ? state.projects[editIdx] : null;
         body.innerHTML = `
-            <div class="form-group"><label class="form-label">ชื่อโครงการ</label><input type="text" id="mf-name" class="form-input" value="${item ? item.name : ''}" required></div>
-            <div class="form-group"><label class="form-label">งบประมาณ (฿)</label><input type="number" id="mf-budget" class="form-input" value="${item ? item.budget : 0}" min="0"></div>
+            <div class="form-group"><label class="form-label">ชื่อโครงการ</label><input type="text" id="mf-name" class="form-input" value="${masterFieldValue(item, 'name')}" required></div>
+            <div class="form-group"><label class="form-label">งบประมาณ (฿)</label><input type="number" id="mf-budget" class="form-input" value="${masterFieldValue(item, 'budget', 0)}" min="0"></div>
             <div class="form-group"><label class="form-label">สถานะ</label>
                 <select id="mf-active" class="form-select w-full" style="padding:10px;" ${item ? 'disabled' : ''}>
                     <option value="true" ${!item || item.active ? 'selected' : ''}>ใช้งาน</option>
@@ -2418,24 +2562,24 @@ function openMasterModal(master, editIdx = null) {
         `;
     } else if (master === 'category') {
         const item = editIdx !== null ? state.categories[editIdx] : null;
-        body.innerHTML = `<div class="form-group"><label class="form-label">ชื่อหมวดหมู่</label><input type="text" id="mf-name" class="form-input" value="${item ? item.name : ''}" required></div>`;
+        body.innerHTML = `<div class="form-group"><label class="form-label">ชื่อหมวดหมู่</label><input type="text" id="mf-name" class="form-input" value="${masterFieldValue(item, 'name')}" required></div>`;
     } else if (master === 'vendor') {
         const item = editIdx !== null ? state.vendors[editIdx] : null;
         body.innerHTML = `
-            <div class="form-group"><label class="form-label">ชื่อร้าน / ผู้ขาย</label><input type="text" id="mf-name" class="form-input" value="${item ? item.name : ''}" required></div>
-            <div class="form-group"><label class="form-label">เบอร์โทรศัพท์</label><input type="text" id="mf-phone" class="form-input" value="${item ? (item.phone || '') : ''}"></div>
+            <div class="form-group"><label class="form-label">ชื่อร้าน / ผู้ขาย</label><input type="text" id="mf-name" class="form-input" value="${masterFieldValue(item, 'name')}" required></div>
+            <div class="form-group"><label class="form-label">เบอร์โทรศัพท์</label><input type="text" id="mf-phone" class="form-input" value="${masterFieldValue(item, 'phone')}"></div>
         `;
     } else if (master === 'fundsource') {
         const item = editIdx !== null ? state.fundSources[editIdx] : null;
-        body.innerHTML = `<div class="form-group"><label class="form-label">ชื่อแหล่งเงิน</label><input type="text" id="mf-name" class="form-input" value="${item ? item.name : ''}" required></div>`;
+        body.innerHTML = `<div class="form-group"><label class="form-label">ชื่อแหล่งเงิน</label><input type="text" id="mf-name" class="form-input" value="${masterFieldValue(item, 'name')}" required></div>`;
     } else if (master === 'organization') {
         const item = editIdx !== null ? state.organizations[editIdx] : null;
         body.innerHTML = `
-            <div class="form-group"><label class="form-label">ชื่อสถานศึกษา</label><input type="text" id="mf-name" class="form-input" value="${item ? item.name : ''}" required></div>
-            <div class="form-group"><label class="form-label">รหัสย่อ (ใช้ขึ้นต้นเลขที่เอกสาร เช่น MSB)</label><input type="text" id="mf-shortname" class="form-input" value="${item ? (item.shortName || '') : ''}" required></div>
-            <div class="form-group"><label class="form-label">ที่อยู่</label><input type="text" id="mf-address" class="form-input" value="${item ? (item.addressTh || '') : ''}"></div>
-            <div class="form-group"><label class="form-label">เบอร์โทรศัพท์</label><input type="text" id="mf-phone" class="form-input" value="${item ? (item.phone || '') : ''}"></div>
-            <div class="form-group"><label class="form-label">ชื่อผู้อำนวยการ/ผู้บริหาร</label><input type="text" id="mf-director" class="form-input" value="${item ? (item.directorName || '') : ''}"></div>
+            <div class="form-group"><label class="form-label">ชื่อสถานศึกษา</label><input type="text" id="mf-name" class="form-input" value="${masterFieldValue(item, 'name')}" required></div>
+            <div class="form-group"><label class="form-label">รหัสย่อ (ใช้ขึ้นต้นเลขที่เอกสาร เช่น MSB)</label><input type="text" id="mf-shortname" class="form-input" value="${masterFieldValue(item, 'shortName')}" required></div>
+            <div class="form-group"><label class="form-label">ที่อยู่</label><input type="text" id="mf-address" class="form-input" value="${masterFieldValue(item, 'addressTh')}"></div>
+            <div class="form-group"><label class="form-label">เบอร์โทรศัพท์</label><input type="text" id="mf-phone" class="form-input" value="${masterFieldValue(item, 'phone')}"></div>
+            <div class="form-group"><label class="form-label">ชื่อผู้อำนวยการ/ผู้บริหาร</label><input type="text" id="mf-director" class="form-input" value="${masterFieldValue(item, 'directorName')}"></div>
         `;
     }
 
@@ -2446,54 +2590,73 @@ function closeMasterModal() {
     document.getElementById('modal-master').classList.remove('active');
 }
 
+// ==========================================================================
+// Expense Modal (Bill Form)
+// ==========================================================================
 async function handleMasterSubmit(e) {
     e.preventDefault();
     const modal = document.getElementById('modal-master');
     const master = modal.getAttribute('data-master');
     const editIdx = modal.getAttribute('data-edit-idx');
     const idx = editIdx !== '' ? parseInt(editIdx, 10) : null;
+    const currentItem = idx !== null ? getMasterCollection(master)[idx] : null;
     const name = document.getElementById('mf-name').value.trim();
     if (!name) return;
-
-    if (idx !== null) {
-        appAlert("การแก้ไขข้อมูลหลักโดยตรงบนเว็บไซต์ถูกจำกัด กรุณาแก้ไขผ่าน Google Sheets ของหน่วยงานโดยตรงเพื่อรักษาเสถียรภาพของฐานข้อมูล");
-        closeMasterModal();
-        return;
-    }
 
     showLoading(true);
     try {
         if (master === 'project') {
             const budget = parseFloat(document.getElementById('mf-budget').value) || 0;
-            await apiCall('createProject', { projectName: name, budget });
+            await apiCall(idx !== null ? 'updateProject' : 'createProject', {
+                id: currentItem && currentItem.id,
+                projectName: name,
+                budget
+            });
         } else if (master === 'category') {
-            await apiCall('createCategory', { categoryName: name });
+            await apiCall(idx !== null ? 'updateCategory' : 'createCategory', {
+                id: currentItem && currentItem.id,
+                categoryName: name
+            });
         } else if (master === 'vendor') {
             const phone = (document.getElementById('mf-phone') || {}).value || '';
-            await apiCall('createVendor', { vendorName: name, phone });
+            await apiCall(idx !== null ? 'updateVendor' : 'createVendor', {
+                id: currentItem && currentItem.id,
+                vendorName: name,
+                phone
+            });
         } else if (master === 'fundsource') {
-            await apiCall('createFundSource', { fundSourceName: name });
+            await apiCall(idx !== null ? 'updateFundSource' : 'createFundSource', {
+                id: currentItem && currentItem.id,
+                fundSourceName: name
+            });
         } else if (master === 'organization') {
             const shortName = (document.getElementById('mf-shortname') || {}).value.trim();
-            if (!shortName) { appAlert('กรุณาระบุรหัสย่อ'); showLoading(false); return; }
+            if (!shortName) {
+                showLoading(false);
+                return appAlert('กรุณาระบุรหัสย่อ', 'error');
+            }
             const addressTh = (document.getElementById('mf-address') || {}).value.trim();
             const phone = (document.getElementById('mf-phone') || {}).value.trim();
             const directorName = (document.getElementById('mf-director') || {}).value.trim();
-            await apiCall('createOrganization', { nameTh: name, shortName, addressTh, phone, directorName });
+            await apiCall(idx !== null ? 'updateOrganization' : 'createOrganization', {
+                id: currentItem && currentItem.id,
+                nameTh: name,
+                shortName,
+                addressTh,
+                phone,
+                directorName
+            });
         }
-        appAlert('เพิ่มข้อมูลหลักสำเร็จ!');
+        appAlert(idx !== null ? 'บันทึกการแก้ไขข้อมูลหลักสำเร็จ' : 'เพิ่มข้อมูลหลักสำเร็จ!', 'success');
         closeMasterModal();
         await initAppWithAPI();
     } catch (err) {
-        appAlert('บันทึกข้อมูลหลักล้มเหลว: ' + err.message);
+        appAlert('บันทึกข้อมูลหลักไม่สำเร็จ: ' + err.message, 'error');
     } finally {
         showLoading(false);
     }
 }
 
-// ==========================================================================
-// Expense Modal (Bill Form)
-// ==========================================================================
 function populateDropdown(selectId, items, valueKey, labelKey, selectedVal = null) {
     const sel = document.getElementById(selectId);
     if (!sel) return;
@@ -2505,6 +2668,149 @@ function populateDropdown(selectId, items, valueKey, labelKey, selectedVal = nul
         if (item[valueKey] === selectedVal) opt.selected = true;
         sel.appendChild(opt);
     });
+}
+
+function normalizeMasterName(name) {
+    return String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function getExpenseMasterConfig(type) {
+    const map = {
+        category: {
+            stateKey: 'categories',
+            hiddenId: 'bill-category',
+            inputId: 'bill-category-input',
+            listId: 'bill-category-list',
+            createAction: 'createCategory',
+            createField: 'categoryName',
+            label: 'หมวดหมู่รายจ่าย'
+        },
+        vendor: {
+            stateKey: 'vendors',
+            hiddenId: 'bill-vendor',
+            inputId: 'bill-vendor-input',
+            listId: 'bill-vendor-list',
+            createAction: 'createVendor',
+            createField: 'vendorName',
+            label: 'ผู้ขาย / ร้านค้า'
+        },
+        fundSource: {
+            stateKey: 'fundSources',
+            hiddenId: 'bill-fund-source',
+            inputId: 'bill-fund-source-input',
+            listId: 'bill-fund-source-list',
+            createAction: 'createFundSource',
+            createField: 'fundSourceName',
+            label: 'แหล่งเงินสำรองจ่าย'
+        }
+    };
+    return map[type];
+}
+
+function findMasterByName(items, name) {
+    const normalized = normalizeMasterName(name);
+    if (!normalized) return null;
+    return (items || []).find(item => normalizeMasterName(item.name) === normalized) || null;
+}
+
+function getExpenseMasterElementIds(type, context = 'bill') {
+    const cfg = getExpenseMasterConfig(type);
+    if (!cfg) return null;
+    const suffixMap = {
+        category: 'category',
+        vendor: 'vendor',
+        fundSource: (context === 'bill' || context === 'attach') ? 'fund-source' : 'fund'
+    };
+    const suffix = suffixMap[type];
+    return {
+        hiddenId: context === 'bill' ? cfg.hiddenId : `${context}-${suffix}`,
+        inputId: context === 'bill' ? cfg.inputId : `${context}-${suffix}-input`,
+        listId: context === 'bill' ? cfg.listId : `${context}-${suffix}-list`
+    };
+}
+
+function buildMasterInputHTML(type, context, placeholder, style = 'font-size:12px; padding:4px 8px; width:100%;') {
+    const ids = getExpenseMasterElementIds(type, context);
+    if (!ids) return '';
+    return `
+        <input type="hidden" id="${ids.hiddenId}">
+        <input type="text" id="${ids.inputId}" class="form-input" list="${ids.listId}" placeholder="${escapeHTML(placeholder || 'พิมพ์หรือเลือก...')}" style="${escapeHTML(style)}" required>
+        <datalist id="${ids.listId}"></datalist>
+    `;
+}
+
+function setupExpenseMasterInput(type, selectedId = '', context = 'bill') {
+    const cfg = getExpenseMasterConfig(type);
+    const ids = getExpenseMasterElementIds(type, context);
+    if (!cfg || !ids) return;
+    const input = document.getElementById(ids.inputId);
+    const hidden = document.getElementById(ids.hiddenId);
+    const list = document.getElementById(ids.listId);
+    const items = state[cfg.stateKey] || [];
+    if (!input || !hidden || !list) return;
+
+    list.innerHTML = items
+        .filter(item => item && item.id && item.name)
+        .map(item => `<option value="${escapeHTML(item.name)}"></option>`)
+        .join('');
+
+    const selected = items.find(item => item.id === selectedId) || items[0] || null;
+    hidden.value = selected ? selected.id : '';
+    input.value = selected ? selected.name : '';
+
+    input.oninput = () => {
+        const match = findMasterByName(items, input.value);
+        hidden.value = match ? match.id : '';
+    };
+    input.onchange = input.oninput;
+}
+
+function appendLocalMasterItem(type, item) {
+    const cfg = getExpenseMasterConfig(type);
+    if (!cfg || !item || !item.id) return;
+    const list = state[cfg.stateKey] || [];
+    if (!list.some(existing => existing.id === item.id)) {
+        list.push({ ...item, active: true });
+        state[cfg.stateKey] = list;
+    }
+}
+
+async function resolveExpenseMasterSelection(type, context = 'bill') {
+    const cfg = getExpenseMasterConfig(type);
+    const ids = getExpenseMasterElementIds(type, context);
+    if (!cfg || !ids) return '';
+    const input = document.getElementById(ids.inputId);
+    const hidden = document.getElementById(ids.hiddenId);
+    const name = input ? input.value.trim().replace(/\s+/g, ' ') : '';
+    const items = state[cfg.stateKey] || [];
+
+    if (!name) {
+        throw new Error(`กรุณาระบุ${cfg.label}`);
+    }
+
+    const existingByName = findMasterByName(items, name);
+    if (existingByName) {
+        if (hidden) hidden.value = existingByName.id;
+        return existingByName.id;
+    }
+
+    const selectedById = hidden && hidden.value
+        ? items.find(item => item.id === hidden.value)
+        : null;
+    if (selectedById && normalizeMasterName(selectedById.name) === normalizeMasterName(name)) {
+        return selectedById.id;
+    }
+
+    const payload = { [cfg.createField]: name };
+    const result = await apiCall(cfg.createAction, payload);
+    const id = result && result.id;
+    if (!id) {
+        throw new Error(`เพิ่ม${cfg.label}ใหม่ไม่สำเร็จ`);
+    }
+
+    appendLocalMasterItem(type, { id, name });
+    setupExpenseMasterInput(type, id, context);
+    return id;
 }
 
 // ==========================================================================
@@ -2569,21 +2875,22 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
 
     (document.getElementById('bill-edit-index') || {}).value = editIdx !== null ? editIdx : '';
     form.reset();
+    tempBillAttachments = [];
 
     const activeProjects = state.projects.filter(p => p.active);
     populateDropdown('bill-project', activeProjects, 'id', 'name');
-    populateDropdown('bill-category', state.categories, 'id', 'name');
-    populateDropdown('bill-vendor', state.vendors, 'id', 'name');
-    populateDropdown('bill-fund-source', state.fundSources, 'id', 'name');
+    setupExpenseMasterInput('category');
+    setupExpenseMasterInput('vendor');
+    setupExpenseMasterInput('fundSource');
 
     if (editIdx !== null) {
         const exp = state.expenses[editIdx];
         (document.getElementById('bill-docno') || {}).value = exp.documentNo;
         (document.getElementById('bill-date') || {}).value = exp.expenseDate;
         (document.getElementById('bill-project') || {}).value = exp.projectId;
-        (document.getElementById('bill-category') || {}).value = exp.categoryId;
-        (document.getElementById('bill-vendor') || {}).value = exp.vendorId;
-        (document.getElementById('bill-fund-source') || {}).value = exp.fundSourceId;
+        setupExpenseMasterInput('category', exp.categoryId);
+        setupExpenseMasterInput('vendor', exp.vendorId);
+        setupExpenseMasterInput('fundSource', exp.fundSourceId);
         (document.getElementById('bill-desc') || {}).value = exp.description;
         (document.getElementById('bill-qty') || {}).value = exp.quantity;
         (document.getElementById('bill-price') || {}).value = exp.unitPrice;
@@ -2597,6 +2904,8 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
         (document.getElementById('bill-date') || {}).value = `${gYear}-${mStr}-01`;
     }
 
+    const expId = editIdx !== null && state.expenses[editIdx] ? state.expenses[editIdx].id : null;
+    renderTempBillAttachmentsPreview(expId);
     modal.classList.add('active');
 }
 
@@ -2614,6 +2923,10 @@ async function handleExpenseSubmit(e) {
 
     const user = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
     const orgId = user.organizationId;
+    if (state.requireAttachment && editIdx === '' && tempBillAttachments.length === 0) {
+        appAlert('ระบบกำหนดให้แนบหลักฐานอย่างน้อย 1 ไฟล์ก่อนบันทึกรายการใหม่', 'error');
+        return;
+    }
     if (!orgId) {
         appAlert('ไม่พบข้อมูลหน่วยงานของผู้ใช้ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่', 'error');
         return;
@@ -2640,13 +2953,17 @@ async function handleExpenseSubmit(e) {
             projectId = newProj.id;
         }
 
+        const categoryId = await resolveExpenseMasterSelection('category');
+        const vendorId = await resolveExpenseMasterSelection('vendor');
+        const fundSourceId = await resolveExpenseMasterSelection('fundSource');
+
         const expData = {
             expenseDate: document.getElementById('bill-date').value,
             organizationId: orgId,
             projectId: projectId,
-            categoryId: document.getElementById('bill-category').value,
-            vendorId: document.getElementById('bill-vendor').value,
-            fundSourceId: document.getElementById('bill-fund-source').value,
+            categoryId: categoryId,
+            vendorId: vendorId,
+            fundSourceId: fundSourceId,
             description: document.getElementById('bill-desc').value.trim(),
             quantity: qty,
             unitPrice: unitPrice,
@@ -2883,15 +3200,15 @@ function openAttachmentModal(editIdx = null) {
 
     const activeProjects = state.projects.filter(p => p.active);
     populateDropdown('attach-project', activeProjects, 'id', 'name');
-    populateDropdown('attach-category', state.categories, 'id', 'name');
-    populateDropdown('attach-fund-source', state.fundSources, 'id', 'name');
+    setupExpenseMasterInput('category', '', 'attach');
+    setupExpenseMasterInput('fundSource', '', 'attach');
 
     if (editIdx !== null) {
         const a = state.attachments[editIdx];
         (document.getElementById('attach-date') || {}).value = a.expenseDate;
         (document.getElementById('attach-project') || {}).value = a.projectId;
-        (document.getElementById('attach-category') || {}).value = a.categoryId;
-        (document.getElementById('attach-fund-source') || {}).value = a.fundSourceId;
+        setupExpenseMasterInput('category', a.categoryId, 'attach');
+        setupExpenseMasterInput('fundSource', a.fundSourceId, 'attach');
         (document.getElementById('attach-desc') || {}).value = a.description;
         (document.getElementById('attach-amount') || {}).value = a.amount || a.unitPrice;
         (document.getElementById('attach-claim-type') || {}).value = a.claimable ? 'claim' : 'no-claim';
@@ -2921,22 +3238,24 @@ async function handleAttachmentSubmit(e) {
         return;
     }
 
-    const attachData = {
-        expenseDate: document.getElementById('attach-date').value,
-        organizationId: orgId,
-        projectId: document.getElementById('attach-project').value,
-        categoryId: document.getElementById('attach-category').value,
-        vendorId: '', // ไม่มีผู้ขายสำหรับบิลค่าบริการสาธารณูปโภค
-        fundSourceId: document.getElementById('attach-fund-source').value,
-        description: document.getElementById('attach-desc').value.trim(),
-        quantity: 1,
-        unitPrice: amount,
-        claimable: claimable,
-        note: ''
-    };
-
     showLoading(true);
     try {
+        const categoryId = await resolveExpenseMasterSelection('category', 'attach');
+        const fundSourceId = await resolveExpenseMasterSelection('fundSource', 'attach');
+        const attachData = {
+            expenseDate: document.getElementById('attach-date').value,
+            organizationId: orgId,
+            projectId: document.getElementById('attach-project').value,
+            categoryId: categoryId,
+            vendorId: '', // ไม่มีผู้ขายสำหรับบิลค่าบริการสาธารณูปโภค
+            fundSourceId: fundSourceId,
+            description: document.getElementById('attach-desc').value.trim(),
+            quantity: 1,
+            unitPrice: amount,
+            claimable: claimable,
+            note: ''
+        };
+
         if (editIdx !== '') {
             const existingAtt = state.attachments[parseInt(editIdx, 10)];
             attachData.id = existingAtt.id;
@@ -3631,22 +3950,13 @@ function renderExpenseInlineAddRow(tbody) {
                 td.innerHTML = `<select id="inline-exp-project" class="form-select" style="font-size:12px; padding:4px 8px; width:100%;">${projOptions}</select>`;
                 break;
             case 'categoryId':
-                let catOptions = state.categories.map(c => 
-                    `<option value="${c.id}">${c.name}</option>`
-                ).join('');
-                td.innerHTML = `<select id="inline-exp-category" class="form-select" style="font-size:12px; padding:4px 8px; width:100%;">${catOptions}</select>`;
+                td.innerHTML = buildMasterInputHTML('category', 'inline-exp', 'พิมพ์หรือเลือกหมวดหมู่...');
                 break;
             case 'fundSourceId':
-                let fundOptions = state.fundSources.map(f => 
-                    `<option value="${f.id}">${f.name}</option>`
-                ).join('');
-                td.innerHTML = `<select id="inline-exp-fund" class="form-select" style="font-size:12px; padding:4px 8px; width:100%;">${fundOptions}</select>`;
+                td.innerHTML = buildMasterInputHTML('fundSource', 'inline-exp', 'พิมพ์หรือเลือกแหล่งเงิน...');
                 break;
             case 'vendorId':
-                let vendorOptions = state.vendors.map(v => 
-                    `<option value="${v.id}">${v.name}</option>`
-                ).join('');
-                td.innerHTML = `<select id="inline-exp-vendor" class="form-select" style="font-size:12px; padding:4px 8px; width:100%;">${vendorOptions}</select>`;
+                td.innerHTML = buildMasterInputHTML('vendor', 'inline-exp', 'พิมพ์หรือเลือกผู้ขาย...');
                 break;
             case 'description':
                 td.innerHTML = `
@@ -3699,6 +4009,9 @@ function renderExpenseInlineAddRow(tbody) {
     tr.appendChild(toolsTd);
     
     tbody.appendChild(tr);
+    setupExpenseMasterInput('category', '', 'inline-exp');
+    setupExpenseMasterInput('fundSource', '', 'inline-exp');
+    setupExpenseMasterInput('vendor', '', 'inline-exp');
 }
 
 function renderAttachmentInlineAddRow(tbody) {
@@ -3726,22 +4039,13 @@ function renderAttachmentInlineAddRow(tbody) {
                 td.innerHTML = `<select id="inline-att-project" class="form-select" style="font-size:12px; padding:4px 8px; width:100%;">${projOptions}</select>`;
                 break;
             case 'categoryId':
-                let catOptions = state.categories.map(c => 
-                    `<option value="${c.id}">${c.name}</option>`
-                ).join('');
-                td.innerHTML = `<select id="inline-att-category" class="form-select" style="font-size:12px; padding:4px 8px; width:100%;">${catOptions}</select>`;
+                td.innerHTML = buildMasterInputHTML('category', 'inline-att', 'พิมพ์หรือเลือกหมวดหมู่...');
                 break;
             case 'fundSourceId':
-                let fundOptions = state.fundSources.map(f => 
-                    `<option value="${f.id}">${f.name}</option>`
-                ).join('');
-                td.innerHTML = `<select id="inline-att-fund" class="form-select" style="font-size:12px; padding:4px 8px; width:100%;">${fundOptions}</select>`;
+                td.innerHTML = buildMasterInputHTML('fundSource', 'inline-att', 'พิมพ์หรือเลือกแหล่งเงิน...');
                 break;
             case 'vendorId':
-                let vendorOptions = state.vendors.map(v => 
-                    `<option value="${v.id}">${v.name}</option>`
-                ).join('');
-                td.innerHTML = `<select id="inline-att-vendor" class="form-select" style="font-size:12px; padding:4px 8px; width:100%;">${vendorOptions}</select>`;
+                td.innerHTML = buildMasterInputHTML('vendor', 'inline-att', 'พิมพ์หรือเลือกผู้ขาย...');
                 break;
             case 'description':
                 td.innerHTML = `
@@ -3793,6 +4097,9 @@ function renderAttachmentInlineAddRow(tbody) {
     tr.appendChild(toolsTd);
     
     tbody.appendChild(tr);
+    setupExpenseMasterInput('category', '', 'inline-att');
+    setupExpenseMasterInput('fundSource', '', 'inline-att');
+    setupExpenseMasterInput('vendor', '', 'inline-att');
 }
 
 function bindInlineListeners() {
@@ -3827,12 +4134,10 @@ function bindInlineListeners() {
 
 async function saveInlineRow(prefix) {
     const isEXP = prefix === 'EXP';
+    const inlineContext = isEXP ? 'inline-exp' : 'inline-att';
     
     const dateVal = document.getElementById(`inline-${prefix.toLowerCase()}-date`).value;
     const projId = document.getElementById(`inline-${prefix.toLowerCase()}-project`).value;
-    const catId = document.getElementById(`inline-${prefix.toLowerCase()}-category`).value;
-    const fundId = document.getElementById(`inline-${prefix.toLowerCase()}-fund`).value;
-    const vendorId = document.getElementById(`inline-${prefix.toLowerCase()}-vendor`).value;
     const descVal = document.getElementById(`inline-${prefix.toLowerCase()}-desc`).value.trim();
     const qtyVal = parseFloat(document.getElementById(`inline-${prefix.toLowerCase()}-qty`).value) || 1;
     const priceVal = parseFloat(document.getElementById(`inline-${prefix.toLowerCase()}-price`).value) || 0;
@@ -3860,25 +4165,28 @@ async function saveInlineRow(prefix) {
         appAlert('ไม่พบข้อมูลหน่วยงานของผู้ใช้ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่', 'error');
         return;
     }
-    const payload = {
-        expenseDate: dateVal,
-        organizationId: inlineUser.organizationId,
-        projectId: projId,
-        categoryId: catId,
-        fundSourceId: fundId,
-        vendorId: vendorId,
-        description: descVal,
-        quantity: qtyVal,
-        unit: 'รายการ',
-        unitPrice: priceVal,
-        vatAmount: 0,
-        claimable: claimableVal,
-        note: noteStr,
-        idPrefix: prefix
-    };
-    
     showLoading(true);
     try {
+        const catId = await resolveExpenseMasterSelection('category', inlineContext);
+        const fundId = await resolveExpenseMasterSelection('fundSource', inlineContext);
+        const vendorId = await resolveExpenseMasterSelection('vendor', inlineContext);
+        const payload = {
+            expenseDate: dateVal,
+            organizationId: inlineUser.organizationId,
+            projectId: projId,
+            categoryId: catId,
+            fundSourceId: fundId,
+            vendorId: vendorId,
+            description: descVal,
+            quantity: qtyVal,
+            unit: 'รายการ',
+            unitPrice: priceVal,
+            vatAmount: 0,
+            claimable: claimableVal,
+            note: noteStr,
+            idPrefix: prefix
+        };
+
         await apiCall('createExpense', payload);
         appAlert('บันทึกสำเร็จ!');
         if (isEXP) {
@@ -5299,6 +5607,36 @@ async function fetchImageAsDataUrl(url) {
     }
 }
 
+function inferAttachmentMime(file) {
+    const explicit = file.fileType || file.mimeType || '';
+    if (explicit) return explicit;
+    const name = String(file.originalFileName || file.fileName || file.storedFileName || file.name || '').toLowerCase();
+    if (/\.(jpe?g)$/.test(name)) return 'image/jpeg';
+    if (/\.png$/.test(name)) return 'image/png';
+    if (/\.webp$/.test(name)) return 'image/webp';
+    if (/\.gif$/.test(name)) return 'image/gif';
+    if (/\.pdf$/.test(name)) return 'application/pdf';
+    return '';
+}
+
+function getAttachmentUrl(file) {
+    return file.fileUrl || file.viewUrl || file.url || file.thumbnailUrl || '';
+}
+
+async function getAttachmentImageDataUrl(file) {
+    if (file.dataUrl && String(file.dataUrl).startsWith('data:image/')) return file.dataUrl;
+    const attachmentId = file.id || file.attachmentId;
+    if (attachmentId) {
+        try {
+            const res = await apiCall('getAttachmentDataUrl', { attachmentId });
+            if (res.dataUrl && String(res.dataUrl).startsWith('data:image/')) return res.dataUrl;
+        } catch (err) {
+            // Fallback below covers old deployments that do not have this endpoint yet.
+        }
+    }
+    return await fetchImageAsDataUrl(getAttachmentUrl(file));
+}
+
 // Which .export-col-chk / .export-food-col values are currently checked
 function getExportSelectedColumns(selector) {
     return Array.from(document.querySelectorAll(selector))
@@ -5438,13 +5776,19 @@ async function buildAttachmentItems(rows, section, showImg, showPdf) {
         const images = [];
         const fileRefs = [];
         for (const f of files) {
-            const mime = f.fileType || f.mimeType || '';
-            const url = f.fileUrl || f.viewUrl || '';
+            const mime = inferAttachmentMime(f);
+            const url = getAttachmentUrl(f);
             const name = f.originalFileName || f.fileName || 'ไฟล์แนบ';
             if (mime.startsWith('image/')) {
                 if (!showImg) continue;
-                const dataUrl = await fetchImageAsDataUrl(url);
-                if (dataUrl) images.push(dataUrl);
+                const dataUrl = await getAttachmentImageDataUrl(f);
+                if (dataUrl) images.push({
+                    src: dataUrl,
+                    name,
+                    caption: name,
+                    mime,
+                    sizeBytes: parseInt(f.fileSize || f.compressedSize || 0, 10) || 0,
+                });
                 else fileRefs.push({ name, url, note: 'ไม่สามารถฝังรูปในเอกสารได้ — ดูไฟล์ต้นฉบับที่ลิงก์นี้' });
             } else if (mime === 'application/pdf') {
                 if (!showPdf) continue;
@@ -5904,6 +6248,7 @@ const PERMISSION_ACTIONS = [
     { action: 'updateExpense',       label: 'แก้ไขรายจ่าย',                    category: 'รายจ่าย' },
     { action: 'deleteExpense',       label: 'ลบรายจ่าย',                       category: 'รายจ่าย' },
     { action: 'getExpenses',         label: 'ดูรายจ่าย',                       category: 'รายจ่าย' },
+    { action: 'getAttachmentDataUrl', label: 'ดูรูปไฟล์แนบในรายงาน',            category: 'รายจ่าย' },
     { action: 'createClaim',         label: 'สร้างใบเบิก',                     category: 'ใบเบิก' },
     { action: 'cancelClaimDraft',    label: 'ยกเลิกใบเบิก (ฉบับร่าง)',          category: 'ใบเบิก' },
     { action: 'submitClaim',         label: 'ส่งใบเบิกขออนุมัติ',              category: 'ใบเบิก' },
@@ -5929,6 +6274,7 @@ const DEFAULT_PERMISSION_MATRIX = {
     updateExpense:       { manager: true,  staff: true,  viewer: false },
     deleteExpense:       { manager: true,  staff: false, viewer: false },
     getExpenses:         { manager: true,  staff: true,  viewer: true  },
+    getAttachmentDataUrl: { manager: true,  staff: true,  viewer: true  },
     createClaim:         { manager: true,  staff: true,  viewer: false },
     cancelClaimDraft:    { manager: true,  staff: true,  viewer: false },
     submitClaim:         { manager: true,  staff: true,  viewer: false },
@@ -6358,6 +6704,11 @@ window.submitFoodEntry = async function(e) {
         return;
     }
 
+    if (state.requireAttachment && foodFiles.length === 0) {
+        appAlert('ระบบกำหนดให้แนบหลักฐานอย่างน้อย 1 ไฟล์ก่อนบันทึกรายการค่าอาหาร', 'error');
+        return;
+    }
+
     const dateStr = document.getElementById('food-entry-date').value; // YYYY-MM-DD
     const [y, m] = dateStr.split('-');
     const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
@@ -6499,15 +6850,6 @@ function initBottomNavigation() {
                     const targetTab = subItem.getAttribute('data-tab');
                     if (targetTab) {
                         switchTab(targetTab);
-                        
-                        // Update active states
-                        document.querySelectorAll('.bottom-nav-item').forEach(nav => nav.classList.remove('active'));
-                        this.classList.add('active');
-                        
-                        document.querySelectorAll('.submenu-item').forEach(nav => nav.classList.remove('active'));
-                        subItem.classList.add('active');
-                        
-                        // Close submenu
                         this.classList.remove('open');
                     }
                     return;
@@ -6529,12 +6871,6 @@ function initBottomNavigation() {
                 const targetTab = this.getAttribute('data-tab');
                 if (targetTab) {
                     switchTab(targetTab);
-                    
-                    // Update active states
-                    document.querySelectorAll('.bottom-nav-item').forEach(nav => nav.classList.remove('active'));
-                    this.classList.add('active');
-                    
-                    // Close any open submenus
                     document.querySelectorAll('.bottom-nav-item.has-submenu').forEach(nav => {
                         nav.classList.remove('open');
                     });
@@ -6822,6 +7158,7 @@ const EXPORT_FOOD_COLUMNS = [
    ========================================================================== */
 const PDF_PAGE_WIDTH = 595.28; // A4 pt
 const PDF_MARGIN = [40, 40, 40, 56];
+const PDF_ATTACHMENT_IMAGE_FIT = [260, 330];
 
 // ฟอนต์ Sarabun ถูกฝัง base64 + ลงทะเบียนแล้วโดย fonts/sarabun-vfs.js (โหลดก่อน app.js ใน index.html)
 // ผ่าน pdfMake.addVirtualFileSystem()+addFonts() (วิธีเดียวกับที่ vfs_fonts.js ของ pdfmake เองใช้ลงทะเบียน
@@ -6924,11 +7261,19 @@ function buildPdfDocDefinition(model) {
                 const stack = [];
                 stack.push({ text: `รายการที่ ${idx + 1}`, bold: true, fontSize: 9, color: '#1a1a2e' });
                 stack.push({
-                    text: item.detail.map(d => `${d.label}: ${d.value ?? '-'}`).join('    '),
+                    text: item.detail.map(d => `${d.label}: ${d.value ?? '-'}`).join('\n'),
                     fontSize: 8.5, color: '#374151', margin: [0, 2, 0, 6],
                 });
-                item.images.forEach(src => {
-                    stack.push({ image: registerImage(src), width: 220, alignment: 'center', margin: [0, 4, 0, 4] });
+                item.images.forEach((img, imageIdx) => {
+                    const src = typeof img === 'string' ? img : img.src;
+                    const caption = typeof img === 'string' ? `Image ${imageIdx + 1}` : (img.caption || img.name || `Image ${imageIdx + 1}`);
+                    stack.push({
+                        stack: [
+                            { image: registerImage(src), fit: PDF_ATTACHMENT_IMAGE_FIT, alignment: 'center', margin: [0, 4, 0, 2] },
+                            { text: caption, fontSize: 7.5, color: '#6b7280', alignment: 'center', margin: [0, 0, 0, 6] },
+                        ],
+                        unbreakable: true,
+                    });
                 });
                 item.fileRefs.forEach(ref => {
                     // ไม่ใช้ emoji (Sarabun ไม่มี glyph) — ใช้ป้ายข้อความนำหน้าแทน
@@ -6938,7 +7283,7 @@ function buildPdfDocDefinition(model) {
                         margin: [0, 2, 0, 2],
                     });
                 });
-                content.push({ stack, unbreakable: true, margin: [0, 0, 0, 12] });
+                content.push({ stack, margin: [0, 0, 0, 12] });
             });
         }
     });
@@ -7299,22 +7644,109 @@ window.saveSecureSetting = async function(key, value) {
         'ยืนยันการบันทึก'
     );
     if (!confirmed) return;
+    const trigger = getSettingTriggerElement();
+    setSettingControlBusy(trigger, true);
     try {
         await apiCall('updateSystemConfig', { [key]: value });
         appAlert('บันทึกการตั้งค่าเรียบร้อยแล้ว', 'success');
         renderSettingsTab();
     } catch (err) {
         appAlert('บันทึกการตั้งค่าไม่สำเร็จ: ' + err.message, 'error');
+    } finally {
+        setSettingControlBusy(trigger, false);
     }
 };
 
+function getSettingTriggerElement() {
+    const eventTarget = window.event && (window.event.currentTarget || window.event.target);
+    const trigger = eventTarget || document.activeElement;
+    return trigger && trigger.disabled !== undefined ? trigger : null;
+}
+
+function setSettingControlBusy(control, isBusy) {
+    if (!control) return;
+    if (isBusy) {
+        control.dataset.wasDisabled = control.disabled ? 'true' : 'false';
+        control.disabled = true;
+        if (control.tagName === 'BUTTON') {
+            control.dataset.originalHtml = control.innerHTML;
+            control.innerHTML = 'กำลังบันทึก...';
+        }
+        return;
+    }
+    control.disabled = control.dataset.wasDisabled === 'true';
+    if (control.tagName === 'BUTTON' && control.dataset.originalHtml) {
+        control.innerHTML = control.dataset.originalHtml;
+    }
+    delete control.dataset.wasDisabled;
+    delete control.dataset.originalHtml;
+}
+
+function normalizeClientSystemSetting(key, value) {
+    if (key === 'requireAttachment' || key === 'googleLoginEnabled' || key === 'publicExportVerifyEnabled') {
+        return { ok: true, value: isConfigEnabled(value) };
+    }
+    if (key === 'maxUploadSizeMb' || key === 'maxAttachmentMb') {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed) || parsed < 1 || parsed > 20) {
+            return { ok: false, message: 'ขนาดไฟล์แนบสูงสุดต้องอยู่ระหว่าง 1-20 MB' };
+        }
+        return { ok: true, value: parsed };
+    }
+    if (key === 'tokenExpiryHours') {
+        const parsed = Number(value);
+        if (!Number.isInteger(parsed) || parsed < 1 || parsed > 24) {
+            return { ok: false, message: 'อายุ Session Token ต้องเป็นจำนวนเต็ม 1-24 ชั่วโมง' };
+        }
+        return { ok: true, value: parsed };
+    }
+    if (key === 'fiscalYearStart') {
+        const month = String(value);
+        if (!['1', '4', '10'].includes(month)) {
+            return { ok: false, message: 'เดือนเริ่มต้นปีงบประมาณไม่ถูกต้อง' };
+        }
+        return { ok: true, value: month };
+    }
+    if (key === 'defaultCurrency') {
+        const currency = String(value || '').trim().toUpperCase();
+        if (!['THB', 'USD', 'EUR'].includes(currency)) {
+            return { ok: false, message: 'สกุลเงินหลักไม่ถูกต้อง' };
+        }
+        return { ok: true, value: currency };
+    }
+    if (key === 'documentPrefix' || key === 'docPrefix') {
+        const prefix = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+        if (!prefix || prefix.length > 12) {
+            return { ok: false, message: 'รหัสนำหน้าเลขเอกสารต้องมี 1-12 ตัวอักษร และใช้ได้เฉพาะ A-Z, 0-9, _ หรือ -' };
+        }
+        return { ok: true, value: prefix };
+    }
+    return { ok: true, value };
+}
+
 window.saveSystemSetting = async function(key, value) {
+    const normalized = normalizeClientSystemSetting(key, value);
+    if (!normalized.ok) {
+        appAlert(normalized.message, 'error');
+        renderSettingsTab();
+        return;
+    }
+    const trigger = getSettingTriggerElement();
+    setSettingControlBusy(trigger, true);
     try {
-        await apiCall('updateSystemConfig', { [key]: value });
+        await apiCall('updateSystemConfig', { [key]: normalized.value });
+        if (key === 'requireAttachment') {
+            state.requireAttachment = isConfigEnabled(normalized.value);
+        } else if (key === 'maxUploadSizeMb' || key === 'maxAttachmentMb') {
+            const parsed = parseFloat(normalized.value);
+            if (Number.isFinite(parsed) && parsed > 0) state.maxUploadSizeMb = parsed;
+        }
         appAlert('บันทึกการตั้งค่าเรียบร้อยแล้ว', 'success');
         renderSettingsTab();
     } catch (err) {
         appAlert('บันทึกการตั้งค่าไม่สำเร็จ: ' + err.message, 'error');
+    } finally {
+        setSettingControlBusy(trigger, false);
     }
 };
 
@@ -7340,7 +7772,31 @@ window.renderSettingsTab = async function() {
     }
 
     const uploadInput = document.getElementById('setting-max-upload-size');
-    if (uploadInput) uploadInput.value = config.maxUploadSizeMb || 2;
+    if (uploadInput) uploadInput.value = config.maxUploadSizeMb || config.maxAttachmentMb || 2;
+
+    const documentPrefix = document.getElementById('setting-document-prefix');
+    if (documentPrefix) documentPrefix.value = config.documentPrefix || config.docPrefix || 'MIS';
+
+    const fiscalYearStart = document.getElementById('setting-fiscal-year-start');
+    if (fiscalYearStart) fiscalYearStart.value = config.fiscalYearStart || '10';
+
+    const defaultCurrency = document.getElementById('setting-default-currency');
+    if (defaultCurrency) defaultCurrency.value = config.defaultCurrency || 'THB';
+
+    const tokenExpiryHours = document.getElementById('setting-token-expiry-hours');
+    if (tokenExpiryHours) tokenExpiryHours.value = config.tokenExpiryHours || 8;
+
+    const requireAttachment = document.getElementById('setting-require-attachment');
+    const requireAttachmentStatus = document.getElementById('setting-require-attachment-status');
+    const isRequireAttachmentOn = isConfigEnabled(config.requireAttachment);
+    if (requireAttachment) requireAttachment.checked = isRequireAttachmentOn;
+    if (requireAttachmentStatus) requireAttachmentStatus.textContent = isRequireAttachmentOn ? 'เปิดอยู่' : 'ปิดอยู่';
+
+    const publicExportVerify = document.getElementById('setting-public-export-verify');
+    const publicExportVerifyStatus = document.getElementById('setting-public-export-verify-status');
+    const isPublicExportVerifyOn = isConfigEnabled(config.publicExportVerifyEnabled);
+    if (publicExportVerify) publicExportVerify.checked = isPublicExportVerifyOn;
+    if (publicExportVerifyStatus) publicExportVerifyStatus.textContent = isPublicExportVerifyOn ? 'เปิดอยู่' : 'ปิดอยู่';
 
     const googleLogin = document.getElementById('setting-google-login-enabled');
     const googleLoginStatus = document.getElementById('setting-google-login-status');
