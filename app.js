@@ -18,7 +18,18 @@ async function apiCall(action, data = null, filters = null, pagination = null) {
             },
             body: JSON.stringify({ action, token, data, filters, pagination })
         });
-        const result = await response.json();
+        const responseText = await response.text();
+        let result;
+        try {
+            result = JSON.parse(responseText);
+        } catch (_) {
+            const contentType = response.headers.get('content-type') || 'unknown content type';
+            const looksLikeHtml = /^\s*<!doctype html|^\s*<html/i.test(responseText);
+            const detail = looksLikeHtml
+                ? 'เซิร์ฟเวอร์ตอบกลับเป็นหน้า HTML แทนข้อมูล API'
+                : 'เซิร์ฟเวอร์ตอบกลับในรูปแบบที่อ่านไม่ได้';
+            throw new Error(`${detail} (HTTP ${response.status}, ${contentType}) กรุณาลองเข้าสู่ระบบใหม่ แล้วลองอีกครั้ง`);
+        }
         if (result.status !== 'success' && !result.success) {
             if (result.error && result.error.code === 'UNAUTHORIZED' || result.message === 'Token ไม่ถูกต้อง' || result.message === 'Unauthorized. Please login again.') {
                 handleSessionExpired();
