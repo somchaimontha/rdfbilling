@@ -23,7 +23,11 @@ async function apiCall(action, data = null, filters = null, pagination = null) {
             if (result.error && result.error.code === 'UNAUTHORIZED' || result.message === 'Token ไม่ถูกต้อง' || result.message === 'Unauthorized. Please login again.') {
                 handleSessionExpired();
             }
-            throw new Error(result.message || (result.error ? result.error.message : 'API call failed'));
+            const validationMessages = (result.error && Array.isArray(result.error.fields))
+                ? result.error.fields.map(field => field.message).filter(Boolean)
+                : [];
+            const apiMessage = result.message || (result.error ? result.error.message : 'API call failed');
+            throw new Error([apiMessage, ...validationMessages].filter(Boolean).join(' — '));
         }
         return result.data || result;
     } catch (err) {
@@ -2873,8 +2877,10 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
         }
     }
 
-    (document.getElementById('bill-edit-index') || {}).value = editIdx !== null ? editIdx : '';
     form.reset();
+    // reset() also clears hidden inputs. Set the edit index afterwards so an
+    // existing record is updated instead of being accidentally created again.
+    (document.getElementById('bill-edit-index') || {}).value = editIdx !== null ? editIdx : '';
     tempBillAttachments = [];
 
     const activeProjects = state.projects.filter(p => p.active);
@@ -2953,18 +2959,25 @@ async function handleExpenseSubmit(e) {
             projectId = newProj.id;
         }
 
+        const expenseDate = document.getElementById('bill-date').value;
+        const description = document.getElementById('bill-desc').value.trim();
+        if (!expenseDate) throw new Error('กรุณาระบุวันที่บิล');
+        if (!projectId) throw new Error('กรุณาเลือกโครงการก่อนบันทึก');
+        if (!description) throw new Error('กรุณาระบุรายละเอียดรายการ');
+        if (unitPrice <= 0) throw new Error('ราคาต่อหน่วยต้องมากกว่า 0 บาท');
+
         const categoryId = await resolveExpenseMasterSelection('category');
         const vendorId = await resolveExpenseMasterSelection('vendor');
         const fundSourceId = await resolveExpenseMasterSelection('fundSource');
 
         const expData = {
-            expenseDate: document.getElementById('bill-date').value,
+            expenseDate: expenseDate,
             organizationId: orgId,
             projectId: projectId,
             categoryId: categoryId,
             vendorId: vendorId,
             fundSourceId: fundSourceId,
-            description: document.getElementById('bill-desc').value.trim(),
+            description: description,
             quantity: qty,
             unitPrice: unitPrice,
             claimable: claimable,
@@ -3685,6 +3698,12 @@ function addNewColumn(label) {
 function renderTableHeaders(tableId) {
     const table = document.getElementById(tableId);
     if (!table) return;
+    const isResponsiveRecordTable = ['full-bills-table', 'attached-bills-table'].includes(tableId);
+    table.classList.toggle('responsive-record-table', isResponsiveRecordTable);
+    if (isResponsiveRecordTable) {
+        const container = table.closest('.table-container');
+        if (container) container.classList.add('responsive-record-container');
+    }
     const thead = table.querySelector('thead tr');
     if (!thead) return;
     
@@ -3715,6 +3734,7 @@ function renderExpenseRow(exp, idx, tbody) {
     state.columns.forEach(col => {
         if (!col.visible) return;
         const td = document.createElement('td');
+        td.dataset.label = col.label;
         
         switch (col.id) {
             case 'documentNo':
@@ -3797,6 +3817,7 @@ function renderExpenseRow(exp, idx, tbody) {
 
     const toolsTd = document.createElement('td');
     toolsTd.className = 'text-center';
+    toolsTd.dataset.label = 'เครื่องมือ';
     toolsTd.innerHTML = `
         <div class="action-buttons" style="justify-content:center;">
             <button class="btn btn-icon btn-icon-edit" data-idx="${idx}" title="แก้ไข"><i data-lucide="edit-2" style="width:14px; height:14px;"></i></button>
@@ -3817,6 +3838,7 @@ function renderAttachmentRow(a, idx, tbody) {
     state.columns.forEach(col => {
         if (!col.visible) return;
         const td = document.createElement('td');
+        td.dataset.label = col.label;
         
         switch (col.id) {
             case 'documentNo':
@@ -3898,6 +3920,7 @@ function renderAttachmentRow(a, idx, tbody) {
 
     const toolsTd = document.createElement('td');
     toolsTd.className = 'text-center';
+    toolsTd.dataset.label = 'เครื่องมือ';
     toolsTd.innerHTML = `
         <div class="action-buttons" style="justify-content:center;">
             <button class="btn btn-icon btn-icon-edit-attach" data-idx="${idx}" title="แก้ไข"><i data-lucide="edit-2" style="width:14px; height:14px;"></i></button>
@@ -3935,6 +3958,7 @@ function renderExpenseInlineAddRow(tbody) {
     state.columns.forEach(col => {
         if (!col.visible) return;
         const td = document.createElement('td');
+        td.dataset.label = col.label;
         
         switch (col.id) {
             case 'documentNo':
@@ -4001,6 +4025,7 @@ function renderExpenseInlineAddRow(tbody) {
     
     const toolsTd = document.createElement('td');
     toolsTd.className = 'text-center';
+    toolsTd.dataset.label = 'เครื่องมือ';
     toolsTd.innerHTML = `
         <button type="button" class="btn btn-primary btn-sm" onclick="saveInlineRow('EXP')" style="padding:4px 10px; border-radius:6px; font-weight:600; display:flex; align-items:center; gap:4px; margin: 0 auto;">
             <i data-lucide="check" style="width:14px; height:14px;"></i> บันทึก
@@ -4024,6 +4049,7 @@ function renderAttachmentInlineAddRow(tbody) {
     state.columns.forEach(col => {
         if (!col.visible) return;
         const td = document.createElement('td');
+        td.dataset.label = col.label;
         
         switch (col.id) {
             case 'documentNo':
@@ -4089,6 +4115,7 @@ function renderAttachmentInlineAddRow(tbody) {
     
     const toolsTd = document.createElement('td');
     toolsTd.className = 'text-center';
+    toolsTd.dataset.label = 'เครื่องมือ';
     toolsTd.innerHTML = `
         <button type="button" class="btn btn-primary btn-sm" onclick="saveInlineRow('ATT')" style="padding:4px 10px; border-radius:6px; font-weight:600; display:flex; align-items:center; gap:4px; margin: 0 auto;">
             <i data-lucide="check" style="width:14px; height:14px;"></i> บันทึก

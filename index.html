@@ -1330,7 +1330,7 @@
                                 <i data-lucide="plus" style="width:12px; height:12px;"></i> เพิ่มโครงการด่วน
                             </button>
                         </div>
-                        <select id="bill-project" class="form-select w-full" style="padding:10px;"></select>
+                        <select id="bill-project" class="form-select w-full" style="padding:10px;" required></select>
                     </div>
                     <div class="form-group" id="bill-project-new-group" style="display:none;">
                         <label class="form-label" for="bill-project-new-name">ชื่อโครงการ / กิจกรรมเพิ่มเติม</label>
@@ -1368,7 +1368,7 @@
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="bill-price">ราคาต่อหน่วย (บาท)</label>
-                        <input type="number" id="bill-price" class="form-input" value="0.00" min="0" step="any" required>
+                        <input type="number" id="bill-price" class="form-input" value="0.00" min="0.01" step="any" required>
                     </div>
                 </div>
                 <div class="form-group">

@@ -532,9 +532,17 @@ button, input, select, textarea {
 
 .data-table {
     width: 100%;
+    min-width: 760px;
     border-collapse: collapse;
     text-align: left;
     font-size: 14px;
+}
+
+/* Billing forms contain many meaningful fields. Keep headers and inputs at a
+   readable width instead of letting the browser compress them into slivers. */
+#full-bills-table,
+#attached-bills-table {
+    min-width: 1400px;
 }
 
 .data-table th {
@@ -559,6 +567,90 @@ button, input, select, textarea {
 
 .data-table tbody tr:hover {
     background-color: var(--bg-main);
+}
+
+/* Full bill records become labelled cards on narrow screens. The quick-entry
+   row uses the same treatment, so every field remains visible and tappable. */
+@media (max-width: 760px) {
+    .table-container.responsive-record-container {
+        overflow: visible;
+        border: 0;
+        background: transparent;
+    }
+
+    .data-table.responsive-record-table {
+        min-width: 0;
+        display: block;
+    }
+
+    .responsive-record-table thead {
+        display: none;
+    }
+
+    .responsive-record-table tbody {
+        display: block;
+    }
+
+    .responsive-record-table tbody tr {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0;
+        margin-bottom: 14px;
+        overflow: hidden;
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        background: var(--bg-sidebar);
+    }
+
+    .responsive-record-table tbody td {
+        display: grid;
+        grid-template-columns: minmax(92px, 40%) minmax(0, 1fr);
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border-color);
+        text-align: left;
+    }
+
+    .responsive-record-table tbody td::before {
+        content: attr(data-label);
+        color: var(--text-secondary);
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .responsive-record-table tbody td.text-right,
+    .responsive-record-table tbody td.text-center {
+        text-align: left;
+    }
+
+    .responsive-record-table tbody td .action-buttons {
+        justify-content: flex-start !important;
+    }
+
+    .responsive-record-table tbody td .form-input,
+    .responsive-record-table tbody td .form-select {
+        min-height: 38px;
+        font-size: 14px !important;
+    }
+
+    .responsive-record-table tbody tr .empty-state {
+        display: block;
+        grid-column: 1 / -1;
+        padding: 24px 12px;
+        text-align: center;
+    }
+
+    .responsive-record-table tbody tr .empty-state::before {
+        content: none;
+    }
+}
+
+@media (max-width: 520px) {
+    .responsive-record-table tbody tr {
+        grid-template-columns: 1fr;
+    }
 }
 
 /* Table Badges */

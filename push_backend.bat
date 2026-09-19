@@ -20,6 +20,16 @@ if errorlevel 1 (
   exit /b 1
 )
 
+where node >nul 2>nul
+if errorlevel 1 (
+  echo ERROR: Node.js was not found in PATH. It is required for the preflight check.
+  exit /b 1
+)
+
+echo Running static preflight checks...
+node "%PROJECT_DIR%preflight-check.js"
+if errorlevel 1 exit /b %errorlevel%
+
 cd /d "%BACKEND_DIR%"
 echo Pushing Google Apps Script backend from:
 echo %CD%
@@ -30,4 +40,3 @@ if errorlevel 1 exit /b %errorlevel%
 echo.
 echo Push complete. To create a new deployment version, run:
 echo   clasp deploy --description "backend update"
-

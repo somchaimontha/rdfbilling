@@ -1,4 +1,8 @@
 {
+  "scripts": {
+    "preflight": "node preflight-check.js",
+    "test": "npm run preflight"
+  },
   "dependencies": {
     "iconv-lite": "^0.7.2"
   }
