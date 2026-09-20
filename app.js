@@ -744,6 +744,24 @@ async function initAppWithAPI() {
     }
 }
 
+// Refresh only the record resource used by the monthly bill widgets. This is
+// used immediately after saving so a failure in an unrelated dashboard or
+// claim request cannot hide a record that the API already saved.
+async function refreshExpenseRecordsForSelectedMonth() {
+    const gYear = state.selectedYear - 543;
+    const mStr = String(state.selectedMonth).padStart(2, '0');
+    const monthFilter = `${gYear}-${mStr}`;
+    const expensesRes = await apiCall(
+        'getExpenses',
+        null,
+        { month: monthFilter },
+        { page: 1, limit: 500 }
+    );
+    const allExpenses = expensesRes.expenses || [];
+    state.expenses = allExpenses.filter(expense => expense.id && expense.id.startsWith('EXP'));
+    state.attachments = allExpenses.filter(expense => expense.id && expense.id.startsWith('ATT'));
+}
+
 function loadState() {
     const savedSettings = localStorage.getItem('rdf_expense_ui_settings');
     const defaults = getDefaultState();
@@ -2042,11 +2060,9 @@ function renderTables() {
         });
     }
 
-    // 4. Render Inline Add Rows
-    renderExpenseInlineAddRow(tbodyBills);
-    renderAttachmentInlineAddRow(tbodyAttach);
-
-    bindInlineListeners();
+    // Data entry is deliberately handled by the Popup buttons. Do not render
+    // an unsaved inline row: it looked like a real record and carried a
+    // misleading 0.00 price before anything had been saved.
     bindTableActionButtons();
     initializeLucide();
 }
@@ -2923,6 +2939,8 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
 
     const expId = editIdx !== null && state.expenses[editIdx] ? state.expenses[editIdx].id : null;
     renderTempBillAttachmentsPreview(expId);
+    const modalBody = modal.querySelector('.modal-body');
+    if (modalBody) modalBody.scrollTop = 0;
     modal.classList.add('active');
 }
 
@@ -3040,7 +3058,13 @@ async function handleExpenseSubmit(e) {
         }
 
         closeExpenseModal();
-        await initAppWithAPI();
+        try {
+            await refreshExpenseRecordsForSelectedMonth();
+            renderAll();
+        } catch (refreshErr) {
+            console.error('Expense saved but the bill list could not refresh:', refreshErr);
+            appAlert('บันทึกสำเร็จ แต่ยังโหลดตารางรายการใหม่ไม่ได้ กรุณารีเฟรชหน้าเว็บ', 'warning');
+        }
     } catch (err) {
         appAlert('บันทึกรายจ่ายล้มเหลว: ' + err.message);
     } finally {
@@ -3290,7 +3314,13 @@ async function handleAttachmentSubmit(e) {
             appAlert('เพิ่มบิลแนบสำเร็จ!');
         }
         closeAttachmentModal();
-        await initAppWithAPI();
+        try {
+            await refreshExpenseRecordsForSelectedMonth();
+            renderAll();
+        } catch (refreshErr) {
+            console.error('Attachment bill saved but the list could not refresh:', refreshErr);
+            appAlert('บันทึกสำเร็จ แต่ยังโหลดตารางรายการใหม่ไม่ได้ กรุณารีเฟรชหน้าเว็บ', 'warning');
+        }
     } catch (err) {
         appAlert('บันทึกบิลแนบล้มเหลว: ' + err.message);
     } finally {

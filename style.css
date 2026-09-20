@@ -569,16 +569,17 @@ button, input, select, textarea {
     background-color: var(--bg-main);
 }
 
-/* Full bill records become labelled cards on narrow screens. The quick-entry
-   row uses the same treatment, so every field remains visible and tappable. */
-@media (max-width: 760px) {
+/* Bills have many fields. Present each saved record as a labelled card before
+   the table ever needs a horizontal scrollbar (including normal laptops). */
+@media (max-width: 1700px) {
     .table-container.responsive-record-container {
         overflow: visible;
         border: 0;
         background: transparent;
     }
 
-    .data-table.responsive-record-table {
+    #full-bills-table.responsive-record-table,
+    #attached-bills-table.responsive-record-table {
         min-width: 0;
         display: block;
     }
@@ -647,7 +648,7 @@ button, input, select, textarea {
     }
 }
 
-@media (max-width: 520px) {
+@media (max-width: 700px) {
     .responsive-record-table tbody tr {
         grid-template-columns: 1fr;
     }
