@@ -3243,8 +3243,10 @@ function openAttachmentModal(editIdx = null) {
     const modal = document.getElementById('modal-attachment');
     const form = document.getElementById('form-attachment');
     (document.getElementById('modal-attachment-title') || {}).textContent = editIdx !== null ? 'แก้ไขบิลแนบ' : 'เพิ่มบิลแนบ / ค่าสาธารณูปโภค';
-    (document.getElementById('attachment-edit-index') || {}).value = editIdx !== null ? editIdx : '';
     form.reset();
+    // reset() clears hidden fields. Restore this after reset so clicking edit
+    // updates the selected attachment instead of silently creating a new one.
+    (document.getElementById('attachment-edit-index') || {}).value = editIdx !== null ? editIdx : '';
 
     const activeProjects = state.projects.filter(p => p.active);
     populateDropdown('attach-project', activeProjects, 'id', 'name');
@@ -3266,6 +3268,8 @@ function openAttachmentModal(editIdx = null) {
         (document.getElementById('attach-date') || {}).value = `${gYear}-${mStr}-01`;
     }
 
+    const modalBody = modal.querySelector('.modal-body');
+    if (modalBody) modalBody.scrollTop = 0;
     modal.classList.add('active');
 }
 
@@ -3281,8 +3285,15 @@ async function handleAttachmentSubmit(e) {
 
     const user = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
     const orgId = user.organizationId;
+    const expenseDate = document.getElementById('attach-date').value;
+    const projectId = document.getElementById('attach-project').value;
+    const description = document.getElementById('attach-desc').value.trim();
     if (!orgId) {
         appAlert('ไม่พบข้อมูลหน่วยงานของผู้ใช้ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่', 'error');
+        return;
+    }
+    if (!expenseDate || !projectId || !description || amount <= 0) {
+        appAlert('กรุณาระบุวันที่ โครงการ รายละเอียด และจำนวนเงินที่มากกว่า 0', 'error');
         return;
     }
 
@@ -3291,13 +3302,13 @@ async function handleAttachmentSubmit(e) {
         const categoryId = await resolveExpenseMasterSelection('category', 'attach');
         const fundSourceId = await resolveExpenseMasterSelection('fundSource', 'attach');
         const attachData = {
-            expenseDate: document.getElementById('attach-date').value,
+            expenseDate: expenseDate,
             organizationId: orgId,
-            projectId: document.getElementById('attach-project').value,
+            projectId: projectId,
             categoryId: categoryId,
             vendorId: '', // ไม่มีผู้ขายสำหรับบิลค่าบริการสาธารณูปโภค
             fundSourceId: fundSourceId,
-            description: document.getElementById('attach-desc').value.trim(),
+            description: description,
             quantity: 1,
             unitPrice: amount,
             claimable: claimable,
@@ -6778,6 +6789,11 @@ window.submitFoodEntry = async function(e) {
     }
 
     const dateStr = document.getElementById('food-entry-date').value; // YYYY-MM-DD
+    const selectedMonth = (document.getElementById('food-modal-month') || {}).value;
+    if (!dateStr || (selectedMonth && !dateStr.startsWith(selectedMonth))) {
+        appAlert('วันที่ซื้อต้องอยู่ในเดือนที่เลือกไว้ในหน้าต่างนี้', 'error');
+        return;
+    }
     const [y, m] = dateStr.split('-');
     const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
 
@@ -6825,6 +6841,8 @@ window.submitFoodEntry = async function(e) {
         foodFiles = [];
         renderFoodFileList();
         calcFoodEntryTotal();
+        const nextDate = document.getElementById('food-entry-date');
+        if (nextDate) nextDate.value = getFoodEntryDefaultDate(selectedMonth);
 
         await loadFoodEntryList();
         if (document.getElementById('tab-food-overview').classList.contains('active')) {
@@ -7047,17 +7065,17 @@ window.openFoodEntryModal = function () {
 
     updateFoodModalMonthLabel();
     
-    // Reset form
     const form = document.getElementById('food-entry-form');
     if (form) form.reset();
+    // Do not let an attachment selected for a previous entry leak into this one.
+    foodFiles = [];
     const totalDisplay = document.getElementById('food-entry-total-display');
     if (totalDisplay) totalDisplay.textContent = '0.00 บาท';
     const fileList = document.getElementById('food-file-list');
     if (fileList) fileList.innerHTML = '';
 
-    // Set today's date
     const dateInput = document.getElementById('food-entry-date');
-    if (dateInput) dateInput.value = new Date().toISOString().split('T')[0];
+    if (dateInput) dateInput.value = getFoodEntryDefaultDate(monthInput ? monthInput.value : '');
 
     // Load existing entries
     if (typeof loadFoodEntryList === 'function') loadFoodEntryList();
@@ -7074,6 +7092,13 @@ window.closeFoodEntryModal = function () {
     if (typeof loadFoodBillsForMonth === 'function') loadFoodBillsForMonth();
     updateFoodWidgetMonthBadge();
 };
+
+function getFoodEntryDefaultDate(monthValue) {
+    const today = new Date();
+    const todayValue = today.toISOString().slice(0, 10);
+    if (!/^\d{4}-\d{2}$/.test(monthValue || '')) return todayValue;
+    return todayValue.startsWith(monthValue) ? todayValue : `${monthValue}-01`;
+}
 
 window.onFoodModalMonthChange = function () {
     updateFoodModalMonthLabel();
