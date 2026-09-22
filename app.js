@@ -5,46 +5,142 @@
 
 const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwxEEhfMfU8hjiR-iijOqcdPbRR-UOQOf4CMD34B0qVlhjgJYEpFXzGkopJ4inI5RyRnA/exec';
 const API_URL = ['127.0.0.1', 'localhost'].includes(window.location.hostname) ? '/api' : GAS_API_URL;
+const API_REQUEST_TIMEOUT_MS = 15000;
+const API_READ_RETRY_ATTEMPTS = 2;
+const API_RETRY_DELAY_MS = 700;
+const RETRYABLE_READ_API_ACTIONS = new Set([
+    'getAttachmentDataUrl',
+    'getAttachments',
+    'getCarryOverAmount',
+    'getClaims',
+    'getExpenses',
+    'getFoodExpenseById',
+    'getFoodExpenses',
+    'getFundReceipts',
+    'getMasterData',
+    'getMonthStatuses',
+    'getRuntimeConfig',
+    'getSystemConfig',
+    'getUsers'
+]);
+
+function waitForApiRetry(ms) {
+    return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+function createApiError(message, options = {}) {
+    const error = new Error(message);
+    Object.assign(error, options);
+    return error;
+}
+
+function isTransientApiStatus(status) {
+    return status === 0 || status === 404 || status === 408 || status === 429 || status >= 500;
+}
+
+function isRetryableReadAction(action) {
+    return RETRYABLE_READ_API_ACTIONS.has(action);
+}
 
 // API request router (CORS friendly via text/plain payload)
 async function apiCall(action, data = null, filters = null, pagination = null) {
     const token = localStorage.getItem('rdf_session_token');
-    try {
-        const response = await fetch(API_URL, {
-            method: 'POST',
-            mode: 'cors',
-            headers: {
-                'Content-Type': 'text/plain;charset=utf-8'
-            },
-            body: JSON.stringify({ action, token, data, filters, pagination })
-        });
-        const responseText = await response.text();
-        let result;
+    const canRetry = isRetryableReadAction(action);
+    const maxAttempts = canRetry ? API_READ_RETRY_ATTEMPTS : 1;
+    const requestBody = JSON.stringify({ action, token, data, filters, pagination });
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const controller = new AbortController();
+        let timeoutId = null;
+
         try {
-            result = JSON.parse(responseText);
-        } catch (_) {
+            timeoutId = window.setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+            const response = await fetch(API_URL, {
+                method: 'POST',
+                mode: 'cors',
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'text/plain;charset=utf-8'
+                },
+                body: requestBody,
+                signal: controller.signal
+            });
+            const responseText = await response.text();
             const contentType = response.headers.get('content-type') || 'unknown content type';
-            const looksLikeHtml = /^\s*<!doctype html|^\s*<html/i.test(responseText);
-            const detail = looksLikeHtml
-                ? 'เซิร์ฟเวอร์ตอบกลับเป็นหน้า HTML แทนข้อมูล API'
-                : 'เซิร์ฟเวอร์ตอบกลับในรูปแบบที่อ่านไม่ได้';
-            throw new Error(`${detail} (HTTP ${response.status}, ${contentType}) กรุณาลองเข้าสู่ระบบใหม่ แล้วลองอีกครั้ง`);
-        }
-        if (result.status !== 'success' && !result.success) {
-            if (result.error && result.error.code === 'UNAUTHORIZED' || result.message === 'Token ไม่ถูกต้อง' || result.message === 'Unauthorized. Please login again.') {
-                handleSessionExpired();
+            let result;
+
+            try {
+                result = JSON.parse(responseText);
+            } catch (_) {
+                const looksLikeHtml = /^\s*(?:<!doctype html|<html)/i.test(responseText);
+                const detail = looksLikeHtml
+                    ? 'Apps Script ตอบกลับเป็นหน้า HTML แทนข้อมูล API'
+                    : 'Apps Script ตอบกลับในรูปแบบที่อ่านไม่ได้';
+                throw createApiError(`${detail} (HTTP ${response.status}, ${contentType})`, {
+                    retryable: true,
+                    connectionIssue: true,
+                    statusCode: response.status
+                });
             }
-            const validationMessages = (result.error && Array.isArray(result.error.fields))
-                ? result.error.fields.map(field => field.message).filter(Boolean)
-                : [];
-            const apiMessage = result.message || (result.error ? result.error.message : 'API call failed');
-            throw new Error([apiMessage, ...validationMessages].filter(Boolean).join(' — '));
+
+            if (!response.ok && isTransientApiStatus(response.status)) {
+                throw createApiError(`Apps Script ขัดข้องชั่วคราว (HTTP ${response.status})`, {
+                    retryable: true,
+                    connectionIssue: true,
+                    statusCode: response.status
+                });
+            }
+
+            if (result.status !== 'success' && !result.success) {
+                const isUnauthorized = (result.error && result.error.code === 'UNAUTHORIZED')
+                    || result.message === 'Token ไม่ถูกต้อง'
+                    || result.message === 'Unauthorized. Please login again.';
+                if (isUnauthorized) {
+                    handleSessionExpired();
+                    throw createApiError('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่', { isAuthenticationError: true });
+                }
+                const validationMessages = (result.error && Array.isArray(result.error.fields))
+                    ? result.error.fields.map(field => field.message).filter(Boolean)
+                    : [];
+                const apiMessage = result.message || (result.error ? result.error.message : 'API call failed');
+                throw new Error([apiMessage, ...validationMessages].filter(Boolean).join(' — '));
+            }
+            return result.data || result;
+        } catch (err) {
+            let requestError = err;
+            if (err && err.name === 'AbortError') {
+                requestError = createApiError(
+                    `ใช้เวลาติดต่อ Apps Script เกิน ${Math.round(API_REQUEST_TIMEOUT_MS / 1000)} วินาที`,
+                    { retryable: true, connectionIssue: true }
+                );
+            } else if (!err || (!err.retryable && !err.isAuthenticationError && !err.message)) {
+                requestError = createApiError('ไม่สามารถเชื่อมต่อ Apps Script ได้ชั่วคราว', {
+                    retryable: true,
+                    connectionIssue: true
+                });
+            } else if (err instanceof TypeError && !err.isAuthenticationError) {
+                requestError = createApiError(`ไม่สามารถเชื่อมต่อ Apps Script ได้ชั่วคราว: ${err.message}`, {
+                    retryable: true,
+                    connectionIssue: true
+                });
+            }
+
+            lastError = requestError;
+            const shouldRetry = canRetry && requestError.retryable && attempt < maxAttempts;
+            if (!shouldRetry) {
+                console.error(`API Call [${action}] failed:`, requestError);
+                throw requestError;
+            }
+
+            console.warn(`API Call [${action}] attempt ${attempt}/${maxAttempts} failed; retrying.`, requestError);
+            await waitForApiRetry(API_RETRY_DELAY_MS * attempt);
+        } finally {
+            if (timeoutId !== null) window.clearTimeout(timeoutId);
         }
-        return result.data || result;
-    } catch (err) {
-        console.error(`API Call [${action}] failed:`, err);
-        throw err;
     }
+
+    throw lastError || new Error('ไม่สามารถเชื่อมต่อ Apps Script ได้');
 }
 
 // API list helpers ---------------------------------------------------------
@@ -780,6 +876,28 @@ async function handleLogout() {
 
 let appLoadGeneration = 0;
 
+async function showInitialLoadFailure(error, loadGeneration) {
+    const isConnectionIssue = Boolean(error && error.connectionIssue);
+    const message = isConnectionIssue
+        ? `ไม่สามารถเชื่อมต่อ Apps Script ได้ชั่วคราว\n\n${error.message}\n\nระบบได้ลองเชื่อมต่อใหม่ให้อัตโนมัติแล้ว คุณสามารถกด “ลองใหม่” ได้ทันที`
+        : `ไม่สามารถโหลดข้อมูลได้: ${error && error.message ? error.message : 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ'}`;
+    const result = await Swal.fire({
+        title: isConnectionIssue ? 'การเชื่อมต่อขัดข้องชั่วคราว' : 'ไม่สามารถโหลดข้อมูลได้',
+        text: message,
+        icon: 'error',
+        showCancelButton: true,
+        confirmButtonText: 'ลองใหม่',
+        cancelButtonText: 'รอภายหลัง',
+        confirmButtonColor: '#2563eb',
+        cancelButtonColor: '#64748b',
+        allowOutsideClick: false
+    });
+
+    if (result.isConfirmed && loadGeneration === appLoadGeneration) {
+        window.setTimeout(() => initAppWithAPI(), 0);
+    }
+}
+
 // โหลดฐานข้อมูลหลักแบบ real-time จาก Google Sheets
 async function initAppWithAPI() {
     const loadGeneration = ++appLoadGeneration;
@@ -833,7 +951,10 @@ async function initAppWithAPI() {
         renderAll();
     } catch (err) {
         if (loadGeneration === appLoadGeneration) {
-            appAlert('ไม่สามารถโหลดข้อมูลจาก Google Sheets ได้: ' + err.message);
+            showLoading(false);
+            if (!err || !err.isAuthenticationError) {
+                await showInitialLoadFailure(err, loadGeneration);
+            }
         }
     } finally {
         if (loadGeneration === appLoadGeneration) showLoading(false);
