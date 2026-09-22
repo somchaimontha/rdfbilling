@@ -191,7 +191,7 @@
                 </select>
             </div>
             <div class="header-filter-group">
-                <label for="select-year">ปี ..:</label>
+                <label for="select-year">ปี พ.ศ.:</label>
                 <select id="select-year" class="form-select">
                     <option value="2566">2566</option><option value="2567">2567</option>
                     <option value="2568">2568</option><option value="2569">2569</option>
@@ -279,7 +279,7 @@
                                 <thead>
                                     <tr>
                                         <th>แหล่งเงินสำรองจ่าย</th>
-                                        <th class="text-right">ยอดเงินนรวม</th>
+                                        <th class="text-right">ยอดเงินรวม</th>
                                     </tr>
                                 </thead>
                                 <tbody></tbody>
@@ -404,7 +404,8 @@
                         <thead>
                             <tr>
                                 <th>ลำดับ</th>
-                                <th>วันที่</th>
+                                <th>วันที่ซื้อ</th>
+                                <th>รอบบันทึก</th>
                                 <th>รายการ</th>
                                 <th>หมวดหมู่</th>
                                 <th class="text-right">จำนวน</th>
@@ -484,7 +485,7 @@
                     </button>
                 </div>
                 <div style="font-size:13px; color:var(--text-secondary);" id="claims-count-display">
-                    จำนวนชุดงเบิกทั้งหมด: 0 รายการ
+                    จำนวนชุดส่งเบิกทั้งหมด: 0 รายการ
                 </div>
             </div>
 
@@ -517,7 +518,7 @@
                 <div class="spreadsheet-toolbar" style="display:flex; justify-content:space-between; align-items:center;">
                     <span class="spreadsheet-tab-title">
                         <i data-lucide="file-spreadsheet" style="vertical-align:middle;"></i>
-                        ใบขอเบิกเงินบิล RDF ประจำเดือน <span id="sheet-month-name">สิงหาคม</span> .. <span id="sheet-year-val">2566</span>
+                        ใบขอเบิกเงินบิล RDF ประจำเดือน <span id="sheet-month-name">สิงหาคม</span> พ.ศ. <span id="sheet-year-val">2566</span>
                     </span>
                     <button class="btn btn-success btn-sm" id="btn-export-excel" style="background-color: var(--success); border-color: var(--success); color: white; display:flex; align-items:center; gap:6px;">
                         <i data-lucide="download"></i> ส่งออกไฟล์ Excel (.xlsx)
@@ -559,7 +560,8 @@
                             <thead>
                                 <tr>
                                     <th style="width:40px;">#</th>
-                                    <th style="width:100px;">วันที่</th>
+                                    <th style="width:100px;">วันที่ซื้อ</th>
+                                    <th style="width:125px;">รอบบันทึก</th>
                                     <th>รายการอาหาร/วัตถุดิบ</th>
                                     <th>หมวดหมู่</th>
                                     <th class="text-right">จำนวน</th>
@@ -639,7 +641,7 @@
                 <h2 class="widget-title" style="margin-bottom:0;">เอกสารรับเงินทุนนักเรียน/นักศึกษา</h2>
                 <div style="display:flex; align-items:center; gap:12px;">
                     <label>ปีงบประมาณ:</label>
-                    <select id="fund-receipt-year-select" class="form-input" onchange="renderFundReceiptsOverview()"></select>
+                    <select id="fund-receipt-year-select" class="form-input" onchange="onFundReceiptYearChange()"></select>
                 </div>
             </div>
 
@@ -1110,7 +1112,7 @@
                     <div class="card" style="margin-bottom:20px;">
                         <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
                             <div style="width:40px;height:40px;background:linear-gradient(135deg,#4285f4,#34a853);border-radius:10px;display:flex;align-items:center;justify-content:center;">
-                                <i data-lucide="chrome" style="width:20px;height:20px;color:white;"></i>
+                                <i data-lucide="log-in" style="width:20px;height:20px;color:white;"></i>
                             </div>
                             <div>
                                 <h3 style="font-size:15px;font-weight:700;margin:0;">Google Login (OAuth 2.0)</h3>
@@ -1312,17 +1314,22 @@
         <form id="form-bill">
             <input type="hidden" id="bill-edit-index">
             <div class="modal-body" style="max-height:520px; overflow-y:auto;">
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                <div class="form-grid form-grid-2">
                     <div class="form-group">
-                        <label class="form-label" for="bill-docno">เลขที่ / เลขบิล</label>
-                        <input type="text" id="bill-docno" class="form-input" placeholder="เช่น X04" required>
+                        <label class="form-label" for="bill-docno">เลขที่เอกสาร</label>
+                        <input type="text" id="bill-docno" class="form-input" placeholder="ระบบสร้างอัตโนมัติ" readonly>
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="bill-date">วันที่บิล</label>
                         <input type="date" id="bill-date" class="form-input" required>
                     </div>
                 </div>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                <div class="form-grid form-grid-2">
+                    <div class="form-group">
+                        <label class="form-label" for="bill-posting-month">รอบเดือนที่บันทึก</label>
+                        <input type="month" id="bill-posting-month" class="form-input" required>
+                        <small class="form-help">วันที่บิลอาจเป็นเดือนก่อนหน้าได้ แต่ยอดจะรวมในรอบเดือนนี้</small>
+                    </div>
                     <div class="form-group" id="bill-project-select-group">
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
                             <label class="form-label" for="bill-project" style="margin-bottom:0;">โครงการ</label>
@@ -1343,7 +1350,7 @@
                         <datalist id="bill-category-list"></datalist>
                     </div>
                 </div>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                <div class="form-grid form-grid-2">
                     <div class="form-group">
                         <label class="form-label" for="bill-vendor">ผู้ขาย / ร้านค้า</label>
                         <input type="hidden" id="bill-vendor">
@@ -1361,7 +1368,7 @@
                     <label class="form-label" for="bill-desc">รายละเอียดรายการ</label>
                     <input type="text" id="bill-desc" class="form-input" placeholder="รายละเอียดสินค้า/บริการ" required>
                 </div>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                <div class="form-grid form-grid-2">
                     <div class="form-group">
                         <label class="form-label" for="bill-qty">จำนวน</label>
                         <input type="number" id="bill-qty" class="form-input" value="1" min="0.01" step="any" required>
@@ -1432,11 +1439,17 @@
         <form id="form-attachment">
             <input type="hidden" id="attachment-edit-index">
             <div class="modal-body" style="max-height:480px; overflow-y:auto;">
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                <div class="form-grid form-grid-2">
                     <div class="form-group">
-                        <label class="form-label" for="attach-date">วันที่บันทึก</label>
+                        <label class="form-label" for="attach-date">วันที่บิล</label>
                         <input type="date" id="attach-date" class="form-input" required>
                     </div>
+                    <div class="form-group">
+                        <label class="form-label" for="attach-posting-month">รอบเดือนที่บันทึก</label>
+                        <input type="month" id="attach-posting-month" class="form-input" required>
+                    </div>
+                </div>
+                <div class="form-grid form-grid-2">
                     <div class="form-group">
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
                             <label class="form-label" for="attach-project" style="margin-bottom:0;">โครงการ</label>
@@ -1447,7 +1460,7 @@
                         <select id="attach-project" class="form-select w-full" style="padding:10px;"></select>
                     </div>
                 </div>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                <div class="form-grid form-grid-2">
                     <div class="form-group">
                         <label class="form-label" for="attach-category">หมวดหมู่รายจ่าย</label>
                         <input type="hidden" id="attach-category">
@@ -1463,10 +1476,10 @@
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="attach-desc">รายละเอียดบิลแนบ</label>
-                    <input type="text" id="attach-desc" class="form-input" placeholder="เช่ ค่าไฟฟ้าเดือน งหาค 2566" required>
+                    <input type="text" id="attach-desc" class="form-input" placeholder="เช่น ค่าไฟฟ้าเดือนสิงหาคม 2569" required>
                 </div>
                 <div class="form-group">
-                    <label class="form-label" for="attach-amount">จำนวนเงิ ()</label>
+                    <label class="form-label" for="attach-amount">จำนวนเงิน (บาท)</label>
                     <input type="number" id="attach-amount" class="form-input" min="0.01" step="any" inputmode="decimal" placeholder="เช่น 150.00" required>
                 </div>
                 <div class="form-group">
@@ -1498,11 +1511,11 @@
             <form id="claim-form" onsubmit="event.preventDefault();">
                 <div class="form-grid" style="grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
                     <div class="form-group" style="grid-column: span 2;">
-                        <label for="claim-title" class="form-label">ชื่อชุดส่งเบิ *</label>
-                        <input type="text" id="claim-title" class="form-control" placeholder="ระบุชื่อชุดส่งเบิกเพื่อระลึกความจ" required>
+                        <label for="claim-title" class="form-label">ชื่อชุดส่งเบิก *</label>
+                        <input type="text" id="claim-title" class="form-control" placeholder="ระบุชื่อชุดส่งเบิกเพื่อใช้อ้างอิง" required>
                     </div>
                     <div class="form-group">
-                        <label for="claim-month" class="form-label">เดือนงเบิ *</label>
+                        <label for="claim-month" class="form-label">เดือนส่งเบิก *</label>
                         <select id="claim-month" class="form-select">
                             <option value="1">มกราคม</option><option value="2">กุมภาพันธ์</option>
                             <option value="3">มีนาคม</option><option value="4">เมษายน</option>
@@ -1513,7 +1526,7 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label for="claim-year" class="form-label">ปี .. *</label>
+                        <label for="claim-year" class="form-label">ปี พ.ศ. *</label>
                         <select id="claim-year" class="form-select">
                             <option value="2566">2566</option><option value="2567">2567</option>
                             <option value="2568">2568</option><option value="2569">2569</option>
@@ -1523,7 +1536,7 @@
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label">เลือกรายการค่าใช้จ่ายเพื่อรวมกลุ่มงเบิ *</label>
+                    <label class="form-label">เลือกรายการค่าใช้จ่ายเพื่อรวมกลุ่มส่งเบิก *</label>
                     <div style="border: 1px solid var(--border-color); border-radius: 8px; max-height: 250px; overflow-y: auto; background: var(--surface-solid);">
                         <table class="data-table" style="font-size:12px; margin-bottom:0;" id="claim-selector-table">
                             <thead>
@@ -1531,8 +1544,8 @@
                                     <th style="width: 40px; text-align: center;"><input type="checkbox" id="claim-select-all"></th>
                                     <th>เลขบิล</th>
                                     <th>วันที่</th>
-                                    <th>ร้านค้ / รายละเอียด</th>
-                                    <th class="text-right">ยอดเงิน ()</th>
+                                    <th>ร้านค้า / รายละเอียด</th>
+                                    <th class="text-right">ยอดเงิน (บาท)</th>
                                 </tr>
                             </thead>
                             <tbody id="claim-selector-tbody">
@@ -1549,7 +1562,7 @@
         </div>
         <footer class="modal-footer">
             <button class="btn btn-outline" id="btn-claim-cancel">ยกเลิก</button>
-            <button class="btn btn-primary" id="btn-claim-save">้างชุดงเบิ</button>
+            <button class="btn btn-primary" id="btn-claim-save">สร้างชุดส่งเบิก</button>
         </footer>
     </div>
 </div>
@@ -1670,7 +1683,7 @@
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
                             <div class="form-group" style="margin:0;">
                                 <label class="form-label" style="font-size:11px;">เดือน/ปี ที่รายงาน</label>
-                                <input type="month" id="export-report-month" class="form-input" style="font-size:13px;padding:6px 8px;" onchange="renderExportPreview()">
+                                <input type="month" id="export-report-month" class="form-input" style="font-size:13px;padding:6px 8px;" onchange="onExportReportMonthChange()">
                             </div>
                             <div class="form-group" style="margin:0;">
                                 <label class="form-label" style="font-size:11px;">เลขที่เอกสาร (ระบบออกอัตโนมัติจากสถานศึกษา+เดือน)</label>
@@ -1710,6 +1723,7 @@
                             <div style="padding:8px 14px 12px; display:flex; flex-direction:column; gap:6px; border-top:1px solid var(--border-color);">
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="docNo" checked onchange="renderExportPreview()"> เลขบิล</label>
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="date" checked onchange="renderExportPreview()"> วันที่</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="postingMonth" checked onchange="renderExportPreview()"> รอบบันทึก</label>
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="project" checked onchange="renderExportPreview()"> โครงการ</label>
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="category" checked onchange="renderExportPreview()"> หมวดหมู่</label>
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="vendor" checked onchange="renderExportPreview()"> ร้านค้า/ผู้ขาย</label>
@@ -1733,6 +1747,7 @@
                             </div>
                             <div style="padding:8px 14px 12px; display:flex; flex-direction:column; gap:6px; border-top:1px solid var(--border-color);">
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="foodDate" checked onchange="renderExportPreview()"> วันที่</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="postingMonth" checked onchange="renderExportPreview()"> รอบบันทึก</label>
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="foodName" checked onchange="renderExportPreview()"> รายการ</label>
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="foodCategory" checked onchange="renderExportPreview()"> หมวดหมู่</label>
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="foodAmount" checked onchange="renderExportPreview()"> ยอดเงิน</label>
@@ -1765,7 +1780,7 @@
                     <div class="export-acc-body" style="padding:0 20px 16px;">
                         <div class="form-group" style="margin-bottom:10px;">
                             <label class="form-label" style="font-size:11px;">รูปแบบรายงาน</label>
-                            <select id="export-report-type" class="form-select" style="font-size:13px;padding:6px 10px;" onchange="renderExportPreview()">
+                            <select id="export-report-type" class="form-select" style="font-size:13px;padding:6px 10px;" onchange="onExportReportTypeChange()">
                                 <option value="summary">รายงานแบบสรุป</option>
                                 <option value="detailed">รายงานแบบละเอียด</option>
                                 <option value="with_attachments">รายงานพร้อมหลักฐานแนบ</option>
@@ -1792,11 +1807,19 @@
                                 </select>
                             </div>
                         </div>
+                        <div class="form-group" style="margin-bottom:10px;">
+                            <label class="form-label" style="font-size:11px;">ขนาดกระดาษ A4</label>
+                            <select id="export-page-orientation" class="form-select" style="font-size:13px;padding:6px 10px;" onchange="onExportPageOrientationChange()">
+                                <option value="portrait">A4 แนวตั้ง</option>
+                                <option value="landscape">A4 แนวนอน</option>
+                            </select>
+                        </div>
                         <div style="display:flex; flex-direction:column; gap:8px; border:1px solid var(--border-color); border-radius:8px; padding:10px 12px; background:var(--bg-main);">
                             <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_img" checked onchange="renderExportPreview()"> แสดงรูปหลักฐาน</label>
-                            <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_pdf" checked onchange="renderExportPreview()"> แสดง PDF หลักฐาน</label>
+                            <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_pdf" checked onchange="renderExportPreview()"> แสดงลิงก์ PDF / ไฟล์อ้างอิง</label>
                             <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_qr" checked onchange="renderExportPreview()"> แสดง QR Code ตรวจสอบเอกสาร (ระบบผูกกับเลขที่เอกสารอัตโนมัติ)</label>
                         </div>
+                        <p id="export-evidence-hint" style="font-size:11px; line-height:1.5; color:var(--text-muted); margin:8px 0 0;">เลือกรายงานพร้อมหลักฐานเพื่อฝังรูปและแสดงลิงก์ไฟล์อ้างอิงใน PDF</p>
                     </div>
                 </div>
 
@@ -1859,14 +1882,14 @@
             </div>
             <div style="display:flex; gap:8px;">
                 <button type="button" class="btn btn-secondary" id="btn-export-pdf-cancel">ปิดหน้าต่าง</button>
-                <button type="button" class="btn btn-outline" onclick="executeDynamicExport('csv')" style="color:#0ea5e9;border-color:#0ea5e9; display:flex; align-items:center; gap:6px;">
+                <button type="button" class="btn btn-outline" onclick="executeDynamicExport('csv')" title="ส่งออกข้อมูลตารางเท่านั้น — ไม่ฝังรูปหลักฐานหรือ QR" style="color:#0ea5e9;border-color:#0ea5e9; display:flex; align-items:center; gap:6px;">
                     <i data-lucide="file-text" style="width:15px;height:15px;"></i> CSV
                 </button>
-                <button type="button" class="btn btn-outline" onclick="executeDynamicExport('excel')" style="color:#10b981;border-color:#10b981; display:flex; align-items:center; gap:6px;">
+                <button type="button" class="btn btn-outline" onclick="executeDynamicExport('excel')" title="ส่งออกข้อมูลตารางเท่านั้น — ไม่ฝังรูปหลักฐานหรือ QR" style="color:#10b981;border-color:#10b981; display:flex; align-items:center; gap:6px;">
                     <i data-lucide="file-spreadsheet" style="width:15px;height:15px;"></i> Excel
                 </button>
-                <button type="button" class="btn btn-primary" onclick="executeDynamicExport('pdf')" style="display:flex; align-items:center; gap:6px;">
-                    <i data-lucide="printer" style="width:15px;height:15px;"></i> PDF / พิมพ์
+                <button type="button" class="btn btn-primary" onclick="executeDynamicExport('pdf')" title="PDF A4 เป็นรูปแบบเดียวที่ฝังหลักฐานและ QR ได้" style="display:flex; align-items:center; gap:6px;">
+                    <i data-lucide="printer" style="width:15px;height:15px;"></i> PDF A4 / พิมพ์
                 </button>
             </div>
         </footer>
@@ -1963,7 +1986,7 @@
                 </div>
                 <form id="form-login" onsubmit="event.preventDefault();">
                     <div class="login-input-group">
-                        <label class="form-label" for="login-username"><i data-lucide="user"></i> ชื่อผู้ใช้งานน</label>
+                        <label class="form-label" for="login-username"><i data-lucide="user"></i> ชื่อผู้ใช้งาน</label>
                         <input type="text" id="login-username" class="form-input" placeholder="Username" required>
                     </div>
                     <div class="login-input-group">
@@ -2037,7 +2060,7 @@
 ===================================================== -->
 <div class="loading-overlay" id="loading-overlay" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(15,23,42,0.4); backdrop-filter:blur(3px); z-index:20000; align-items:center; justify-content:center; flex-direction:column; gap:16px; color:white;">
     <div style="width:48px; height:48px; border:4px solid rgba(255,255,255,0.2); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite;"></div>
-    <div style="font-weight:600; font-size:14px; text-shadow:0 1px 2px rgba(0,0,0,0.3); letter-spacing:0.5px; color:#ffffff;">กำลังประมวลผลข้อมูลล...</div>
+    <div style="font-weight:600; font-size:14px; text-shadow:0 1px 2px rgba(0,0,0,0.3); letter-spacing:0.5px; color:#ffffff;">กำลังประมวลผลข้อมูล...</div>
 </div>
 <style>
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -2092,7 +2115,7 @@
                     <div style="font-size:12px;color:var(--text-secondary);" id="profile-modal-role">-</div>
                 </div>
                 <div class="form-group" style="margin-bottom:14px;">
-                    <label class="form-label">อีอีเมล</label>
+                    <label class="form-label">อีเมล</label>
                     <input type="email" id="profile-modal-email" class="form-input" placeholder="example@email.com">
                 </div>
                 <div style="border-top:1px solid var(--border-color);padding-top:16px;margin-top:4px;">
@@ -2118,7 +2141,7 @@
     <div class="modal-overlay" id="modal-admin-user">
         <div class="modal-card" style="max-width:440px; border-radius:16px; overflow:hidden;">
             <div class="modal-header" style="background:linear-gradient(135deg,#4f46e5,#7c3aed);color:white;padding:20px 24px;">
-                <h2 id="admin-user-modal-title" style="font-size:16px;font-weight:700;margin:0;color:white;">เพิ่มผู้ใช้งานนน</h2>
+                <h2 id="admin-user-modal-title" style="font-size:16px;font-weight:700;margin:0;color:white;">เพิ่มผู้ใช้งาน</h2>
                 <button onclick="closeAdminUserModal()" style="background:rgba(255,255,255,0.2);border:none;border-radius:8px;padding:6px;cursor:pointer;color:white;"><i data-lucide="x" style="width:16px;height:16px;"></i></button>
             </div>
             <div class="modal-body" style="padding:24px;">
@@ -2172,7 +2195,7 @@
     <div class="modal-card" style="max-width:620px;">
         <header class="modal-header">
             <div>
-                <h3 class="modal-title">🍽️ บันทึกค่าอาหาร</h3>
+                <h3 class="modal-title" id="food-entry-modal-title">🍽️ บันทึกค่าอาหาร</h3>
                 <div style="font-size:12px; color:var(--text-muted); margin-top:4px;" id="food-modal-month-label">เดือนปัจจุบัน</div>
             </div>
             <div style="display:flex; align-items:center; gap:10px;">
@@ -2182,7 +2205,8 @@
         </header>
         <div class="modal-body" style="max-height:70vh; overflow-y:auto;">
             <form id="food-entry-form" onsubmit="submitFoodEntry(event)">
-                <div style="display:grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; margin-bottom: 14px;">
+                <input type="hidden" id="food-entry-edit-id">
+                <div class="form-grid form-grid-food-main">
                     <div>
                         <label class="form-label">1. รายการ/วัตถุดิบ *</label>
                         <input type="text" id="food-entry-name" class="form-input" required placeholder="เช่น หมู, ไก่, ผัก">
@@ -2206,7 +2230,7 @@
                         <input type="number" id="food-entry-price" class="form-input" step="0.01" min="0" required placeholder="0.00" oninput="calcFoodEntryTotal()">
                     </div>
                 </div>
-                <div style="display:grid; grid-template-columns: 1fr 1fr 2fr; gap: 14px; margin-bottom: 14px;">
+                <div class="form-grid form-grid-food-detail">
                     <div>
                         <label class="form-label">4. หมวดหมู่ *</label>
                         <select id="food-entry-category" class="form-input" required>
@@ -2222,6 +2246,7 @@
                     <div>
                         <label class="form-label">5. วันที่ซื้อ *</label>
                         <input type="date" id="food-entry-date" class="form-input" required>
+                        <div class="form-help">วันที่ซื้อสามารถเป็นเดือนก่อนหน้าได้ ระบบจะนำยอดไปคิดตาม “รอบบันทึก” ที่เลือกด้านบน</div>
                     </div>
                     <div>
                         <label class="form-label">6. อัปโหลดสลิป/บิล (ถ้ามี)</label>
@@ -2231,18 +2256,18 @@
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border-color); padding-top:14px;">
                     <div style="font-size:16px; font-weight:600;">รวม: <span id="food-entry-total-display" style="color:var(--primary); font-size:18px;">0.00 บาท</span></div>
-                    <button type="submit" class="btn btn-primary"><i data-lucide="plus"></i> บันทึกรายการ</button>
+                    <button type="submit" class="btn btn-primary" id="food-entry-submit-btn"><i data-lucide="save"></i> บันทึกรายการ</button>
                 </div>
             </form>
 
             <!-- Recent entries in selected month -->
             <div style="margin-top:20px; border-top:1px solid var(--border-color); padding-top:16px;">
-                <h4 style="font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:12px;">รายการที่บันทึกแล้วในเดือนนี้</h4>
+                <h4 style="font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:12px;">รายการในรอบบันทึกที่เลือก</h4>
                 <div class="table-container" style="border-radius:10px;">
                     <table class="data-table" style="font-size:13px;">
                         <thead>
                             <tr>
-                                <th>วันที่</th>
+                                <th>วันที่ซื้อ</th>
                                 <th>รายการ</th>
                                 <th>หมวดหมู่</th>
                                 <th class="text-right">ยอดเงิน</th>

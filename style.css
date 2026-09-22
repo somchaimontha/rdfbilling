@@ -524,7 +524,11 @@ button, input, select, textarea {
    ========================================================================== */
 .table-container {
     width: 100%;
+    max-width: 100%;
     overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-gutter: stable;
+    -webkit-overflow-scrolling: touch;
     border: 1px solid var(--border-color);
     border-radius: 16px;
     background-color: var(--bg-sidebar);
@@ -571,7 +575,7 @@ button, input, select, textarea {
 
 /* Bills have many fields. Present each saved record as a labelled card before
    the table ever needs a horizontal scrollbar (including normal laptops). */
-@media (max-width: 1700px) {
+@media screen and (max-width: 900px) {
     .table-container.responsive-record-container {
         overflow: visible;
         border: 0;
@@ -597,7 +601,7 @@ button, input, select, textarea {
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 0;
         margin-bottom: 14px;
-        overflow: hidden;
+        overflow: visible;
         border: 1px solid var(--border-color);
         border-radius: 12px;
         background: var(--bg-sidebar);
@@ -612,6 +616,7 @@ button, input, select, textarea {
         padding: 10px 12px;
         border-bottom: 1px solid var(--border-color);
         text-align: left;
+        overflow-wrap: anywhere;
     }
 
     .responsive-record-table tbody td::before {
@@ -648,7 +653,7 @@ button, input, select, textarea {
     }
 }
 
-@media (max-width: 700px) {
+@media screen and (max-width: 700px) {
     .responsive-record-table tbody tr {
         grid-template-columns: 1fr;
     }
@@ -966,6 +971,47 @@ button, input, select, textarea {
 
 .modal-body {
     padding: 24px;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.form-grid {
+    display: grid;
+    gap: 16px;
+    margin-bottom: 0;
+}
+
+.form-grid-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.form-grid-food-main {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px;
+    margin-bottom: 14px;
+}
+
+.form-grid-food-detail {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
+    gap: 14px;
+    margin-bottom: 14px;
+}
+
+.form-help {
+    display: block;
+    margin-top: 5px;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+@media screen and (max-width: 700px) {
+    .form-grid-2,
+    .form-grid-food-main,
+    .form-grid-food-detail {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 10px;
+    }
 }
 
 .modal-footer {
@@ -1255,6 +1301,10 @@ table.table tbody tr:hover {
 
 /* Print & Report Layout */
 @media print {
+    @page {
+        size: A4 landscape;
+        margin: 10mm;
+    }
     .sidebar, .header-actions, .summary-filter-bar, .action-buttons {
         display: none !important;
     }
@@ -1267,6 +1317,19 @@ table.table tbody tr:hover {
     }
     .table-container {
         border: none;
+        overflow: visible !important;
+    }
+    .data-table,
+    #full-bills-table,
+    #attached-bills-table {
+        width: 100% !important;
+        min-width: 0 !important;
+        font-size: 9pt;
+    }
+    .data-table th,
+    .data-table td {
+        padding: 5px 6px;
+        overflow-wrap: anywhere;
     }
 }
 

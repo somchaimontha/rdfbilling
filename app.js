@@ -47,6 +47,93 @@ async function apiCall(action, data = null, filters = null, pagination = null) {
     }
 }
 
+// API list helpers ---------------------------------------------------------
+// รายการธุรกรรมอาจเกิน 1 หน้าได้ จึงต้องใช้ helper กลางที่อ่านครบทุกหน้า
+// พร้อมจำกัดจำนวน request พร้อมกัน เพื่อไม่ให้ Apps Script ถูกโหลดหนักเกินไป.
+const API_LIST_PAGE_SIZE = 200;
+const API_LIST_CONCURRENCY = 3;
+const ATTACHMENT_LOAD_CONCURRENCY = 3;
+const REPORT_EMBEDDED_IMAGE_MAX_WIDTH = 1280;
+const REPORT_EMBEDDED_IMAGE_MAX_HEIGHT = 1680;
+const REPORT_EMBEDDED_IMAGE_QUALITY = 0.82;
+
+async function mapWithConcurrency(items, limit, worker) {
+    const queue = Array.isArray(items) ? items : [];
+    if (queue.length === 0) return [];
+
+    const results = new Array(queue.length);
+    const workerCount = Math.min(Math.max(1, Number(limit) || 1), queue.length);
+    let nextIndex = 0;
+
+    async function runWorker() {
+        while (nextIndex < queue.length) {
+            const index = nextIndex++;
+            results[index] = await worker(queue[index], index);
+        }
+    }
+
+    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+    return results;
+}
+
+async function fetchAllPagedRecords(fetchPage, getRecords, options = {}) {
+    const pageSize = options.pageSize || API_LIST_PAGE_SIZE;
+    const firstResponse = await fetchPage(1);
+    const firstRecords = getRecords(firstResponse) || [];
+    const pageInfo = firstResponse && firstResponse.pagination;
+
+    // Compatibility with a backend version before pagination is deployed.
+    // Food used to return all rows in one response, while expenses were already
+    // paged without exposing their total in data.
+    if (!pageInfo || !Number.isFinite(Number(pageInfo.total))) {
+        if (options.legacyUnpaged) return firstRecords;
+
+        const all = [...firstRecords];
+        for (let page = 2; page <= 50 && firstRecords.length === pageSize; page++) {
+            const response = await fetchPage(page);
+            const batch = getRecords(response) || [];
+            all.push(...batch);
+            if (batch.length < pageSize) break;
+        }
+        return all;
+    }
+
+    const total = Number(pageInfo.total) || 0;
+    const limit = Number(pageInfo.limit) || pageSize;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    if (totalPages <= 1) return firstRecords;
+
+    const remainingPages = Array.from({ length: totalPages - 1 }, (_, index) => index + 2);
+    const remainingResponses = await mapWithConcurrency(
+        remainingPages,
+        options.concurrency || API_LIST_CONCURRENCY,
+        page => fetchPage(page)
+    );
+    return firstRecords.concat(...remainingResponses.map(response => getRecords(response) || []));
+}
+
+async function fetchAllExpensesForMonth(month) {
+    return fetchAllPagedRecords(
+        page => apiCall('getExpenses', null, { month }, { page, limit: API_LIST_PAGE_SIZE }),
+        response => response.expenses || []
+    );
+}
+
+async function fetchAllExpensesForYear(year) {
+    return fetchAllPagedRecords(
+        page => apiCall('getExpenses', null, { year: String(year) }, { page, limit: API_LIST_PAGE_SIZE }),
+        response => response.expenses || []
+    );
+}
+
+async function fetchAllFoodExpensesForMonth(month) {
+    return fetchAllPagedRecords(
+        page => apiCall('getFoodExpenses', null, { month }, { page, limit: API_LIST_PAGE_SIZE }),
+        response => response.foodExpenses || [],
+        { legacyUnpaged: true }
+    );
+}
+
 // SHA-256 Hashing helper
 async function sha256(message) {
     const msgBuffer = new TextEncoder().encode(message);
@@ -346,6 +433,9 @@ function getDefaultState() {
         // Utility bills (electric, water, etc.)
         attachments: [],
 
+        // Monthly food expense records
+        foodExpenses: [],
+
         // ---- UI State ----
         theme: "light",
         activeTab: "dashboard",
@@ -364,6 +454,7 @@ function getDefaultState() {
         columns: [
             { id: "documentNo", label: "เลขบิล", visible: true, custom: false },
             { id: "expenseDate", label: "วันที่บิล", visible: true, custom: false },
+            { id: "postingMonth", label: "รอบบันทึก", visible: true, custom: false },
             { id: "projectId", label: "โครงการ", visible: true, custom: false },
             { id: "categoryId", label: "หมวดหมู่", visible: true, custom: false },
             { id: "fundSourceId", label: "แหล่งเงิน", visible: true, custom: false },
@@ -687,60 +778,65 @@ async function handleLogout() {
     }
 }
 
+let appLoadGeneration = 0;
+
 // โหลดฐานข้อมูลหลักแบบ real-time จาก Google Sheets
 async function initAppWithAPI() {
+    const loadGeneration = ++appLoadGeneration;
+    const selectedMonth = state.selectedMonth;
+    const selectedYear = state.selectedYear;
+    const monthFilter = `${selectedYear - 543}-${String(selectedMonth).padStart(2, '0')}`;
+
     try {
         showLoading(true);
-        
-        // 1. ดึงข้อมูล Master Data
-        // getSystemConfig เป็น admin-only — role อื่นเรียกแล้วจะโดน FORBIDDEN เสมอ ต้องดักไว้เอง
-        // ไม่ให้ล้มทั้งฟังก์ชัน (ไม่งั้น manager/staff/viewer จะโหลดข้อมูลอะไรไม่ได้เลยทั้งแอป)
-        try {
-            const runtimeConfig = await apiCall('getRuntimeConfig');
-            state.maxUploadSizeMb = runtimeConfig.maxUploadSizeMb ? parseFloat(runtimeConfig.maxUploadSizeMb) : 2;
-            state.requireAttachment = isConfigEnabled(runtimeConfig.requireAttachment);
-        } catch (e) {
-            state.maxUploadSizeMb = 2;
-            state.requireAttachment = false;
-        }
-          const master = await apiCall('getMasterData');
+
+        // ทุก request ชุดนี้เป็นอิสระต่อกัน จึงทำพร้อมกัน. การดึงรายการ
+        // จะจำกัดที่เดือนที่กำลังดูแทนการส่งข้อมูลย้อนหลังทั้งหมดมาที่เบราว์เซอร์.
+        const [runtimeConfig, master, allExpenses, claimsRes, fundReceiptsRes, foodExpenses] = await Promise.all([
+            apiCall('getRuntimeConfig').catch(() => null),
+            apiCall('getMasterData'),
+            fetchAllExpensesForMonth(monthFilter),
+            apiCall('getClaims', null, { month: monthFilter }),
+            apiCall('getFundReceipts', null, { year: String(selectedYear - 543) }),
+            fetchAllFoodExpensesForMonth(monthFilter),
+        ]);
+
+        // ผู้ใช้อาจเปลี่ยนเดือนเร็ว ๆ ระหว่าง request. ห้ามให้ผลของเดือนเก่า
+        // เขียนทับข้อมูลของเดือนล่าสุด.
+        if (loadGeneration !== appLoadGeneration) return;
+
+        state.maxUploadSizeMb = runtimeConfig && runtimeConfig.maxUploadSizeMb
+            ? parseFloat(runtimeConfig.maxUploadSizeMb)
+            : 2;
+        state.requireAttachment = runtimeConfig
+            ? isConfigEnabled(runtimeConfig.requireAttachment)
+            : false;
         state.projects = (master.projects || []).map(p => ({ ...p, name: p.projectName || p.name }));
         state.categories = (master.categories || []).map(c => ({ ...c, name: c.categoryName || c.name }));
         state.vendors = (master.vendors || []).map(v => ({ ...v, name: v.vendorName || v.name }));
         state.fundSources = (master.fundSources || []).map(f => ({ ...f, name: f.name || f.fundSourceName }));
         state.organizations = (master.organizations || []).map(o => ({ ...o, name: o.nameTh || o.name }));
-        
-        // 2. ดึงค่าใช้จ่าย (Expenses) ของเดือนที่เลือก
-        const gYear = state.selectedYear - 543;
-        const mStr = String(state.selectedMonth).padStart(2, '0');
-        const monthFilter = `${gYear}-${mStr}`;
-        
-        const expensesRes = await apiCall('getExpenses', null, { month: monthFilter });
-        const allExpenses = expensesRes.expenses || [];
-        
+
         // แยกบิลปกติ (EXP) และบิลสาธารณูปโภค (ATT) เพื่อแสดงผลในหน้าเว็บอย่างถูกต้อง
         state.expenses = allExpenses.filter(e => e.id && e.id.startsWith('EXP'));
         state.attachments = allExpenses.filter(e => e.id && e.id.startsWith('ATT'));
-        
-        // 3. ดึงกลุ่มชุดเคลมทั้งหมด
-        const claimsRes = await apiCall('getClaims');
         state.claims = claimsRes.claims || [];
-
-        // 4. ดึงเอกสารรับเงินทุนประจำเดือนทั้งหมด (โหลดทั้งหมดไว้ล่วงหน้าเหมือน claims เพราะหน้าสรุปต้องเห็นทุกเดือนพร้อมกัน)
-        const fundReceiptsRes = await apiCall('getFundReceipts');
         state.fundReceipts = fundReceiptsRes.fundReceipts || [];
+        state.foodExpenses = foodExpenses;
 
-        // 5. ยอดยกไปจากเดือนก่อนหน้า + สถานะเบิกจ่ายรายเดือน (คำนวณที่ backend เสมอ)
-        await refreshCarryOverAmount();
+        // ยอดยกไปจากเดือนก่อนหน้า + สถานะเบิกจ่ายรายเดือน (คำนวณที่ backend เสมอ)
+        await refreshCarryOverAmount(selectedMonth, selectedYear);
+        if (loadGeneration !== appLoadGeneration) return;
 
         // โหลดข้อมูลลายเซ็นจาก LocalStorage ท้องถิ่น (ตาม Phase 2 เดิม)
         loadAttachments();
-
         renderAll();
     } catch (err) {
-        appAlert('ไม่สามารถโหลดข้อมูลจาก Google Sheets ได้: ' + err.message);
+        if (loadGeneration === appLoadGeneration) {
+            appAlert('ไม่สามารถโหลดข้อมูลจาก Google Sheets ได้: ' + err.message);
+        }
     } finally {
-        showLoading(false);
+        if (loadGeneration === appLoadGeneration) showLoading(false);
     }
 }
 
@@ -748,16 +844,7 @@ async function initAppWithAPI() {
 // used immediately after saving so a failure in an unrelated dashboard or
 // claim request cannot hide a record that the API already saved.
 async function refreshExpenseRecordsForSelectedMonth() {
-    const gYear = state.selectedYear - 543;
-    const mStr = String(state.selectedMonth).padStart(2, '0');
-    const monthFilter = `${gYear}-${mStr}`;
-    const expensesRes = await apiCall(
-        'getExpenses',
-        null,
-        { month: monthFilter },
-        { page: 1, limit: 500 }
-    );
-    const allExpenses = expensesRes.expenses || [];
+    const allExpenses = await fetchAllExpensesForMonth(getSelectedPostingMonth());
     state.expenses = allExpenses.filter(expense => expense.id && expense.id.startsWith('EXP'));
     state.attachments = allExpenses.filter(expense => expense.id && expense.id.startsWith('ATT'));
 }
@@ -1157,21 +1244,29 @@ function syncNavigationActiveState(tabName) {
 
 // ดึงยอดยกไปจากเดือนก่อนหน้า + สถานะเบิกจ่ายรายเดือนของปีนี้จาก backend เสมอ
 // (คำนวณฝั่ง client ไม่ได้ เพราะ state.expenses มีแค่ข้อมูลเดือนที่เลือกอยู่เดือนเดียว)
-async function refreshCarryOverAmount() {
+async function refreshCarryOverAmount(targetMonth = state.selectedMonth, targetYear = state.selectedYear) {
     try {
-        const res = await apiCall('getCarryOverAmount', { beforeMonth: state.selectedMonth, beforeYear: state.selectedYear });
-        state.carryOverAmount = res.carryOverAmount || 0;
+        const res = await apiCall('getCarryOverAmount', { beforeMonth: targetMonth, beforeYear: targetYear });
+        if (targetMonth === state.selectedMonth && targetYear === state.selectedYear) {
+            state.carryOverAmount = res.carryOverAmount || 0;
+        }
     } catch (err) {
-        state.carryOverAmount = 0;
+        if (targetMonth === state.selectedMonth && targetYear === state.selectedYear) {
+            state.carryOverAmount = 0;
+        }
     }
     try {
-        const ceYear = state.selectedYear - 543;
+        const ceYear = targetYear - 543;
         const res2 = await apiCall('getMonthStatuses', { year: ceYear });
-        state.monthStatuses = res2.statuses || {};
+        if (targetMonth === state.selectedMonth && targetYear === state.selectedYear) {
+            state.monthStatuses = res2.statuses || {};
+        }
     } catch (err) {
         // ดึงไม่สำเร็จ — เก็บค่าที่มีอยู่เดิมไว้แทนการล้างทิ้ง
     }
-    updateMonthStatusCheckboxUI();
+    if (targetMonth === state.selectedMonth && targetYear === state.selectedYear) {
+        updateMonthStatusCheckboxUI();
+    }
 }
 window.refreshCarryOverAmount = refreshCarryOverAmount;
 
@@ -1192,18 +1287,8 @@ function setupSummaryYearDropdown() {
     yearSelect.value = state.selectedYear;
 }
 
-async function fetchAllExpensesForSummary() {
-    let all = [];
-    let page = 1;
-    const limit = 200;
-    while (true) {
-        const res = await apiCall('getExpenses', null, {}, { page, limit });
-        const batch = res.expenses || [];
-        all = all.concat(batch);
-        if (batch.length < limit) break;
-        page++;
-    }
-    return all;
+async function fetchAllExpensesForSummary(year) {
+    return fetchAllExpensesForYear(year);
 }
 
 async function renderSummaryView() {
@@ -1240,7 +1325,7 @@ async function renderSummaryView() {
     let allExpenses;
     let monthStatuses = {};
     try {
-        allExpenses = await fetchAllExpensesForSummary();
+        allExpenses = await fetchAllExpensesForSummary(ceYear);
     } catch (err) {
         appAlert('ไม่สามารถโหลดข้อมูลรายงานสรุปได้: ' + err.message, 'error');
         monthTbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--danger);">โหลดข้อมูลไม่สำเร็จ</td></tr>';
@@ -1255,7 +1340,7 @@ async function renderSummaryView() {
     }
 
     const yearExpenses = allExpenses.filter(e =>
-        e.expenseDate && e.expenseDate.startsWith(String(ceYear)) &&
+        getExpensePostingMonth(e).startsWith(String(ceYear)) &&
         (!orgFilter || e.organizationId === orgFilter));
 
     const thMonths = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
@@ -1267,7 +1352,7 @@ async function renderSummaryView() {
         const amount = parseFloat(e.amount) || 0;
         yearTotal += amount;
 
-        const monthIdx = new Date(e.expenseDate).getMonth();
+        const monthIdx = Number(getExpensePostingMonth(e).slice(5, 7)) - 1;
         if (monthIdx >= 0 && monthIdx < 12) {
             byMonth[monthIdx].count++;
             byMonth[monthIdx].amount += amount;
@@ -1346,6 +1431,24 @@ function selectedMonthKey() {
 function getFundReceiptByMonth(monthKey) {
     return (state.fundReceipts || []).find(r => r.month === monthKey);
 }
+
+async function loadFundReceiptsForYear(yearBE) {
+    const ceYear = Number(yearBE) - 543;
+    const res = await apiCall('getFundReceipts', null, { year: String(ceYear) });
+    state.fundReceipts = res.fundReceipts || [];
+    return state.fundReceipts;
+}
+
+window.onFundReceiptYearChange = async function() {
+    const yearSelect = document.getElementById('fund-receipt-year-select');
+    const yearBE = Number(yearSelect && yearSelect.value) || state.selectedYear;
+    try {
+        await loadFundReceiptsForYear(yearBE);
+        renderFundReceiptsOverview();
+    } catch (err) {
+        appAlert('ไม่สามารถโหลดเอกสารรับเงินทุนของปีที่เลือกได้: ' + err.message, 'error');
+    }
+};
 
 function updateFundReceiptWidget() {
     const badge = document.getElementById('fund-receipt-widget-month-badge');
@@ -1509,8 +1612,8 @@ async function saveFundReceipt() {
         appAlert('บันทึกเอกสารรับเงินทุนสำเร็จ!', 'success');
         closeFundReceiptModal();
 
-        const res = await apiCall('getFundReceipts');
-        state.fundReceipts = res.fundReceipts || [];
+        const overviewYear = Number((document.getElementById('fund-receipt-year-select') || {}).value) || state.selectedYear;
+        await loadFundReceiptsForYear(overviewYear);
         updateFundReceiptWidget();
         if (state.activeTab === 'fund-receipts') renderFundReceiptsOverview();
     } catch (err) {
@@ -1528,8 +1631,8 @@ async function deleteFundReceipt(id) {
         await apiCall('deleteFundReceipt', { id });
         appAlert('ลบเอกสารสำเร็จ', 'success');
 
-        const res = await apiCall('getFundReceipts');
-        state.fundReceipts = res.fundReceipts || [];
+        const overviewYear = Number((document.getElementById('fund-receipt-year-select') || {}).value) || state.selectedYear;
+        await loadFundReceiptsForYear(overviewYear);
         updateFundReceiptWidget();
         renderFundReceiptsOverview();
     } catch (err) {
@@ -1655,10 +1758,8 @@ function switchTab(tabName) {
     if (tabName === 'spreadsheet-view') renderSpreadsheet();
     if (tabName === 'claims-view') renderClaims();
     if (tabName === 'food-overview') {
-        const d = new Date();
-        const mStr = String(d.getMonth() + 1).padStart(2, '0');
         const monthInput = document.getElementById('food-overview-month');
-        if (monthInput && !monthInput.value) monthInput.value = `${d.getFullYear()}-${mStr}`;
+        if (monthInput && !monthInput.value) monthInput.value = getSelectedPostingMonth();
         loadFoodOverview();
     }
     if (tabName === 'user-management') {
@@ -1673,7 +1774,16 @@ function switchTab(tabName) {
         switchSettingsTab('master');
     }
     if (tabName === 'summary-view') renderSummaryView();
-    if (tabName === 'fund-receipts') renderFundReceiptsOverview();
+    if (tabName === 'fund-receipts') {
+        renderFundReceiptsOverview();
+        const yearSelect = document.getElementById('fund-receipt-year-select');
+        const yearBE = Number(yearSelect && yearSelect.value) || state.selectedYear;
+        loadFundReceiptsForYear(yearBE)
+            .then(() => {
+                if (state.activeTab === 'fund-receipts') renderFundReceiptsOverview();
+            })
+            .catch(err => console.error('โหลดเอกสารรับเงินทุนไม่สำเร็จ:', err));
+    }
 
     initializeLucide();
 }
@@ -1702,6 +1812,37 @@ function isDateInSelectedMonth(dateStr) {
     const m = date.getMonth() + 1;
     const y = date.getFullYear() + 543;
     return m === state.selectedMonth && y === state.selectedYear;
+}
+
+function getExpensePostingMonth(expense) {
+    if (!expense) return '';
+    const explicit = String(expense.postingMonth || '').trim();
+    if (/^\d{4}-\d{2}$/.test(explicit)) return explicit;
+    const fallback = String(expense.expenseDate || '').slice(0, 7);
+    return /^\d{4}-\d{2}$/.test(fallback) ? fallback : '';
+}
+
+function getFoodPostingMonth(item) {
+    if (!item) return '';
+    const explicit = String(item.postingMonth || '').trim();
+    if (/^\d{4}-\d{2}$/.test(explicit)) return explicit;
+    if (item.year && item.month) return `${item.year}-${String(item.month).padStart(2, '0')}`;
+    const fallback = String(item.date || '').slice(0, 7);
+    return /^\d{4}-\d{2}$/.test(fallback) ? fallback : '';
+}
+
+function getSelectedPostingMonth() {
+    return `${state.selectedYear - 543}-${String(state.selectedMonth).padStart(2, '0')}`;
+}
+
+function isExpenseInSelectedMonth(expense) {
+    return getExpensePostingMonth(expense) === getSelectedPostingMonth();
+}
+
+function formatPostingMonth(monthKey) {
+    if (!/^\d{4}-\d{2}$/.test(String(monthKey || ''))) return '-';
+    const [year, month] = String(monthKey).split('-').map(Number);
+    return `${THAI_MONTH_NAMES[month - 1] || month} ${year + 543}`;
 }
 
 function getBudDateInfo(dateStr) {
@@ -1740,13 +1881,13 @@ function calculateTotals() {
     let activeNonClaimable = 0;
 
     state.expenses.forEach(exp => {
-        if (isDateInSelectedMonth(exp.expenseDate)) {
+        if (isExpenseInSelectedMonth(exp)) {
             if (exp.claimable) activeClaimable += exp.amount;
             else activeNonClaimable += exp.amount;
         }
     });
     state.attachments.forEach(a => {
-        if (isDateInSelectedMonth(a.expenseDate)) {
+        if (isExpenseInSelectedMonth(a)) {
             if (a.claimable) activeClaimable += a.amount;
             else activeNonClaimable += a.amount;
         }
@@ -1806,8 +1947,8 @@ function updateMetricsBar() {
     (document.getElementById('metric-total-non-claimable-thai') || {}).textContent = thaiBahtText(totals.totalNonClaimable);
 
     // KPI counts
-    const monthExpenses = state.expenses.filter(e => isDateInSelectedMonth(e.expenseDate));
-    const monthAttachments = state.attachments.filter(a => isDateInSelectedMonth(a.expenseDate));
+    const monthExpenses = state.expenses.filter(isExpenseInSelectedMonth);
+    const monthAttachments = state.attachments.filter(isExpenseInSelectedMonth);
     const kpiCount = document.getElementById('metric-bill-count');
     if (kpiCount) kpiCount.textContent = monthExpenses.length + monthAttachments.length + ' รายการ';
 }
@@ -1862,7 +2003,7 @@ function renderCharts() {
     });
 
     state.expenses.forEach(exp => {
-        if (!isDateInSelectedMonth(exp.expenseDate)) return;
+        if (!isExpenseInSelectedMonth(exp)) return;
         const key = projectMap[exp.projectId] ? exp.projectId : null;
         if (key) {
             if (exp.claimable) projectMap[key].claimable += exp.amount;
@@ -1870,7 +2011,7 @@ function renderCharts() {
         }
     });
     state.attachments.forEach(a => {
-        if (!isDateInSelectedMonth(a.expenseDate)) return;
+        if (!isExpenseInSelectedMonth(a)) return;
         const key = projectMap[a.projectId] ? a.projectId : null;
         if (key) {
             if (a.claimable) projectMap[key].claimable += a.amount;
@@ -1902,11 +2043,11 @@ function renderCharts() {
     state.fundSources.forEach(f => { fundMap[f.id] = { name: f.name, total: 0 }; });
 
     state.expenses.forEach(exp => {
-        if (!isDateInSelectedMonth(exp.expenseDate)) return;
+        if (!isExpenseInSelectedMonth(exp)) return;
         if (fundMap[exp.fundSourceId]) fundMap[exp.fundSourceId].total += exp.amount;
     });
     state.attachments.forEach(a => {
-        if (!isDateInSelectedMonth(a.expenseDate)) return;
+        if (!isExpenseInSelectedMonth(a)) return;
         if (fundMap[a.fundSourceId]) fundMap[a.fundSourceId].total += a.amount;
     });
 
@@ -1930,12 +2071,12 @@ function renderCharts() {
 
     const catMap = {};
     state.expenses.forEach(exp => {
-        if (!isDateInSelectedMonth(exp.expenseDate)) return;
+        if (!isExpenseInSelectedMonth(exp)) return;
         const catName = getCategoryName(exp.categoryId);
         catMap[catName] = (catMap[catName] || 0) + exp.amount;
     });
     state.attachments.forEach(a => {
-        if (!isDateInSelectedMonth(a.expenseDate)) return;
+        if (!isExpenseInSelectedMonth(a)) return;
         const catName = getCategoryName(a.categoryId);
         catMap[catName] = (catMap[catName] || 0) + a.amount;
     });
@@ -1967,7 +2108,7 @@ function renderCharts() {
     // 4. Recent Bills table in Dashboard
     const tbodyRecent = document.querySelector('#dashboard-recent-table tbody');
     tbodyRecent.innerHTML = '';
-    const monthExpenses = state.expenses.filter(e => isDateInSelectedMonth(e.expenseDate)).slice().reverse();
+    const monthExpenses = state.expenses.filter(isExpenseInSelectedMonth).slice().reverse();
 
     if (monthExpenses.length === 0) {
         tbodyRecent.innerHTML = `<tr><td colspan="9" class="empty-state">ไม่มีข้อมูลบิลในเดือนนี้</td></tr>`;
@@ -2021,7 +2162,7 @@ function renderTables() {
     tbodyBills.innerHTML = '';
 
     const filteredExp = state.expenses.filter(exp => {
-        if (!isDateInSelectedMonth(exp.expenseDate)) return false;
+        if (!isExpenseInSelectedMonth(exp)) return false;
         const matchSearch = [exp.documentNo, exp.description, getVendorName(exp.vendorId), getCategoryName(exp.categoryId), exp.note]
             .join(' ').toLowerCase().includes(searchVal);
         const matchProj = projFilter === 'all' || exp.projectId === projFilter;
@@ -2043,7 +2184,7 @@ function renderTables() {
     tbodyAttach.innerHTML = '';
 
     const filteredAttach = state.attachments.filter(a => {
-        if (!isDateInSelectedMonth(a.expenseDate)) return false;
+        if (!isExpenseInSelectedMonth(a)) return false;
         const matchSearch = [a.description, getVendorName(a.vendorId), getCategoryName(a.categoryId), a.note]
             .join(' ').toLowerCase().includes(searchVal);
         const matchProj = projFilter === 'all' || a.projectId === projFilter;
@@ -2063,6 +2204,7 @@ function renderTables() {
     // Data entry is deliberately handled by the Popup buttons. Do not render
     // an unsaved inline row: it looked like a real record and carried a
     // misleading 0.00 price before anything had been saved.
+    renderFoodBillsTable();
     bindTableActionButtons();
     initializeLucide();
 }
@@ -2143,8 +2285,8 @@ function renderSpreadsheet() {
     });
     table.appendChild(headRow);
 
-    const monthlyExp = state.expenses.filter(e => isDateInSelectedMonth(e.expenseDate));
-    const monthlyAttach = state.attachments.filter(a => isDateInSelectedMonth(a.expenseDate));
+    const monthlyExp = state.expenses.filter(isExpenseInSelectedMonth);
+    const monthlyAttach = state.attachments.filter(isExpenseInSelectedMonth);
 
     let expSum = 0;
     monthlyExp.forEach(e => {
@@ -2920,6 +3062,7 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
         const exp = state.expenses[editIdx];
         (document.getElementById('bill-docno') || {}).value = exp.documentNo;
         (document.getElementById('bill-date') || {}).value = exp.expenseDate;
+        (document.getElementById('bill-posting-month') || {}).value = getExpensePostingMonth(exp);
         (document.getElementById('bill-project') || {}).value = exp.projectId;
         setupExpenseMasterInput('category', exp.categoryId);
         setupExpenseMasterInput('vendor', exp.vendorId);
@@ -2930,11 +3073,11 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
         (document.getElementById('bill-claim-type') || {}).value = exp.claimable ? 'claim' : 'no-claim';
         (document.getElementById('bill-note') || {}).value = exp.note || '';
     } else {
-        const nextNum = state.expenses.length + 1;
-        (document.getElementById('bill-docno') || {}).value = 'X' + String(nextNum).padStart(2, '0');
+        (document.getElementById('bill-docno') || {}).value = 'ระบบสร้างอัตโนมัติ';
         const gYear = state.selectedYear - 543;
         const mStr = String(state.selectedMonth).padStart(2, '0');
         (document.getElementById('bill-date') || {}).value = `${gYear}-${mStr}-01`;
+        (document.getElementById('bill-posting-month') || {}).value = `${gYear}-${mStr}`;
     }
 
     const expId = editIdx !== null && state.expenses[editIdx] ? state.expenses[editIdx].id : null;
@@ -2989,8 +3132,10 @@ async function handleExpenseSubmit(e) {
         }
 
         const expenseDate = document.getElementById('bill-date').value;
+        const postingMonth = document.getElementById('bill-posting-month').value;
         const description = document.getElementById('bill-desc').value.trim();
         if (!expenseDate) throw new Error('กรุณาระบุวันที่บิล');
+        if (!/^\d{4}-\d{2}$/.test(postingMonth)) throw new Error('กรุณาระบุรอบเดือนที่บันทึก');
         if (!projectId) throw new Error('กรุณาเลือกโครงการก่อนบันทึก');
         if (!description) throw new Error('กรุณาระบุรายละเอียดรายการ');
         if (unitPrice <= 0) throw new Error('ราคาต่อหน่วยต้องมากกว่า 0 บาท');
@@ -3001,6 +3146,7 @@ async function handleExpenseSubmit(e) {
 
         const expData = {
             expenseDate: expenseDate,
+            postingMonth: postingMonth,
             organizationId: orgId,
             projectId: projectId,
             categoryId: categoryId,
@@ -3256,6 +3402,7 @@ function openAttachmentModal(editIdx = null) {
     if (editIdx !== null) {
         const a = state.attachments[editIdx];
         (document.getElementById('attach-date') || {}).value = a.expenseDate;
+        (document.getElementById('attach-posting-month') || {}).value = getExpensePostingMonth(a);
         (document.getElementById('attach-project') || {}).value = a.projectId;
         setupExpenseMasterInput('category', a.categoryId, 'attach');
         setupExpenseMasterInput('fundSource', a.fundSourceId, 'attach');
@@ -3266,6 +3413,7 @@ function openAttachmentModal(editIdx = null) {
         const gYear = state.selectedYear - 543;
         const mStr = String(state.selectedMonth).padStart(2, '0');
         (document.getElementById('attach-date') || {}).value = `${gYear}-${mStr}-01`;
+        (document.getElementById('attach-posting-month') || {}).value = `${gYear}-${mStr}`;
     }
 
     const modalBody = modal.querySelector('.modal-body');
@@ -3286,14 +3434,15 @@ async function handleAttachmentSubmit(e) {
     const user = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
     const orgId = user.organizationId;
     const expenseDate = document.getElementById('attach-date').value;
+    const postingMonth = document.getElementById('attach-posting-month').value;
     const projectId = document.getElementById('attach-project').value;
     const description = document.getElementById('attach-desc').value.trim();
     if (!orgId) {
         appAlert('ไม่พบข้อมูลหน่วยงานของผู้ใช้ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่', 'error');
         return;
     }
-    if (!expenseDate || !projectId || !description || amount <= 0) {
-        appAlert('กรุณาระบุวันที่ โครงการ รายละเอียด และจำนวนเงินที่มากกว่า 0', 'error');
+    if (!expenseDate || !/^\d{4}-\d{2}$/.test(postingMonth) || !projectId || !description || amount <= 0) {
+        appAlert('กรุณาระบุวันที่ รอบเดือน โครงการ รายละเอียด และจำนวนเงินที่มากกว่า 0', 'error');
         return;
     }
 
@@ -3303,6 +3452,7 @@ async function handleAttachmentSubmit(e) {
         const fundSourceId = await resolveExpenseMasterSelection('fundSource', 'attach');
         const attachData = {
             expenseDate: expenseDate,
+            postingMonth: postingMonth,
             organizationId: orgId,
             projectId: projectId,
             categoryId: categoryId,
@@ -3796,6 +3946,9 @@ function renderExpenseRow(exp, idx, tbody) {
             case 'expenseDate':
                 td.textContent = formatThaiDate(exp.expenseDate);
                 break;
+            case 'postingMonth':
+                td.textContent = formatPostingMonth(getExpensePostingMonth(exp));
+                break;
             case 'projectId':
                 td.innerHTML = `<span class="badge-project">${getProjectName(exp.projectId)}</span>`;
                 break;
@@ -3899,6 +4052,9 @@ function renderAttachmentRow(a, idx, tbody) {
                 break;
             case 'expenseDate':
                 td.textContent = formatThaiDate(a.expenseDate);
+                break;
+            case 'postingMonth':
+                td.textContent = formatPostingMonth(getExpensePostingMonth(a));
                 break;
             case 'projectId':
                 td.innerHTML = `<span class="badge-project">${getProjectName(a.projectId)}</span>`;
@@ -4620,8 +4776,8 @@ function renderClaimSelectorTable() {
     const y = parseInt(document.getElementById('claim-year').value, 10);
     
     const claimableExpenses = state.expenses.filter(e => {
-        const info = getBudDateInfo(e.expenseDate);
-        return info && info.month === m && info.year === y && e.claimable && (!e.claimId || e.claimId === '') && e.status !== 'cancelled';
+        const postingMonth = getExpensePostingMonth(e);
+        return postingMonth === `${y - 543}-${String(m).padStart(2, '0')}` && e.claimable && (!e.claimId || e.claimId === '') && e.status !== 'cancelled';
     });
     
     const tbody = document.getElementById('claim-selector-tbody');
@@ -4914,7 +5070,10 @@ async function exportClaimPDF(claimId) {
         appAlert('ไม่พบรายการบิลของชุดนี้ในตัวกรองเดือน/ปีปัจจุบัน กรุณาเลือกเดือน/ปีของชุดส่งเบิกนี้ในตัวกรองหลักก่อน export', 'error');
         return;
     }
-    const claimAttachments = state.attachments.filter(a => claimExpenses.some(e => e.id === a.expenseId) || (a.expenseDate && getBudDateInfo(a.expenseDate).month === claimMonthNum && getBudDateInfo(a.expenseDate).year === claimYearBE && a.claimable));
+    const claimAttachments = state.attachments.filter(a =>
+        claimExpenses.some(e => e.id === a.expenseId) ||
+        (getExpensePostingMonth(a) === claim.claimMonth && a.claimable)
+    );
     const claimActiveTotal = claimExpenses.reduce((sum, e) => sum + e.amount, 0);
     const claimAttachTotal = claimAttachments.reduce((sum, a) => sum + a.amount, 0);
     const claimGrandTotal = claimActiveTotal + claimAttachTotal;
@@ -5361,6 +5520,73 @@ let currentExportState = {
     context: 'dashboard'
 };
 
+let exportReportData = {
+    month: '',
+    expenses: [],
+    attachments: [],
+    foodExpenses: [],
+    loading: null,
+};
+
+// Preview อาจถูกสร้างหลายรอบระหว่างผู้ใช้กำลังพิมพ์หัวข้อรายงาน.
+// QR เดิมต้องใช้ได้กับเลขเอกสาร/เดือน/ยอดชุดเดิม จึงเก็บ Promise ไว้ใน memory
+// เพื่อไม่ให้ preview ซ้ำ ๆ เขียน system_config หรือเรียก Apps Script เกินจำเป็น.
+const exportVerifyCodeCache = new Map();
+
+function getExportVerifyCacheKey(payload) {
+    return [
+        payload.docNumber || '',
+        payload.month || '',
+        payload.orgId || '',
+        Number(payload.itemCount) || 0,
+        Number(payload.totalAmount) || 0,
+    ].join('|');
+}
+
+async function getCachedExportVerifyCode(payload) {
+    const cacheKey = getExportVerifyCacheKey(payload);
+    if (!exportVerifyCodeCache.has(cacheKey)) {
+        const request = apiCall('getExportVerifyCode', payload).catch(err => {
+            exportVerifyCodeCache.delete(cacheKey);
+            throw err;
+        });
+        exportVerifyCodeCache.set(cacheKey, request);
+    }
+    return exportVerifyCodeCache.get(cacheKey);
+}
+
+async function fetchAllExpensesForReportMonth(month) {
+    return fetchAllExpensesForMonth(month);
+}
+
+async function fetchAllFoodExpensesForReportMonth(month) {
+    return fetchAllFoodExpensesForMonth(month);
+}
+
+async function ensureExportReportData(month, force = false) {
+    const reportMonth = /^\d{4}-\d{2}$/.test(String(month || '')) ? String(month) : getSelectedPostingMonth();
+    if (!force && exportReportData.month === reportMonth && !exportReportData.loading) return exportReportData;
+    if (!force && exportReportData.month === reportMonth && exportReportData.loading) return exportReportData.loading;
+
+    const request = Promise.all([
+        fetchAllExpensesForReportMonth(reportMonth),
+        fetchAllFoodExpensesForReportMonth(reportMonth),
+    ]).then(([expenses, foodExpenses]) => {
+        exportReportData.month = reportMonth;
+        exportReportData.expenses = expenses.filter(x => x.id && x.id.startsWith('EXP'));
+        exportReportData.attachments = expenses.filter(x => x.id && x.id.startsWith('ATT'));
+        exportReportData.foodExpenses = foodExpenses;
+        exportReportData.loading = null;
+        return exportReportData;
+    }).catch(err => {
+        exportReportData.loading = null;
+        throw err;
+    });
+    exportReportData.month = reportMonth;
+    exportReportData.loading = request;
+    return request;
+}
+
 // 1. Dynamic Field Generator
 function extractSchemaFromData(dataArray) {
     if (!dataArray || dataArray.length === 0) return [];
@@ -5529,9 +5755,11 @@ function buildDynamicExportDictionary(context) {
     return dictionary;
 }
 
-function openExportModal(context) {
+async function openExportModal(context) {
     currentExportState.context = context || 'dashboard';
     (document.getElementById('pdf-export-mode') || {}).value = currentExportState.context;
+    const reportMonthInput = document.getElementById('export-report-month');
+    if (reportMonthInput && !reportMonthInput.value) reportMonthInput.value = getSelectedPostingMonth();
 
     // Auto titles
     const titleInput = document.getElementById('pdf-report-title');
@@ -5562,8 +5790,17 @@ function openExportModal(context) {
     const modal = document.getElementById('modal-export-pdf');
     modal.style.display = 'flex';
     modal.classList.add('active');
+    syncExportReportTypeUI(false);
+    updateExportPreviewPaperSize(getExportPageOrientation());
 
     loadExportTemplatesList();
+    const reportMonth = (document.getElementById('export-report-month') || {}).value || getSelectedPostingMonth();
+    try {
+        await ensureExportReportData(reportMonth, true);
+        updateExportSectionBadges();
+    } catch (err) {
+        appAlert('โหลดข้อมูลสำหรับรายงานไม่สำเร็จ: ' + err.message, 'error');
+    }
     renderExportPreview();
 }
 
@@ -5573,6 +5810,18 @@ function closeExportModal() {
     modal.classList.remove('active');
 }
 
+window.onExportReportMonthChange = async function() {
+    autoFillExportDocNumber();
+    const reportMonth = (document.getElementById('export-report-month') || {}).value || getSelectedPostingMonth();
+    try {
+        await ensureExportReportData(reportMonth, true);
+        updateExportSectionBadges();
+        renderExportPreview();
+    } catch (err) {
+        appAlert('โหลดข้อมูลของเดือนที่เลือกไม่สำเร็จ: ' + err.message, 'error');
+    }
+};
+
 // ==========================================================================
 // Export data source — single source of truth shared by preview, PDF, Excel/CSV
 // and the per-section "ดาวน์โหลด" buttons. Reads from `state` (filtered by the
@@ -5581,7 +5830,7 @@ function closeExportModal() {
 // ==========================================================================
 function buildExportSectionData(section) {
     const reportMonth = (document.getElementById('export-report-month') || {}).value || '';
-    const inMonth = (dateStr) => !reportMonth || (dateStr && String(dateStr).startsWith(reportMonth));
+    const contextReady = exportReportData.month === reportMonth && !exportReportData.loading;
 
     // ตัวกรององค์กร — มีผลเฉพาะ admin (เห็นข้อมูลข้ามสถานศึกษาอยู่แล้ว), ผู้ใช้ทั่วไปไม่มี dropdown นี้อยู่แล้ว
     const orgFilterSel = document.getElementById('export-org-filter');
@@ -5589,13 +5838,16 @@ function buildExportSectionData(section) {
     const inOrg = (x) => !orgFilter || x.organizationId === orgFilter;
 
     if (section === 'bills' || section === 'attach') {
-        const source = section === 'bills' ? (state.expenses || []) : (state.attachments || []);
+        const source = contextReady
+            ? (section === 'bills' ? exportReportData.expenses : exportReportData.attachments)
+            : (section === 'bills' ? (state.expenses || []) : (state.attachments || []));
         const rows = source
-            .filter(x => inMonth(x.expenseDate) && inOrg(x))
+            .filter(x => (!reportMonth || getExpensePostingMonth(x) === reportMonth) && inOrg(x))
             .map(x => ({
                 id: x.id,
                 docNo: x.documentNo || '',
                 date: x.expenseDate || '',
+                postingMonth: getExpensePostingMonth(x),
                 project: getProjectName(x.projectId),
                 category: getCategoryName(x.categoryId),
                 vendor: getVendorName(x.vendorId),
@@ -5620,11 +5872,13 @@ function buildExportSectionData(section) {
     }
 
     if (section === 'food') {
-        return (state.foodExpenses || [])
-            .filter(x => inMonth(x.date) && inOrg(x))
+        const foodSource = contextReady ? exportReportData.foodExpenses : (state.foodExpenses || []);
+        return foodSource
+            .filter(x => (!reportMonth || getFoodPostingMonth(x) === reportMonth) && inOrg(x))
             .map(x => ({
                 id: x.id,
                 foodDate: x.date || '',
+                postingMonth: getFoodPostingMonth(x),
                 foodName: x.name || '',
                 foodCategory: x.category || '',
                 foodAmount: parseFloat(x.totalAmount) || 0
@@ -5643,7 +5897,7 @@ async function ensureAttachmentsLoaded(rows, section) {
     if (missing.length === 0) return;
 
     if (section === 'food') {
-        await Promise.all(missing.map(async r => {
+        await mapWithConcurrency(missing, ATTACHMENT_LOAD_CONCURRENCY, async r => {
             try {
                 const res = await apiCall('getFoodExpenseById', { id: r.id });
                 const files = [];
@@ -5652,16 +5906,16 @@ async function ensureAttachmentsLoaded(rows, section) {
             } catch (err) {
                 attachmentStore[r.id] = [];
             }
-        }));
+        });
     } else {
-        await Promise.all(missing.map(async r => {
+        await mapWithConcurrency(missing, ATTACHMENT_LOAD_CONCURRENCY, async r => {
             try {
                 const res = await apiCall('getAttachments', { expenseId: r.id });
                 attachmentStore[r.id] = res.attachments || [];
             } catch (err) {
                 attachmentStore[r.id] = [];
             }
-        }));
+        });
     }
 }
 
@@ -5703,17 +5957,76 @@ function getAttachmentUrl(file) {
 }
 
 async function getAttachmentImageDataUrl(file) {
+    if (file && file._cachedImageDataUrl) return file._cachedImageDataUrl;
     if (file.dataUrl && String(file.dataUrl).startsWith('data:image/')) return file.dataUrl;
     const attachmentId = file.id || file.attachmentId;
     if (attachmentId) {
         try {
             const res = await apiCall('getAttachmentDataUrl', { attachmentId });
-            if (res.dataUrl && String(res.dataUrl).startsWith('data:image/')) return res.dataUrl;
+            if (res.dataUrl && String(res.dataUrl).startsWith('data:image/')) {
+                file._cachedImageDataUrl = res.dataUrl;
+                return file._cachedImageDataUrl;
+            }
         } catch (err) {
             // Fallback below covers old deployments that do not have this endpoint yet.
         }
     }
-    return await fetchImageAsDataUrl(getAttachmentUrl(file));
+    const dataUrl = await fetchImageAsDataUrl(getAttachmentUrl(file));
+    if (dataUrl) file._cachedImageDataUrl = dataUrl;
+    return dataUrl;
+}
+
+// รูปใบเสร็จจากโทรศัพท์มักมีความละเอียดสูงกว่าที่ A4 ต้องใช้มาก. ย่อเฉพาะ
+// สำเนาที่ฝังใน PDF (ไม่แก้ไฟล์จริงใน Drive) เพื่อลดหน่วยความจำและเวลา preview.
+async function optimizeImageDataUrlForPdf(file, dataUrl) {
+    if (!dataUrl) return null;
+    if (file && file._cachedReportImageDataUrl) return file._cachedReportImageDataUrl;
+    if (typeof Image === 'undefined' || typeof document === 'undefined') return dataUrl;
+
+    return new Promise(resolve => {
+        const image = new Image();
+        image.onload = () => {
+            const naturalWidth = image.naturalWidth || image.width || 0;
+            const naturalHeight = image.naturalHeight || image.height || 0;
+            if (!naturalWidth || !naturalHeight) {
+                resolve(dataUrl);
+                return;
+            }
+
+            const scale = Math.min(
+                1,
+                REPORT_EMBEDDED_IMAGE_MAX_WIDTH / naturalWidth,
+                REPORT_EMBEDDED_IMAGE_MAX_HEIGHT / naturalHeight
+            );
+            const shouldReencode = scale < 1 || dataUrl.length > 1600000;
+            if (!shouldReencode) {
+                if (file) file._cachedReportImageDataUrl = dataUrl;
+                resolve(dataUrl);
+                return;
+            }
+
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.max(1, Math.round(naturalWidth * scale));
+                canvas.height = Math.max(1, Math.round(naturalHeight * scale));
+                const context = canvas.getContext('2d');
+                if (!context) {
+                    resolve(dataUrl);
+                    return;
+                }
+                context.fillStyle = '#ffffff';
+                context.fillRect(0, 0, canvas.width, canvas.height);
+                context.drawImage(image, 0, 0, canvas.width, canvas.height);
+                const optimized = canvas.toDataURL('image/jpeg', REPORT_EMBEDDED_IMAGE_QUALITY);
+                if (file) file._cachedReportImageDataUrl = optimized;
+                resolve(optimized);
+            } catch (err) {
+                resolve(dataUrl);
+            }
+        };
+        image.onerror = () => resolve(dataUrl);
+        image.src = dataUrl;
+    });
 }
 
 // Which .export-col-chk / .export-food-col values are currently checked
@@ -5757,6 +6070,100 @@ function autoFillExportDocNumber() {
     el.value = computeExportDocNumber();
 }
 
+// ชนิดรายงานต้องเปลี่ยนเนื้อหา PDF จริง ไม่ใช่เพียงชื่อใน dropdown.
+// หลักฐานจะถูกอ่านจาก Drive เฉพาะ report type ที่ต้องใช้เท่านั้น เพื่อลดเวลา
+// preview และหลีกเลี่ยงการเรียก Apps Script โดยไม่จำเป็น.
+const EXPORT_REPORT_TYPE_RULES = Object.freeze({
+    summary: { detailed: false, needsEvidence: false, attachmentOnly: false, audit: false },
+    detailed: { detailed: true, needsEvidence: false, attachmentOnly: false, audit: false },
+    with_attachments: { detailed: true, needsEvidence: true, attachmentOnly: false, audit: false },
+    only_attachments: { detailed: false, needsEvidence: true, attachmentOnly: true, audit: false },
+    audit: { detailed: true, needsEvidence: true, attachmentOnly: false, audit: true },
+});
+
+function getExportReportType() {
+    const value = (document.getElementById('export-report-type') || {}).value || 'summary';
+    return Object.prototype.hasOwnProperty.call(EXPORT_REPORT_TYPE_RULES, value) ? value : 'summary';
+}
+
+function getExportPageOrientation() {
+    const value = (document.getElementById('export-page-orientation') || {}).value || 'portrait';
+    return value === 'landscape' ? 'landscape' : 'portrait';
+}
+
+function getExportReportOptions() {
+    const type = getExportReportType();
+    const rules = EXPORT_REPORT_TYPE_RULES[type];
+    const imageToggle = document.querySelector('.att-chk[value="show_img"]');
+    const fileToggle = document.querySelector('.att-chk[value="show_pdf"]');
+    const qrToggle = document.querySelector('.att-chk[value="show_qr"]');
+    return {
+        type,
+        detailed: rules.detailed,
+        attachmentOnly: rules.attachmentOnly,
+        audit: rules.audit,
+        needsEvidence: rules.needsEvidence,
+        showImages: rules.needsEvidence && !!(imageToggle && imageToggle.checked),
+        showFileLinks: rules.needsEvidence && !!(fileToggle && fileToggle.checked),
+        showQr: !!(qrToggle && qrToggle.checked),
+        pageOrientation: getExportPageOrientation(),
+    };
+}
+
+function updateExportPreviewPaperSize(orientation) {
+    const frame = document.getElementById('export-preview-frame');
+    if (!frame) return;
+    const isLandscape = orientation === 'landscape';
+    frame.style.width = isLandscape ? '297mm' : '210mm';
+    frame.style.minHeight = isLandscape ? '210mm' : '297mm';
+    frame.dataset.orientation = isLandscape ? 'landscape' : 'portrait';
+}
+
+function syncExportReportTypeUI(applyPreset) {
+    const type = getExportReportType();
+    const rules = EXPORT_REPORT_TYPE_RULES[type];
+    const imageToggle = document.querySelector('.att-chk[value="show_img"]');
+    const fileToggle = document.querySelector('.att-chk[value="show_pdf"]');
+    const hint = document.getElementById('export-evidence-hint');
+
+    [imageToggle, fileToggle].forEach(toggle => {
+        if (!toggle) return;
+        toggle.disabled = !rules.needsEvidence;
+        if (!rules.needsEvidence) toggle.checked = false;
+        const label = toggle.closest('label');
+        if (label) {
+            label.style.opacity = rules.needsEvidence ? '' : '0.55';
+            label.style.cursor = rules.needsEvidence ? 'pointer' : 'not-allowed';
+        }
+    });
+
+    if (applyPreset) {
+        if (imageToggle) imageToggle.checked = rules.needsEvidence;
+        if (fileToggle) fileToggle.checked = rules.needsEvidence;
+    }
+
+    if (hint) {
+        const messages = {
+            summary: 'รายงานสรุปจะไม่โหลดไฟล์หลักฐาน เพื่อสร้าง PDF ได้รวดเร็วขึ้น',
+            detailed: 'รายงานละเอียดจะแสดงข้อมูลทุกช่องที่เกี่ยวข้อง โดยไม่โหลดไฟล์หลักฐาน',
+            with_attachments: 'ฝังรูปหลักฐานและแสดงลิงก์ PDF/ไฟล์อ้างอิงที่เลือกไว้',
+            only_attachments: 'แสดงเฉพาะหลักฐานที่ผูกกับแต่ละรายการ เหมาะสำหรับแนบเป็นภาคผนวก',
+            audit: 'แสดงรายละเอียด, หลักฐาน และสรุปสำหรับตรวจสอบบัญชี',
+        };
+        hint.textContent = messages[type];
+    }
+}
+
+window.onExportReportTypeChange = function() {
+    syncExportReportTypeUI(true);
+    renderExportPreview();
+};
+
+window.onExportPageOrientationChange = function() {
+    updateExportPreviewPaperSize(getExportPageOrientation());
+    renderExportPreview();
+};
+
 // Footer "เลือกทั้งหมด" / "ยกเลิกทั้งหมด" — toggles every column checkbox in the modal
 function toggleAllExportCheckboxes(check) {
     document.querySelectorAll('.export-col-chk, .export-food-col, .att-chk').forEach(el => { el.checked = check; });
@@ -5776,6 +6183,7 @@ function saveExportTemplate() {
         docNumber: (document.getElementById('export-doc-number') || {}).value || '',
         headerDetail: (document.getElementById('export-header-detail') || {}).value || '',
         type: (document.getElementById('export-report-type') || {}).value || 'summary',
+        pageOrientation: getExportPageOrientation(),
         sortBy: (document.getElementById('export-sort-by') || {}).value || 'date',
         sortOrder: (document.getElementById('export-sort-order') || {}).value || 'asc',
         inclBills: (document.getElementById('export-chk-bills') || {}).checked,
@@ -5817,6 +6225,7 @@ function loadExportTemplate(name) {
     (document.getElementById('export-doc-number') || {}).value = t.docNumber || '';
     (document.getElementById('export-header-detail') || {}).value = t.headerDetail || '';
     if(document.getElementById('export-report-type')) (document.getElementById('export-report-type') || {}).value = t.type || 'summary';
+    if(document.getElementById('export-page-orientation')) (document.getElementById('export-page-orientation') || {}).value = t.pageOrientation === 'landscape' ? 'landscape' : 'portrait';
     if(document.getElementById('export-sort-by')) (document.getElementById('export-sort-by') || {}).value = t.sortBy || 'date';
     if(document.getElementById('export-sort-order')) (document.getElementById('export-sort-order') || {}).value = t.sortOrder || 'asc';
 
@@ -5837,6 +6246,8 @@ function loadExportTemplate(name) {
         if(document.querySelector('.att-chk[value="show_qr"]')) document.querySelector('.att-chk[value="show_qr"]').checked = t.att.qr;
     }
 
+    syncExportReportTypeUI(false);
+    updateExportPreviewPaperSize(getExportPageOrientation());
     renderExportPreview();
 }
 
@@ -5847,39 +6258,67 @@ function loadExportTemplate(name) {
 async function buildAttachmentItems(rows, section, showImg, showPdf) {
     if (!showImg && !showPdf) return [];
     const columnDefs = section === 'food' ? EXPORT_FOOD_COLUMNS : EXPORT_BILL_COLUMNS;
-    const items = [];
-    for (const row of rows) {
-        const files = attachmentStore[row.id] || [];
-        if (files.length === 0) continue;
+    const prepared = (rows || []).map(row => ({
+        detail: columnDefs.map(c => ({ label: c.label, value: c.get(row) })),
+        images: [],
+        fileRefs: [],
+        files: attachmentStore[row.id] || [],
+    }));
+    const imageJobs = [];
 
-        const images = [];
-        const fileRefs = [];
-        for (const f of files) {
-            const mime = inferAttachmentMime(f);
-            const url = getAttachmentUrl(f);
-            const name = f.originalFileName || f.fileName || 'ไฟล์แนบ';
+    prepared.forEach((item, rowIndex) => {
+        item.files.forEach(file => {
+            const mime = inferAttachmentMime(file);
+            const url = getAttachmentUrl(file);
+            const name = file.originalFileName || file.fileName || file.storedFileName || 'ไฟล์แนบ';
             if (mime.startsWith('image/')) {
-                if (!showImg) continue;
-                const dataUrl = await getAttachmentImageDataUrl(f);
-                if (dataUrl) images.push({
-                    src: dataUrl,
-                    name,
-                    caption: name,
-                    mime,
-                    sizeBytes: parseInt(f.fileSize || f.compressedSize || 0, 10) || 0,
-                });
-                else fileRefs.push({ name, url, note: 'ไม่สามารถฝังรูปในเอกสารได้ — ดูไฟล์ต้นฉบับที่ลิงก์นี้' });
-            } else if (mime === 'application/pdf') {
-                if (!showPdf) continue;
-                fileRefs.push({ name, url, note: '' });
+                if (showImg) imageJobs.push({ rowIndex, file, mime, url, name });
+                return;
             }
-        }
-        if (images.length === 0 && fileRefs.length === 0) continue;
+            if (showPdf) {
+                const note = mime === 'application/pdf'
+                    ? 'เปิด PDF หลักฐานจากลิงก์นี้'
+                    : 'ไฟล์อ้างอิง — เปิดจากลิงก์นี้';
+                item.fileRefs.push({ name, url, note });
+            }
+        });
+    });
 
-        const detail = columnDefs.map(c => ({ label: c.label, value: c.get(row) }));
-        items.push({ detail, images, fileRefs });
-    }
-    return items;
+    // จำกัดจำนวนภาพที่อ่านพร้อมกันทั้งรายงาน ไม่ทำ nested Promise.all()
+    // เพราะไฟล์รูปจาก Drive ขนาดมากอาจทำให้ preview ค้างหรือ Apps Script ถูกจำกัด quota.
+    const imageResults = await mapWithConcurrency(
+        imageJobs,
+        ATTACHMENT_LOAD_CONCURRENCY,
+        async job => {
+            const dataUrl = await getAttachmentImageDataUrl(job.file);
+            if (dataUrl) {
+                const optimized = await optimizeImageDataUrlForPdf(job.file, dataUrl);
+                return Object.assign({}, job, { dataUrl: optimized });
+            }
+            return Object.assign({}, job, { dataUrl: '' });
+        }
+    );
+
+    imageResults.forEach(result => {
+        if (!result) return;
+        const item = prepared[result.rowIndex];
+        if (!item) return;
+        if (result.dataUrl) {
+            item.images.push({
+                src: result.dataUrl,
+                name: result.name,
+                caption: result.name,
+                mime: result.mime,
+                sizeBytes: parseInt(result.file.fileSize || result.file.compressedSize || 0, 10) || 0,
+            });
+        } else {
+            item.fileRefs.push({ name: result.name, url: result.url, note: 'ไม่สามารถฝังรูปในเอกสารได้ — เปิดไฟล์ต้นฉบับจากลิงก์นี้' });
+        }
+    });
+
+    return prepared
+        .filter(item => item.images.length > 0 || item.fileRefs.length > 0)
+        .map(item => ({ detail: item.detail, images: item.images, fileRefs: item.fileRefs }));
 }
 
 // ==========================================================================
@@ -5892,9 +6331,9 @@ async function buildReportModel() {
     const subHeading = (document.getElementById('export-header-detail') || {}).value || '';
     const docNum = (document.getElementById('export-doc-number') || {}).value || '';
     const reportMonth = (document.getElementById('export-report-month') || {}).value || '';
-    const reportType = (document.getElementById('export-report-type') || {}).value || 'summary';
+    await ensureExportReportData(reportMonth);
+    const reportOptions = getExportReportOptions();
     const logoSrc = (document.getElementById('export-logo-preview') || {}).dataset?.logoSrc || '';
-    const detailed = reportType === 'detailed';
 
     const inclSig = (document.getElementById('pdf-include-signature') || {}).checked;
     const preparer = (document.getElementById('pdf-preparer-name') || {}).value || '';
@@ -5908,9 +6347,9 @@ async function buildReportModel() {
     const billCols = getExportSelectedColumns('.export-col-chk');
     const foodCols = getExportSelectedColumns('.export-food-col');
 
-    const showImg = !!document.querySelector('.att-chk[value="show_img"]')?.checked;
-    const showPdf = !!document.querySelector('.att-chk[value="show_pdf"]')?.checked;
-    const showQr = !!document.querySelector('.att-chk[value="show_qr"]')?.checked;
+    const showImg = reportOptions.showImages;
+    const showPdf = reportOptions.showFileLinks;
+    const showQr = reportOptions.showQr;
 
     let monthLabel = '';
     if (reportMonth) {
@@ -5929,18 +6368,22 @@ async function buildReportModel() {
     for (const spec of specs) {
         if (!spec.on) continue;
         const rows = buildExportSectionData(spec.key);
-        if (showImg || showPdf) await ensureAttachmentsLoaded(rows, spec.key);
+        if (reportOptions.needsEvidence && (showImg || showPdf)) await ensureAttachmentsLoaded(rows, spec.key);
         const attachmentItems = await buildAttachmentItems(rows, spec.key, showImg, showPdf);
         sections.push({
             key: spec.key,
-            label: spec.label + (spec.key === 'bills' && monthLabel ? 'ประจำ' + monthLabel : ''),
+            label: spec.label + (spec.key === 'bills' && monthLabel ? ' ประจำเดือน ' + monthLabel : ''),
             accent: spec.accent,
             columns: spec.columnDefs.filter(c => spec.selCols.includes(c.id)),
-            rows, detailed, attachmentItems,
+            rows,
+            detailed: reportOptions.detailed,
+            attachmentOnly: reportOptions.attachmentOnly,
+            attachmentItems,
         });
     }
 
     let qrDataUrl = '';
+    let verifyCode = '';
     if (showQr && docNum) {
         try {
             const itemCount = sections.reduce((s, sec) => s + sec.rows.length, 0);
@@ -5948,7 +6391,8 @@ async function buildReportModel() {
             const orgFilterSel = document.getElementById('export-org-filter');
             const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
             const orgId = (orgFilterSel && getCurrentUserRole() === 'admin' && orgFilterSel.value) ? orgFilterSel.value : (currentUser.organizationId || '');
-            const res = await apiCall('getExportVerifyCode', { docNumber: docNum, month: reportMonth, orgId, itemCount, totalAmount });
+            const res = await getCachedExportVerifyCode({ docNumber: docNum, month: reportMonth, orgId, itemCount, totalAmount });
+            verifyCode = res.code || '';
             qrDataUrl = await generateVerifyQR('export', res.code);
         } catch (err) {
             console.warn('[export] สร้าง QR ตรวจสอบไม่สำเร็จ:', err && err.message);
@@ -5957,15 +6401,23 @@ async function buildReportModel() {
     }
 
     return {
-        header: { orgName, title, subHeading, docNum, monthLabel, logoSrc, qrDataUrl },
+        header: { orgName, title, subHeading, docNum, monthLabel, logoSrc, qrDataUrl, verifyCode },
         signature: inclSig ? { preparer, reviewer, approver } : null,
         sections,
+        reportOptions,
     };
 }
 
 // 5. Exporters — column definitions (EXPORT_BILL_COLUMNS / EXPORT_FOOD_COLUMNS)
 // are the same ones the preview renders from, so Excel/CSV always matches what's shown.
 async function executeDynamicExport(format) {
+    const reportMonth = (document.getElementById('export-report-month') || {}).value || getSelectedPostingMonth();
+    try {
+        await ensureExportReportData(reportMonth);
+    } catch (err) {
+        appAlert('โหลดข้อมูลสำหรับส่งออกไม่สำเร็จ: ' + err.message, 'error');
+        return;
+    }
     const inclBills = (document.getElementById('export-chk-bills') || {}).checked;
     const inclFood = (document.getElementById('export-chk-food') || {}).checked;
     const inclAttach = (document.getElementById('export-chk-attach') || {}).checked;
@@ -6328,6 +6780,11 @@ const PERMISSION_ACTIONS = [
     { action: 'deleteExpense',       label: 'ลบรายจ่าย',                       category: 'รายจ่าย' },
     { action: 'getExpenses',         label: 'ดูรายจ่าย',                       category: 'รายจ่าย' },
     { action: 'getAttachmentDataUrl', label: 'ดูรูปไฟล์แนบในรายงาน',            category: 'รายจ่าย' },
+    { action: 'getFoodExpenses',      label: 'ดูรายการค่าอาหาร',                category: 'ค่าอาหาร' },
+    { action: 'createFoodExpense',    label: 'เพิ่มรายการค่าอาหาร',             category: 'ค่าอาหาร' },
+    { action: 'updateFoodExpense',    label: 'แก้ไขรายการค่าอาหาร',             category: 'ค่าอาหาร' },
+    { action: 'uploadFoodAttachment', label: 'แนบหลักฐานค่าอาหาร',              category: 'ค่าอาหาร' },
+    { action: 'deleteFoodExpenseAPI', label: 'ลบรายการค่าอาหาร',                category: 'ค่าอาหาร' },
     { action: 'createClaim',         label: 'สร้างใบเบิก',                     category: 'ใบเบิก' },
     { action: 'cancelClaimDraft',    label: 'ยกเลิกใบเบิก (ฉบับร่าง)',          category: 'ใบเบิก' },
     { action: 'submitClaim',         label: 'ส่งใบเบิกขออนุมัติ',              category: 'ใบเบิก' },
@@ -6354,6 +6811,11 @@ const DEFAULT_PERMISSION_MATRIX = {
     deleteExpense:       { manager: true,  staff: false, viewer: false },
     getExpenses:         { manager: true,  staff: true,  viewer: true  },
     getAttachmentDataUrl: { manager: true,  staff: true,  viewer: true  },
+    getFoodExpenses:      { manager: true,  staff: true,  viewer: true  },
+    createFoodExpense:    { manager: true,  staff: true,  viewer: false },
+    updateFoodExpense:    { manager: true,  staff: true,  viewer: false },
+    uploadFoodAttachment: { manager: true,  staff: true,  viewer: false },
+    deleteFoodExpenseAPI: { manager: true,  staff: false, viewer: false },
     createClaim:         { manager: true,  staff: true,  viewer: false },
     cancelClaimDraft:    { manager: true,  staff: true,  viewer: false },
     submitClaim:         { manager: true,  staff: true,  viewer: false },
@@ -6528,18 +6990,88 @@ window.handleGoogleLogin = handleGoogleLogin;
 
 let foodFiles = [];
 
+async function loadFoodExpensesForMonth(month) {
+    if (!/^\d{4}-\d{2}$/.test(String(month || ''))) {
+        state.foodExpenses = [];
+        return state.foodExpenses;
+    }
+    const rows = await fetchAllFoodExpensesForMonth(month);
+    state.foodExpenses = rows;
+    return rows;
+}
+
 
 
 // Load food data from API
 window.loadFoodOverview = async function() {
     try {
-        const res = await apiCall('getFoodExpenses');
-        state.foodExpenses = res.foodExpenses || [];
+        const selectedMonth = (document.getElementById('food-overview-month') || {}).value || getSelectedPostingMonth();
+        await loadFoodExpensesForMonth(selectedMonth);
         renderFoodOverview();
     } catch (err) {
         console.error(err);
         appAlert('ไม่สามารถโหลดข้อมูลค่าอาหารได้: ' + err.message);
     }
+};
+
+window.loadFoodBillsForMonth = async function() {
+    try {
+        await loadFoodExpensesForMonth(getSelectedPostingMonth());
+        renderFoodBillsTable();
+    } catch (err) {
+        console.error('โหลดรายการค่าอาหารไม่สำเร็จ:', err);
+    }
+};
+
+function renderFoodBillsTable() {
+    const tbody = document.querySelector('#food-bills-table tbody');
+    if (!tbody) return;
+
+    const selectedMonth = getSelectedPostingMonth();
+    const searchInput = document.getElementById('filter-search');
+    const searchText = String(searchInput ? searchInput.value : '').trim().toLowerCase();
+    const rows = [...(state.foodExpenses || [])]
+        .filter(item => getFoodPostingMonth(item) === selectedMonth)
+        .filter(item => !searchText || [item.name, item.category, item.documentNo]
+            .join(' ').toLowerCase().includes(searchText))
+        .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+
+    updateFoodWidgetMonthBadge();
+    const title = document.getElementById('food-bills-widget-title');
+    if (title) title.textContent = 'ค่าอาหารประจำเดือน';
+
+    if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="empty-state">ไม่พบรายการค่าอาหารในรอบบันทึกนี้</td></tr>';
+        return;
+    }
+
+    const canDelete = ['admin', 'manager'].includes(getCurrentUserRole());
+    tbody.innerHTML = rows.map((item, index) => {
+        const amount = parseFloat(item.totalAmount) || 0;
+        const hasFiles = Boolean(item.files);
+        return `
+            <tr>
+                <td>${index + 1}</td>
+                <td>${formatThaiDate(item.date)}</td>
+                <td>${escapeHTML(formatPostingMonth(getFoodPostingMonth(item)))}</td>
+                <td>${escapeHTML(item.name || '')}</td>
+                <td><span class="badge">${escapeHTML(item.category || '-')}</span></td>
+                <td class="text-right">${escapeHTML(String(item.quantity || ''))} ${escapeHTML(item.unit || '')}</td>
+                <td class="text-right">${(parseFloat(item.price) || 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+                <td class="text-right font-semibold">${amount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+                <td class="text-center" title="${hasFiles ? 'มีไฟล์แนบ' : 'ไม่มีไฟล์แนบ'}">${hasFiles ? '<i data-lucide="paperclip" style="width:16px;color:var(--primary);"></i>' : '-'}</td>
+                <td class="text-center">
+                    <button type="button" class="btn btn-icon btn-sm" onclick="openFoodExpenseEditor('${item.id}')" title="แก้ไขรายการ" style="color:var(--primary);"><i data-lucide="pencil"></i></button>
+                    ${canDelete ? `<button type="button" class="btn btn-icon btn-sm text-danger" onclick="deleteFoodExpense('${item.id}')" title="ลบรายการ"><i data-lucide="trash-2"></i></button>` : ''}
+                </td>
+            </tr>`;
+    }).join('');
+    if (window.lucide) window.lucide.createIcons();
+}
+
+window.openFoodExpenseEditor = function(id) {
+    openFoodEntryModal();
+    editFoodExpense(id);
 };
 
 window.renderFoodOverview = function() {
@@ -6548,10 +7080,10 @@ window.renderFoodOverview = function() {
     if (!tbody || !totalEl) return;
 
     const selectedMonth = document.getElementById('food-overview-month').value; // YYYY-MM
-    let data = state.foodExpenses || [];
+    let data = [...(state.foodExpenses || [])];
     
     if (selectedMonth) {
-        data = data.filter(item => item.date && item.date.startsWith(selectedMonth));
+        data = data.filter(item => getFoodPostingMonth(item) === selectedMonth);
     }
     
     // Sort by date desc
@@ -6561,7 +7093,7 @@ window.renderFoodOverview = function() {
     let total = 0;
     
     if (data.length === 0) {
-        html = '<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:20px;">ไม่มีข้อมูลค่าอาหารในเดือนนี้</td></tr>';
+        html = '<tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding:20px;">ไม่มีข้อมูลค่าอาหารในรอบบันทึกนี้</td></tr>';
     } else {
         data.forEach((item, idx) => {
             const amount = parseFloat(item.totalAmount) || 0;
@@ -6570,9 +7102,10 @@ window.renderFoodOverview = function() {
                 <tr>
                     <td>${idx + 1}</td>
                     <td>${formatThaiDate(item.date)}</td>
-                    <td>${item.name}</td>
-                    <td><span class="badge" style="background:var(--primary); color:white;">${item.category}</span></td>
-                    <td class="text-right">${item.quantity} ${item.unit}</td>
+                    <td>${formatPostingMonth(getFoodPostingMonth(item))}</td>
+                    <td>${escapeHTML(item.name || '')}</td>
+                    <td><span class="badge" style="background:var(--primary); color:white;">${escapeHTML(item.category || '')}</span></td>
+                    <td class="text-right">${escapeHTML(String(item.quantity || ''))} ${escapeHTML(item.unit || '')}</td>
                     <td class="text-right">${parseFloat(item.price).toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
                     <td class="text-right" style="font-weight:600;">${amount.toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
                 </tr>
@@ -6586,9 +7119,12 @@ window.renderFoodOverview = function() {
 
 window.exportFoodPDF = async function() {
     const selectedMonth = (document.getElementById('food-overview-month') || {}).value; // YYYY-MM
-    let data = state.foodExpenses || [];
-    if (selectedMonth) {
-        data = data.filter(item => item.date && item.date.startsWith(selectedMonth));
+    let data = [];
+    try {
+        data = selectedMonth ? await fetchAllFoodExpensesForMonth(selectedMonth) : [];
+    } catch (err) {
+        appAlert('ไม่สามารถโหลดข้อมูลค่าอาหารสำหรับรายงานได้: ' + err.message, 'error');
+        return;
     }
     data.sort((a, b) => new Date(a.date) - new Date(b.date));
 
@@ -6612,6 +7148,7 @@ window.exportFoodPDF = async function() {
                 <tr>
                     <td>${idx + 1}</td>
                     <td>${formatThaiDate(item.date)}</td>
+                    <td>${escapeHTML(formatPostingMonth(getFoodPostingMonth(item)))}</td>
                     <td>${escapeHTML(item.name)}</td>
                     <td>${escapeHTML(item.category)}</td>
                     <td style="text-align:right;">${escapeHTML(String(item.quantity))} ${escapeHTML(item.unit || '')}</td>
@@ -6620,7 +7157,7 @@ window.exportFoodPDF = async function() {
                 </tr>
             `;
         }).join('')
-        : '<tr><td colspan="7" style="text-align:center; padding:20px;">ไม่มีข้อมูลค่าอาหารในเดือนนี้</td></tr>';
+        : '<tr><td colspan="8" style="text-align:center; padding:20px;">ไม่มีข้อมูลค่าอาหารในรอบบันทึกนี้</td></tr>';
 
     const monthLabel = selectedMonth
         ? formatThaiDate(selectedMonth + '-01').split(' ').slice(1).join(' ')
@@ -6647,14 +7184,14 @@ window.exportFoodPDF = async function() {
     <table>
         <thead>
             <tr>
-                <th>#</th><th>วันที่</th><th>รายการ</th><th>หมวดหมู่</th>
+                <th>#</th><th>วันที่ซื้อ</th><th>รอบบันทึก</th><th>รายการ</th><th>หมวดหมู่</th>
                 <th style="text-align:right;">จำนวน</th><th style="text-align:right;">ราคา/หน่วย</th><th style="text-align:right;">รวมเป็นเงิน</th>
             </tr>
         </thead>
         <tbody>${rows}</tbody>
         <tfoot>
             <tr class="total-row">
-                <td colspan="6" style="text-align:right;">ยอดรวมทั้งสิ้น</td>
+                <td colspan="7" style="text-align:right;">ยอดรวมทั้งสิ้น</td>
                 <td style="text-align:right;">${total.toLocaleString('th-TH', {minimumFractionDigits:2})} บาท</td>
             </tr>
         </tfoot>
@@ -6676,8 +7213,8 @@ window.exportFoodPDF = async function() {
 
 window.loadFoodEntryList = async function() {
     try {
-        const res = await apiCall('getFoodExpenses');
-        state.foodExpenses = res.foodExpenses || [];
+        const selectedMonth = (document.getElementById('food-modal-month') || {}).value || getSelectedPostingMonth();
+        await loadFoodExpensesForMonth(selectedMonth);
         renderFoodEntryList();
     } catch (err) {
         console.error(err);
@@ -6689,10 +7226,10 @@ window.renderFoodEntryList = function() {
     if (!tbody) return;
 
     const selectedMonth = (document.getElementById('food-modal-month') || {}).value; // YYYY-MM
-    let data = state.foodExpenses || [];
+    let data = [...(state.foodExpenses || [])];
 
     if (selectedMonth) {
-        data = data.filter(item => item.date && item.date.startsWith(selectedMonth));
+        data = data.filter(item => getFoodPostingMonth(item) === selectedMonth);
     }
 
     data.sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -6712,6 +7249,9 @@ window.renderFoodEntryList = function() {
                     <td><span class="badge">${escapeHTML(item.category)}</span></td>
                     <td class="text-right" style="font-weight:600;">${amount.toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
                     <td class="text-center">
+                        <button type="button" class="btn btn-icon btn-sm" onclick="editFoodExpense('${item.id}')" title="แก้ไขรายการ" style="color:var(--primary);">
+                            <i data-lucide="pencil"></i>
+                        </button>
                         <button type="button" class="btn btn-icon btn-sm text-danger" onclick="deleteFoodExpense('${item.id}')" title="ลบรายการ">
                             <i data-lucide="trash-2"></i>
                         </button>
@@ -6754,12 +7294,18 @@ window.renderFoodFileList = function() {
     const container = document.getElementById('food-file-list');
     if (!container) return;
 
+    const editId = (document.getElementById('food-entry-edit-id') || {}).value || '';
+    const existing = editId ? (state.foodExpenses || []).find(item => item.id === editId) : null;
+    const existingNotice = existing && existing.files
+        ? '<div style="padding:6px 10px; background:var(--primary-light); color:var(--primary-dark); border-radius:6px; font-size:12px;">มีไฟล์แนบเดิมอยู่แล้ว และระบบจะเก็บไฟล์เดิมไว้</div>'
+        : '';
+
     if (!foodFiles.length) {
-        container.innerHTML = '';
+        container.innerHTML = existingNotice;
         return;
     }
 
-    container.innerHTML = foodFiles.map((f, idx) => `
+    container.innerHTML = existingNotice + foodFiles.map((f, idx) => `
         <div style="display:flex; align-items:center; justify-content:space-between; padding:6px 10px; background:var(--bg-secondary); border-radius:6px; font-size:12px;">
             <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHTML(f.filename)}</span>
             <button type="button" class="btn-icon btn-icon-delete" style="padding:2px;" onclick="removeFoodFile(${idx})"><i data-lucide="x" style="width:14px;height:14px;"></i></button>
@@ -6773,8 +7319,41 @@ window.removeFoodFile = function(idx) {
     renderFoodFileList();
 };
 
+window.editFoodExpense = function(id) {
+    const item = (state.foodExpenses || []).find(entry => entry.id === id);
+    if (!item) {
+        appAlert('ไม่พบรายการค่าอาหารที่ต้องการแก้ไข', 'error');
+        return;
+    }
+
+    const postingMonth = getFoodPostingMonth(item) || getSelectedPostingMonth();
+    const monthInput = document.getElementById('food-modal-month');
+    if (monthInput) monthInput.value = postingMonth;
+    updateFoodModalMonthLabel();
+
+    document.getElementById('food-entry-edit-id').value = item.id;
+    document.getElementById('food-entry-name').value = item.name || '';
+    document.getElementById('food-entry-qty').value = item.quantity || '';
+    document.getElementById('food-entry-unit').value = item.unit || 'กก.';
+    document.getElementById('food-entry-price').value = item.price || '';
+    document.getElementById('food-entry-category').value = item.category || '';
+    document.getElementById('food-entry-date').value = String(item.date || '').slice(0, 10);
+
+    foodFiles = [];
+    renderFoodFileList();
+    calcFoodEntryTotal();
+
+    const title = document.getElementById('food-entry-modal-title');
+    if (title) title.textContent = 'แก้ไขรายการค่าอาหาร';
+    const submitBtn = document.getElementById('food-entry-submit-btn');
+    if (submitBtn) submitBtn.innerHTML = '<i data-lucide="save"></i> บันทึกการแก้ไข';
+    if (window.lucide) window.lucide.createIcons();
+};
+
 window.submitFoodEntry = async function(e) {
     e.preventDefault();
+    const editId = (document.getElementById('food-entry-edit-id') || {}).value || '';
+    const existing = editId ? (state.foodExpenses || []).find(item => item.id === editId) : null;
     const qty = parseFloat(document.getElementById('food-entry-qty').value) || 0;
     const price = parseFloat(document.getElementById('food-entry-price').value) || 0;
     
@@ -6783,26 +7362,26 @@ window.submitFoodEntry = async function(e) {
         return;
     }
 
-    if (state.requireAttachment && foodFiles.length === 0) {
+    if (state.requireAttachment && foodFiles.length === 0 && !(existing && existing.files)) {
         appAlert('ระบบกำหนดให้แนบหลักฐานอย่างน้อย 1 ไฟล์ก่อนบันทึกรายการค่าอาหาร', 'error');
         return;
     }
 
     const dateStr = document.getElementById('food-entry-date').value; // YYYY-MM-DD
     const selectedMonth = (document.getElementById('food-modal-month') || {}).value;
-    if (!dateStr || (selectedMonth && !dateStr.startsWith(selectedMonth))) {
-        appAlert('วันที่ซื้อต้องอยู่ในเดือนที่เลือกไว้ในหน้าต่างนี้', 'error');
+    if (!dateStr || !/^\d{4}-\d{2}$/.test(selectedMonth || '')) {
+        appAlert('กรุณาระบุวันที่ซื้อและรอบเดือนที่บันทึก', 'error');
         return;
     }
-    const [y, m] = dateStr.split('-');
+    const [postingYear, postingMonth] = selectedMonth.split('-').map(Number);
     const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
 
     // Backend stores food expenses as a document with a list of items; the
     // quick-entry modal only ever submits one ingredient at a time, so we
     // wrap it as a single-item document (no Sheet schema changes needed).
     const payload = {
-        month: parseInt(m, 10),
-        year: parseInt(y, 10),
+        month: postingMonth,
+        year: postingYear,
         dormitory: '',
         responsiblePerson: (currentUser && currentUser.name) || '',
         note: document.getElementById('food-entry-category').value, // repurposed to carry category
@@ -6817,8 +7396,12 @@ window.submitFoodEntry = async function(e) {
 
     appAlert('กำลังบันทึกข้อมูล...', 'info');
     try {
-        const res = await apiCall('createFoodExpense', payload);
-        const assignedId = res.items && res.items[0] && res.items[0].assignedId;
+        const res = editId
+            ? await apiCall('updateFoodExpense', { ...payload, id: editId })
+            : await apiCall('createFoodExpense', payload);
+        const assignedId = editId
+            ? (res.itemId || (existing && existing.itemId))
+            : (res.items && res.items[0] && res.items[0].assignedId);
 
         if (assignedId && foodFiles.length > 0) {
             for (const f of foodFiles) {
@@ -6835,18 +7418,19 @@ window.submitFoodEntry = async function(e) {
             }
         }
 
-        appAlert('บันทึกข้อมูลค่าอาหารลงระบบสำเร็จ!', 'success');
+        appAlert(editId ? 'แก้ไขข้อมูลค่าอาหารสำเร็จ!' : 'บันทึกข้อมูลค่าอาหารลงระบบสำเร็จ!', 'success');
 
-        document.getElementById('food-entry-form').reset();
-        foodFiles = [];
-        renderFoodFileList();
-        calcFoodEntryTotal();
-        const nextDate = document.getElementById('food-entry-date');
-        if (nextDate) nextDate.value = getFoodEntryDefaultDate(selectedMonth);
+        resetFoodEntryEditor(selectedMonth);
 
         await loadFoodEntryList();
+        exportReportData.month = '';
         if (document.getElementById('tab-food-overview').classList.contains('active')) {
             await loadFoodOverview();
+        }
+        if (selectedMonth === getSelectedPostingMonth()) {
+            renderFoodBillsTable();
+        } else {
+            await loadFoodBillsForMonth();
         }
     } catch (err) {
         appAlert('เกิดข้อผิดพลาดในการบันทึกข้อมูล: ' + err.message, 'error');
@@ -6861,7 +7445,11 @@ window.deleteFoodExpense = async function(id) {
         await apiCall('deleteFoodExpenseAPI', { id: id });
         appAlert('ลบรายการสำเร็จ', 'success');
         await loadFoodEntryList();
-        await loadFoodOverview();
+        exportReportData.month = '';
+        if (document.getElementById('tab-food-overview').classList.contains('active')) {
+            await loadFoodOverview();
+        }
+        await loadFoodBillsForMonth();
     } catch (err) {
         appAlert('เกิดข้อผิดพลาดในการลบ: ' + err.message, 'error');
     }
@@ -7042,6 +7630,25 @@ document.addEventListener('DOMContentLoaded', initBillsSubTabs);
 /* ==========================================================================
    Food Entry Modal - Open / Close / Sync with main month filter
    ========================================================================== */
+function resetFoodEntryEditor(postingMonth) {
+    const form = document.getElementById('food-entry-form');
+    if (form) form.reset();
+
+    const editId = document.getElementById('food-entry-edit-id');
+    if (editId) editId.value = '';
+    const title = document.getElementById('food-entry-modal-title');
+    if (title) title.textContent = 'บันทึกค่าอาหาร';
+    const submitBtn = document.getElementById('food-entry-submit-btn');
+    if (submitBtn) submitBtn.innerHTML = '<i data-lucide="save"></i> บันทึกรายการ';
+
+    foodFiles = [];
+    renderFoodFileList();
+    calcFoodEntryTotal();
+    const dateInput = document.getElementById('food-entry-date');
+    if (dateInput) dateInput.value = getFoodEntryDefaultDate(postingMonth || '');
+    if (window.lucide) window.lucide.createIcons();
+}
+
 window.openFoodEntryModal = function () {
     const overlay = document.getElementById('modal-food-entry');
     if (!overlay) return;
@@ -7054,7 +7661,6 @@ window.openFoodEntryModal = function () {
     if (selMonth && selYear && monthInput) {
         const m = String(selMonth.value).padStart(2, '0');
         const y = parseInt(selYear.value);
-        const thYear = y; // Already CE year stored in select
         // Convert if needed - assume year in select is BE, convert to CE
         const ceYear = y > 2500 ? y - 543 : y;
         monthInput.value = ceYear + '-' + m;
@@ -7064,18 +7670,7 @@ window.openFoodEntryModal = function () {
     }
 
     updateFoodModalMonthLabel();
-    
-    const form = document.getElementById('food-entry-form');
-    if (form) form.reset();
-    // Do not let an attachment selected for a previous entry leak into this one.
-    foodFiles = [];
-    const totalDisplay = document.getElementById('food-entry-total-display');
-    if (totalDisplay) totalDisplay.textContent = '0.00 บาท';
-    const fileList = document.getElementById('food-file-list');
-    if (fileList) fileList.innerHTML = '';
-
-    const dateInput = document.getElementById('food-entry-date');
-    if (dateInput) dateInput.value = getFoodEntryDefaultDate(monthInput ? monthInput.value : '');
+    resetFoodEntryEditor(monthInput ? monthInput.value : '');
 
     // Load existing entries
     if (typeof loadFoodEntryList === 'function') loadFoodEntryList();
@@ -7095,7 +7690,7 @@ window.closeFoodEntryModal = function () {
 
 function getFoodEntryDefaultDate(monthValue) {
     const today = new Date();
-    const todayValue = today.toISOString().slice(0, 10);
+    const todayValue = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
     if (!/^\d{4}-\d{2}$/.test(monthValue || '')) return todayValue;
     return todayValue.startsWith(monthValue) ? todayValue : `${monthValue}-01`;
 }
@@ -7231,6 +7826,7 @@ function updateExportSectionBadges() {
 const EXPORT_BILL_COLUMNS = [
     { id: 'docNo', label: 'เลขบิล', align: 'left', get: r => r.docNo },
     { id: 'date', label: 'วันที่', align: 'left', get: r => formatDateThai(r.date) },
+    { id: 'postingMonth', label: 'รอบบันทึก', align: 'left', get: r => formatPostingMonth(r.postingMonth) },
     { id: 'project', label: 'โครงการ', align: 'left', get: r => r.project },
     { id: 'category', label: 'หมวดหมู่', align: 'left', get: r => r.category },
     { id: 'vendor', label: 'ผู้ขาย', align: 'left', get: r => r.vendor },
@@ -7239,6 +7835,7 @@ const EXPORT_BILL_COLUMNS = [
 ];
 const EXPORT_FOOD_COLUMNS = [
     { id: 'foodDate', label: 'วันที่', align: 'left', get: r => formatDateThai(r.foodDate) },
+    { id: 'postingMonth', label: 'รอบบันทึก', align: 'left', get: r => formatPostingMonth(r.postingMonth) },
     { id: 'foodName', label: 'รายการ', align: 'left', get: r => r.foodName },
     { id: 'foodCategory', label: 'หมวดหมู่', align: 'left', get: r => r.foodCategory },
     { id: 'foodAmount', label: 'ยอดเงิน', align: 'right', get: r => formatNumber(r.foodAmount), isAmount: true }
@@ -7249,7 +7846,8 @@ const EXPORT_FOOD_COLUMNS = [
    ใช้ทั้งพรีวิว (getDataUrl เข้า iframe) และปุ่มดาวน์โหลด (download) จาก
    report model ตัวเดียวกันเสมอ ไม่มีทางพรีวิวกับไฟล์จริงเพี้ยนกันได้อีก
    ========================================================================== */
-const PDF_PAGE_WIDTH = 595.28; // A4 pt
+const PDF_A4_PORTRAIT_WIDTH = 595.28; // A4 pt
+const PDF_A4_LANDSCAPE_WIDTH = 841.89; // A4 pt
 const PDF_MARGIN = [40, 40, 40, 56];
 const PDF_ATTACHMENT_IMAGE_FIT = [260, 330];
 
@@ -7259,8 +7857,10 @@ const PDF_ATTACHMENT_IMAGE_FIT = [260, 330];
 // เพราะเวอร์ชันนี้อ่านไฟล์ฟอนต์จาก virtual file system เท่านั้น ไม่ได้ fetch จาก URL ตรงๆ
 
 function buildPdfDocDefinition(model) {
-    const { header, sections, signature } = model;
-    const contentWidth = PDF_PAGE_WIDTH - PDF_MARGIN[0] - PDF_MARGIN[2];
+    const { header, sections, signature, reportOptions = {} } = model;
+    const pageOrientation = reportOptions.pageOrientation === 'landscape' ? 'landscape' : 'portrait';
+    const pageWidth = pageOrientation === 'landscape' ? PDF_A4_LANDSCAPE_WIDTH : PDF_A4_PORTRAIT_WIDTH;
+    const contentWidth = pageWidth - PDF_MARGIN[0] - PDF_MARGIN[2];
     const content = [];
 
     // pdfmake 0.3.11 ต้องอ้างรูปผ่าน images dictionary (key → dataURL) เท่านั้น — มันจะแปลง base64→Buffer
@@ -7293,10 +7893,33 @@ function buildPdfDocDefinition(model) {
         rightStack.push({ image: registerImage(header.qrDataUrl), width: 62, alignment: 'right', margin: [0, 4, 0, 0] });
         rightStack.push({ text: 'สแกนเพื่อตรวจสอบ', fontSize: 6.5, color: '#9ca3af', alignment: 'right', margin: [0, 1, 0, 0] });
     }
+    if (header.verifyCode) {
+        rightStack.push({ text: 'รหัสตรวจสอบ: ' + header.verifyCode, fontSize: 6.5, color: '#6b7280', alignment: 'right', margin: [0, 2, 0, 0] });
+    }
     if (rightStack.length) headerCols.push({ width: 'auto', stack: rightStack });
 
     content.push({ columns: headerCols, columnGap: 10 });
     content.push({ canvas: [{ type: 'line', x1: 0, y1: 0, x2: contentWidth, y2: 0, lineWidth: 1.2, lineColor: '#1a1a2e' }], margin: [0, 8, 0, 14] });
+
+    if (reportOptions.audit) {
+        const auditBody = [[
+            { text: 'หัวข้อ', bold: true, fontSize: 8.5, fillColor: '#e5e7eb' },
+            { text: 'จำนวนรายการ', bold: true, fontSize: 8.5, fillColor: '#e5e7eb', alignment: 'right' },
+            { text: 'ยอดรวม', bold: true, fontSize: 8.5, fillColor: '#e5e7eb', alignment: 'right' },
+            { text: 'หลักฐาน', bold: true, fontSize: 8.5, fillColor: '#e5e7eb', alignment: 'right' },
+        ]];
+        sections.forEach(section => {
+            const total = section.rows.reduce((sum, row) => sum + (parseFloat(row.amount ?? row.foodAmount) || 0), 0);
+            auditBody.push([
+                { text: section.label, fontSize: 8.5 },
+                { text: String(section.rows.length), fontSize: 8.5, alignment: 'right' },
+                { text: formatNumber(total), fontSize: 8.5, alignment: 'right' },
+                { text: String(section.attachmentItems.length), fontSize: 8.5, alignment: 'right' },
+            ]);
+        });
+        content.push({ text: 'สรุปสำหรับตรวจสอบบัญชี', fontSize: 11, bold: true, color: '#1a1a2e', margin: [0, 0, 0, 6] });
+        content.push({ table: { headerRows: 1, widths: ['*', 72, 82, 52], body: auditBody }, layout: 'lightHorizontalLines', margin: [0, 0, 0, 14] });
+    }
 
     sections.forEach(section => {
         // หัวข้อ section: พื้นเทาอ่อน + แถบสี accent ซ้าย (แทน emoji ที่ Sarabun ไม่มี glyph)
@@ -7312,7 +7935,11 @@ function buildPdfDocDefinition(model) {
             unbreakable: true,
         });
 
-        if (section.columns.length === 0) {
+        if (section.attachmentOnly) {
+            if (section.attachmentItems.length === 0) {
+                content.push({ text: 'ไม่พบหลักฐานแนบสำหรับหัวข้อนี้', italics: true, color: '#9ca3af', fontSize: 9, margin: [0, 6, 0, 14] });
+            }
+        } else if (section.columns.length === 0) {
             content.push({ text: 'ยังไม่ได้เลือกคอลัมน์ที่จะแสดง', italics: true, color: '#9ca3af', fontSize: 9, margin: [0, 6, 0, 14] });
         } else {
             const cols = section.columns;
@@ -7403,6 +8030,7 @@ function buildPdfDocDefinition(model) {
 
     return {
         pageSize: 'A4',
+        pageOrientation,
         pageMargins: PDF_MARGIN,
         defaultStyle: { font: 'Sarabun', fontSize: 10 },
         images, // ทุกรูป (QR/โลโก้/หลักฐานแนบ) ลงทะเบียนไว้ที่นี่ แล้ว content อ้างด้วย key
@@ -7458,6 +8086,7 @@ async function generateAndShowPreview() {
         const model = await withTimeout(buildReportModel(), 20000, 'การรวบรวมข้อมูล/ไฟล์แนบ');
         if (myGeneration !== _previewGeneration) return; // มีคำขอใหม่กว่าเข้ามาแล้ว
 
+        updateExportPreviewPaperSize((model.reportOptions || {}).pageOrientation);
         const docDef = buildPdfDocDefinition(model);
         // pdfmake 0.3.x: getDataUrl() เป็น async คืน Promise<string> โดยตรง (ไม่ใช่ callback แบบเวอร์ชันเก่า)
         const dataUrl = await withTimeout(
@@ -7494,9 +8123,15 @@ document.addEventListener('DOMContentLoaded', () => {
 /* ==========================================================================
    Export Single Section - individual file download per section
    ========================================================================== */
-window.exportSingleSection = function(section) {
+window.exportSingleSection = async function(section) {
     const monthInput = document.getElementById('export-report-month');
     const reportMonth = monthInput?.value || '';
+    try {
+        await ensureExportReportData(reportMonth || getSelectedPostingMonth());
+    } catch (err) {
+        appAlert('โหลดข้อมูลสำหรับส่งออกไม่สำเร็จ: ' + err.message, 'error');
+        return;
+    }
     let monthLabel = '';
     if (reportMonth) {
         const [y, m] = reportMonth.split('-');
