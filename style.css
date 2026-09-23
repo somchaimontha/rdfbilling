@@ -659,6 +659,309 @@ button, input, select, textarea {
     }
 }
 
+/* ==========================================================================
+   Monthly entry workspace
+   Keep entry fields close to the monthly list while grouping them into short,
+   readable rows instead of a horizontally-scrollable spreadsheet.
+   ========================================================================== */
+.entry-widget-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.quick-entry-panel {
+    margin: 0 0 16px;
+    padding: 18px;
+    border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--border-color));
+    border-radius: 14px;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--primary-light) 42%, var(--bg-sidebar)) 0%, var(--bg-sidebar) 58%);
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
+}
+
+.quick-entry-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.quick-entry-header h4 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 16px;
+}
+
+.quick-entry-header p {
+    margin: 4px 0 0;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.quick-entry-grid {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 12px;
+    align-items: end;
+}
+
+.quick-entry-grid .form-group {
+    min-width: 0;
+    margin-bottom: 0;
+}
+
+.quick-entry-grid .quick-span-2 { grid-column: span 2; }
+.quick-entry-grid .quick-span-3 { grid-column: span 3; }
+.quick-entry-grid .quick-span-6 { grid-column: span 6; }
+
+.quick-entry-panel .form-input,
+.quick-entry-panel .form-select {
+    min-height: 40px;
+    width: 100%;
+}
+
+.quick-total-input {
+    font-weight: 700;
+    color: var(--primary-dark);
+    background: color-mix(in srgb, var(--primary-light) 28%, var(--bg-sidebar)) !important;
+}
+
+.quick-entry-details {
+    margin-top: 14px;
+    padding: 11px 13px 14px;
+    border: 1px dashed var(--border-color);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-sidebar) 88%, var(--bg-main));
+}
+
+.quick-entry-details summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.quick-entry-details[open] summary {
+    margin-bottom: 14px;
+    color: var(--primary-dark);
+}
+
+.quick-file-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.quick-file-chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    gap: 6px;
+    padding: 5px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: var(--bg-sidebar);
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.quick-file-chip span {
+    max-width: 210px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.quick-file-chip button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.quick-file-chip button:hover {
+    background: var(--danger-light);
+    color: var(--danger);
+}
+
+.quick-entry-actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 16px;
+}
+
+.compact-record-table {
+    min-width: 0 !important;
+    table-layout: fixed;
+}
+
+.compact-record-table th,
+.compact-record-table td {
+    padding: 12px 14px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+#full-bills-table.compact-record-table th:nth-child(1) { width: 13%; }
+#full-bills-table.compact-record-table th:nth-child(2) { width: 13%; }
+#full-bills-table.compact-record-table th:nth-child(3) { width: 32%; }
+#full-bills-table.compact-record-table th:nth-child(4) { width: 14%; }
+#full-bills-table.compact-record-table th:nth-child(5) { width: 16%; }
+#full-bills-table.compact-record-table th:nth-child(6) { width: 12%; }
+
+#food-bills-table.compact-record-table th:nth-child(1) { width: 18%; }
+#food-bills-table.compact-record-table th:nth-child(2) { width: 32%; }
+#food-bills-table.compact-record-table th:nth-child(3) { width: 18%; }
+#food-bills-table.compact-record-table th:nth-child(4) { width: 16%; }
+#food-bills-table.compact-record-table th:nth-child(5) { width: 16%; }
+
+.compact-record-table .record-primary {
+    color: var(--text-primary);
+    font-weight: 700;
+    line-height: 1.4;
+}
+
+.compact-record-table .record-secondary {
+    display: block;
+    margin-top: 3px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.compact-record-table .record-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 7px;
+}
+
+.compact-record-table .record-meta .badge {
+    max-width: 100%;
+    line-height: 1.25;
+    white-space: normal;
+}
+
+.compact-record-table .record-amount {
+    color: var(--primary-dark);
+    font-size: 15px;
+    font-weight: 800;
+}
+
+.compact-record-table .record-tools {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+@media screen and (max-width: 1080px) {
+    .quick-entry-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .quick-entry-grid .quick-span-2,
+    .quick-entry-grid .quick-span-3 {
+        grid-column: span 1;
+    }
+
+    .quick-entry-grid .quick-span-6 {
+        grid-column: 1 / -1;
+    }
+}
+
+@media screen and (max-width: 900px) {
+    .table-container.responsive-record-container {
+        overflow: visible;
+        border: 0;
+        background: transparent;
+    }
+
+    #full-bills-table.responsive-record-table,
+    #attached-bills-table.responsive-record-table,
+    #food-bills-table.responsive-record-table {
+        min-width: 0;
+        display: block;
+    }
+
+    .compact-record-table tbody tr {
+        grid-template-columns: 1fr;
+    }
+
+    .compact-record-table tbody td {
+        grid-template-columns: minmax(105px, 36%) minmax(0, 1fr);
+    }
+
+    .compact-record-table .record-tools {
+        justify-content: flex-start;
+    }
+}
+
+@media screen and (max-width: 640px) {
+    .quick-entry-panel {
+        margin-left: -2px;
+        margin-right: -2px;
+        padding: 14px;
+        border-radius: 12px;
+    }
+
+    .quick-entry-header {
+        gap: 10px;
+    }
+
+    .quick-entry-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 10px;
+    }
+
+    .quick-entry-grid .quick-span-2,
+    .quick-entry-grid .quick-span-3,
+    .quick-entry-grid .quick-span-6 {
+        grid-column: auto;
+    }
+
+    .quick-entry-actions {
+        align-items: stretch;
+        flex-direction: column-reverse;
+    }
+
+    .quick-entry-actions .btn {
+        justify-content: center;
+        width: 100%;
+    }
+
+    .quick-entry-full-form {
+        display: none;
+    }
+
+    .entry-widget-actions {
+        width: 100%;
+    }
+
+    .entry-widget-actions .btn {
+        flex: 1 1 0;
+        justify-content: center;
+    }
+
+    .compact-record-table tbody td {
+        grid-template-columns: minmax(96px, 38%) minmax(0, 1fr);
+    }
+}
+
 /* Table Badges */
 .badge {
     display: inline-flex;
