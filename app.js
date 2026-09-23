@@ -5,7 +5,9 @@
 
 const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwxEEhfMfU8hjiR-iijOqcdPbRR-UOQOf4CMD34B0qVlhjgJYEpFXzGkopJ4inI5RyRnA/exec';
 const API_URL = ['127.0.0.1', 'localhost'].includes(window.location.hostname) ? '/api' : GAS_API_URL;
-const API_REQUEST_TIMEOUT_MS = 15000;
+// Apps Script can take longer during a cold start.  Thirty seconds avoids
+// treating a healthy, waking deployment as an offline service.
+const API_REQUEST_TIMEOUT_MS = 30000;
 const API_READ_RETRY_ATTEMPTS = 2;
 const API_RETRY_DELAY_MS = 700;
 const RETRYABLE_READ_API_ACTIONS = new Set([
@@ -370,25 +372,41 @@ function appAlert(message, icon = 'info', title = '') {
     });
 }
 
-// Loading state overlay control
+// Database status is deliberately non-blocking: users can still inspect the
+// current screen while Apps Script loads or reconnects.
+function setDatabaseStatus(message, status = 'loading', detail = '', canRetry = false) {
+    const bar = document.getElementById('database-load-status');
+    if (!bar) return;
+
+    const messageEl = document.getElementById('database-load-status-message');
+    const detailEl = document.getElementById('database-load-status-detail');
+    const retryButton = document.getElementById('database-load-status-retry');
+    if (messageEl) messageEl.textContent = message;
+    if (detailEl) {
+        detailEl.textContent = detail;
+        detailEl.hidden = !detail;
+    }
+    if (retryButton) retryButton.hidden = !canRetry;
+    bar.dataset.status = status;
+    bar.hidden = false;
+}
+
+function hideDatabaseStatus() {
+    const bar = document.getElementById('database-load-status');
+    if (bar) bar.hidden = true;
+}
+
 function showLoading(show) {
     if (show) {
-        Swal.fire({
-            title: 'กำลังประมวลผลข้อมูล...',
-            allowOutsideClick: false,
-            showConfirmButton: false,
-            didOpen: () => {
-                Swal.showLoading();
-            }
-        });
+        setDatabaseStatus('กำลังโหลดข้อมูลจากฐานข้อมูล...', 'loading');
     } else {
-        if (Swal.isVisible() && Swal.isLoading()) {
-            Swal.close();
-        }
-        // Fallback to original overlay just in case
-        const overlay = document.getElementById('loading-overlay');
-        if (overlay) overlay.style.display = 'none';
+        hideDatabaseStatus();
     }
+}
+
+function retryDatabaseLoad() {
+    setDatabaseStatus('กำลังลองเชื่อมต่อฐานข้อมูลอีกครั้ง...', 'loading');
+    initAppWithAPI();
 }
 
 // Handle login session expiration
@@ -880,25 +898,16 @@ async function handleLogout() {
 
 let appLoadGeneration = 0;
 
-async function showInitialLoadFailure(error, loadGeneration) {
+function showInitialLoadFailure(error, loadGeneration) {
     const isConnectionIssue = Boolean(error && error.connectionIssue);
     const message = isConnectionIssue
-        ? `ไม่สามารถเชื่อมต่อ Apps Script ได้ชั่วคราว\n\n${error.message}\n\nระบบได้ลองเชื่อมต่อใหม่ให้อัตโนมัติแล้ว คุณสามารถกด “ลองใหม่” ได้ทันที`
+        ? 'ไม่สามารถเชื่อมต่อ Apps Script ได้ชั่วคราว ระบบได้ลองเชื่อมต่อใหม่ให้อัตโนมัติแล้ว'
         : `ไม่สามารถโหลดข้อมูลได้: ${error && error.message ? error.message : 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ'}`;
-    const result = await Swal.fire({
-        title: isConnectionIssue ? 'การเชื่อมต่อขัดข้องชั่วคราว' : 'ไม่สามารถโหลดข้อมูลได้',
-        text: message,
-        icon: 'error',
-        showCancelButton: true,
-        confirmButtonText: 'ลองใหม่',
-        cancelButtonText: 'รอภายหลัง',
-        confirmButtonColor: '#2563eb',
-        cancelButtonColor: '#64748b',
-        allowOutsideClick: false
-    });
-
-    if (result.isConfirmed && loadGeneration === appLoadGeneration) {
-        window.setTimeout(() => initAppWithAPI(), 0);
+    const detail = error && error.message
+        ? error.message
+        : 'โปรดตรวจสอบการเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่';
+    if (loadGeneration === appLoadGeneration) {
+        setDatabaseStatus(message, 'error', detail, true);
     }
 }
 
@@ -908,6 +917,7 @@ async function initAppWithAPI() {
     const selectedMonth = state.selectedMonth;
     const selectedYear = state.selectedYear;
     const monthFilter = `${selectedYear - 543}-${String(selectedMonth).padStart(2, '0')}`;
+    let loadFailed = false;
 
     try {
         showLoading(true);
@@ -955,13 +965,14 @@ async function initAppWithAPI() {
         renderAll();
     } catch (err) {
         if (loadGeneration === appLoadGeneration) {
+            loadFailed = true;
             showLoading(false);
             if (!err || !err.isAuthenticationError) {
                 await showInitialLoadFailure(err, loadGeneration);
             }
         }
     } finally {
-        if (loadGeneration === appLoadGeneration) showLoading(false);
+        if (loadGeneration === appLoadGeneration && !loadFailed) showLoading(false);
     }
 }
 

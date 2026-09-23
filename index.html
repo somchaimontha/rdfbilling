@@ -76,6 +76,14 @@
 </div>
 
 <div class="app-container" id="app-shell">
+    <section class="database-load-status" id="database-load-status" role="status" aria-live="polite" hidden>
+        <span class="database-load-status-spinner" aria-hidden="true"></span>
+        <div class="database-load-status-copy">
+            <strong id="database-load-status-message">กำลังโหลดข้อมูลจากฐานข้อมูล...</strong>
+            <span id="database-load-status-detail" hidden></span>
+        </div>
+        <button class="btn btn-outline btn-sm" id="database-load-status-retry" type="button" onclick="retryDatabaseLoad()" hidden>ลองใหม่</button>
+    </section>
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
     <!-- Sidebar Navigation -->
     <aside class="sidebar" id="sidebar" aria-label="เมนูหลัก">
