@@ -398,10 +398,16 @@
                             </div>
                             <div class="form-group quick-span-2">
                                 <label class="form-label" for="inline-exp-posting-month">รอบบันทึก</label>
-                                <input type="month" id="inline-exp-posting-month" class="form-input" readonly required>
+                                <input type="month" id="inline-exp-posting-month" class="form-input" required>
+                                <small class="form-help">วันที่บิลอาจเป็นเดือนก่อนหน้าได้ แต่ยอดจะรวมในรอบเดือนนี้</small>
                             </div>
                             <div class="form-group quick-span-3">
-                                <label class="form-label" for="inline-exp-project">โครงการ</label>
+                                <div class="quick-entry-label-row">
+                                    <label class="form-label" for="inline-exp-project">โครงการ</label>
+                                    <button type="button" class="btn btn-link btn-xs" onclick="quickAddProject('inline-exp')">
+                                        <i data-lucide="plus"></i> เพิ่มโครงการด่วน
+                                    </button>
+                                </div>
                                 <select id="inline-exp-project" class="form-select" required></select>
                             </div>
                             <div class="form-group quick-span-3">
@@ -466,7 +472,7 @@
                         </details>
                         <div class="quick-entry-actions">
                             <button type="button" class="btn btn-outline" onclick="resetQuickExpenseEntry()"><i data-lucide="rotate-ccw"></i> ล้างข้อมูล</button>
-                            <button type="button" class="btn btn-outline quick-entry-full-form" onclick="openExpenseModal()"><i data-lucide="maximize-2"></i> ใช้ฟอร์มเต็ม</button>
+                            <button type="button" class="btn btn-outline quick-entry-full-form" onclick="openExpenseModalFromQuickEntry()"><i data-lucide="maximize-2"></i> เปิดฟอร์มเต็มพร้อมข้อมูล</button>
                             <button type="submit" id="quick-exp-save-btn" class="btn btn-primary"><i data-lucide="save"></i> บันทึกรายการ</button>
                         </div>
                     </form>
@@ -1530,10 +1536,14 @@
                     <label class="form-label" for="bill-desc">รายละเอียดรายการ</label>
                     <input type="text" id="bill-desc" class="form-input" placeholder="รายละเอียดสินค้า/บริการ" required>
                 </div>
-                <div class="form-grid form-grid-2">
+                <div class="form-grid form-grid-3">
                     <div class="form-group">
                         <label class="form-label" for="bill-qty">จำนวน</label>
                         <input type="number" id="bill-qty" class="form-input" value="1" min="0.01" step="any" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="bill-unit">หน่วย</label>
+                        <input type="text" id="bill-unit" class="form-input" value="รายการ" placeholder="เช่น ชิ้น, กล่อง" required>
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="bill-price">ราคาต่อหน่วย (บาท)</label>
@@ -1557,7 +1567,7 @@
                     <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('bill-attachment-input').click()" style="display:flex; align-items:center; gap:6px; margin-top:8px;">
                         <i data-lucide="upload-cloud" style="width:16px; height:16px;"></i> เพิ่มไฟล์หลักฐาน
                     </button>
-                    <input type="file" id="bill-attachment-input" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,.csv,.xls,.xlsx" style="display:none;" onchange="handleBillAttachmentSelect(event)">
+                    <input type="file" id="bill-attachment-input" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,.csv,.xlsx,.docx" style="display:none;" onchange="handleBillAttachmentSelect(event)">
                 </div>
             </div>
             <footer class="modal-footer">

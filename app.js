@@ -532,6 +532,7 @@ let attachmentStore = {};
 
 // Track whether the expense modal is opened in "Additional Project" mode
 let isNewProjectExpenseMode = false;
+let expenseModalSource = null;
 
 // Temporary attachments array for new/editing bills
 let tempBillAttachments = [];
@@ -3277,20 +3278,30 @@ async function quickAddProject(target) {
     const nameTrimmed = name.trim();
     if (!nameTrimmed) return;
     
+    const existing = (state.projects || []).find(project => normalizeMasterName(project.name) === normalizeMasterName(nameTrimmed));
+    if (existing) {
+        if (target === 'bill') populateDropdown('bill-project', state.projects.filter(p => p.active), 'id', 'name', existing.id);
+        else if (target === 'attach') populateDropdown('attach-project', state.projects.filter(p => p.active), 'id', 'name', existing.id);
+        else if (target === 'inline-exp') populateQuickExpenseProjectOptions(existing.id);
+        return;
+    }
+
     showLoading(true);
     try {
-        await apiCall('createProject', { projectName: nameTrimmed, budget: 0 });
+        const result = await apiCall('createProject', { projectName: nameTrimmed, budget: 0 });
+        if (!result || !result.id) throw new Error('ระบบไม่ส่งรหัสโครงการใหม่กลับมา');
+        const newProj = { id: result.id, name: nameTrimmed, active: true };
+        state.projects.push(newProj);
         appAlert('เพิ่มโครงการสำเร็จ!');
-        await initAppWithAPI();
-        
         const activeProjects = state.projects.filter(p => p.active);
-        const newProj = state.projects.find(p => p.name === nameTrimmed);
-        const selectedVal = newProj ? newProj.id : null;
+        const selectedVal = newProj.id;
         
         if (target === 'bill') {
             populateDropdown('bill-project', activeProjects, 'id', 'name', selectedVal);
         } else if (target === 'attach') {
             populateDropdown('attach-project', activeProjects, 'id', 'name', selectedVal);
+        } else if (target === 'inline-exp') {
+            populateQuickExpenseProjectOptions(selectedVal);
         }
     } catch (err) {
         appAlert('บันทึกโครงการล้มเหลว: ' + err.message);
@@ -3301,6 +3312,7 @@ async function quickAddProject(target) {
 window.quickAddProject = quickAddProject;
 
 function openExpenseModal(editIdx = null, isNewProject = false) {
+    expenseModalSource = null;
     isNewProjectExpenseMode = isNewProject;
     const modal = document.getElementById('modal-bill');
     const form = document.getElementById('form-bill');
@@ -3351,6 +3363,7 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
         setupExpenseMasterInput('fundSource', exp.fundSourceId);
         (document.getElementById('bill-desc') || {}).value = exp.description;
         (document.getElementById('bill-qty') || {}).value = exp.quantity;
+        (document.getElementById('bill-unit') || {}).value = exp.unit || 'รายการ';
         (document.getElementById('bill-price') || {}).value = exp.unitPrice;
         (document.getElementById('bill-claim-type') || {}).value = exp.claimable ? 'claim' : 'no-claim';
         (document.getElementById('bill-note') || {}).value = exp.note || '';
@@ -3360,6 +3373,7 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
         const mStr = String(state.selectedMonth).padStart(2, '0');
         (document.getElementById('bill-date') || {}).value = `${gYear}-${mStr}-01`;
         (document.getElementById('bill-posting-month') || {}).value = `${gYear}-${mStr}`;
+        (document.getElementById('bill-unit') || {}).value = 'รายการ';
     }
 
     const expId = editIdx !== null && state.expenses[editIdx] ? state.expenses[editIdx].id : null;
@@ -3371,6 +3385,7 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
 
 function closeExpenseModal() {
     isNewProjectExpenseMode = false;
+    expenseModalSource = null;
     document.getElementById('modal-bill').classList.remove('active');
 }
 
@@ -3379,6 +3394,7 @@ async function handleExpenseSubmit(e) {
     const editIdx = document.getElementById('bill-edit-index').value;
     const claimable = (document.getElementById('bill-claim-type') || {}).value === 'claim';
     const qty = Math.max(0.01, parseFloat(document.getElementById('bill-qty').value) || 1);
+    const unit = String((document.getElementById('bill-unit') || {}).value || '').trim();
     const unitPrice = Math.max(0, parseFloat(document.getElementById('bill-price').value) || 0);
 
     const user = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
@@ -3420,6 +3436,7 @@ async function handleExpenseSubmit(e) {
         if (!/^\d{4}-\d{2}$/.test(postingMonth)) throw new Error('กรุณาระบุรอบเดือนที่บันทึก');
         if (!projectId) throw new Error('กรุณาเลือกโครงการก่อนบันทึก');
         if (!description) throw new Error('กรุณาระบุรายละเอียดรายการ');
+        if (!unit) throw new Error('กรุณาระบุหน่วย');
         if (unitPrice <= 0) throw new Error('ราคาต่อหน่วยต้องมากกว่า 0 บาท');
 
         const categoryId = await resolveExpenseMasterSelection('category');
@@ -3436,6 +3453,7 @@ async function handleExpenseSubmit(e) {
             fundSourceId: fundSourceId,
             description: description,
             quantity: qty,
+            unit: unit,
             unitPrice: unitPrice,
             claimable: claimable,
             note: document.getElementById('bill-note').value.trim()
@@ -3501,7 +3519,12 @@ async function handleExpenseSubmit(e) {
             saveAttachments();
         }
 
+        const openedFromQuickEntry = expenseModalSource === 'quick-entry';
         closeExpenseModal();
+        if (openedFromQuickEntry) {
+            resetQuickExpenseEntry();
+            toggleQuickExpenseEntry(false);
+        }
         clearMonthlyRecordFilters();
         try {
             await refreshExpenseRecordsForSelectedMonth();
@@ -4536,22 +4559,22 @@ function getQuickDefaultProjectId() {
     return (dormitoryProject || projects[0] || {}).id || '';
 }
 
-function populateQuickExpenseProjectOptions() {
+function populateQuickExpenseProjectOptions(selectedId = '') {
     const select = document.getElementById('inline-exp-project');
     if (!select) return;
     const projects = (state.projects || []).filter(project => project && project.id && project.active !== false);
-    const defaultId = getQuickDefaultProjectId();
+    const defaultId = selectedId || getQuickDefaultProjectId();
     select.innerHTML = [
         '<option value="">เลือกโครงการ</option>',
         ...projects.map(project => `<option value="${escapeHTML(project.id)}" ${project.id === defaultId ? 'selected' : ''}>${escapeHTML(project.name || project.id)}</option>`)
     ].join('');
 }
 
-function syncQuickExpenseEntryPeriod() {
+function syncQuickExpenseEntryPeriod(force = false) {
     const postingMonth = document.getElementById('inline-exp-posting-month');
     const date = document.getElementById('inline-exp-date');
-    if (postingMonth) postingMonth.value = getSelectedPostingMonth();
-    if (date && !date.value) date.value = getSelectedMonthDefaultDateStr();
+    if (postingMonth && (force || !postingMonth.value)) postingMonth.value = getSelectedPostingMonth();
+    if (date && (force || !date.value)) date.value = getSelectedMonthDefaultDateStr();
 }
 
 function syncQuickFoodEntryPeriod() {
@@ -4607,7 +4630,7 @@ function resetQuickExpenseEntry() {
     quickExpenseAttachments = [];
     quickExpenseFileProcessing = false;
     populateQuickExpenseProjectOptions();
-    syncQuickExpenseEntryPeriod();
+    syncQuickExpenseEntryPeriod(true);
     setupExpenseMasterInput('category', '', 'inline-exp');
     setupExpenseMasterInput('fundSource', '', 'inline-exp');
     setupExpenseMasterInput('vendor', '', 'inline-exp');
@@ -4640,6 +4663,56 @@ function toggleQuickExpenseEntry(force) {
     }
     initializeLucide();
 }
+
+function openExpenseModalFromQuickEntry() {
+    const value = id => String((document.getElementById(id) || {}).value || '');
+    const draft = {
+        expenseDate: value('inline-exp-date'),
+        postingMonth: value('inline-exp-posting-month'),
+        projectId: value('inline-exp-project'),
+        categoryId: value('inline-exp-category'),
+        categoryName: value('inline-exp-category-input'),
+        fundSourceId: value('inline-exp-fund'),
+        fundSourceName: value('inline-exp-fund-input'),
+        vendorId: value('inline-exp-vendor'),
+        vendorName: value('inline-exp-vendor-input'),
+        description: value('inline-exp-desc'),
+        quantity: value('inline-exp-qty'),
+        unit: value('inline-exp-unit'),
+        unitPrice: value('inline-exp-price'),
+        claimable: value('inline-exp-claimable') === 'true',
+        note: value('quick-exp-note')
+    };
+
+    openExpenseModal();
+    expenseModalSource = 'quick-entry';
+    const set = (id, nextValue) => {
+        const element = document.getElementById(id);
+        if (element) element.value = nextValue;
+    };
+    set('bill-date', draft.expenseDate);
+    set('bill-posting-month', draft.postingMonth);
+    set('bill-project', draft.projectId);
+    set('bill-category', draft.categoryId);
+    set('bill-category-input', draft.categoryName);
+    set('bill-fund-source', draft.fundSourceId);
+    set('bill-fund-source-input', draft.fundSourceName);
+    set('bill-vendor', draft.vendorId);
+    set('bill-vendor-input', draft.vendorName);
+    set('bill-desc', draft.description);
+    set('bill-qty', draft.quantity || '1');
+    set('bill-unit', draft.unit || 'รายการ');
+    set('bill-price', draft.unitPrice);
+    set('bill-claim-type', draft.claimable ? 'claim' : 'no-claim');
+    set('bill-note', draft.note);
+
+    tempBillAttachments = quickExpenseAttachments.map(item => ({
+        ...item,
+        previewUrl: item.previewUrl || URL.createObjectURL(item.file)
+    }));
+    renderTempBillAttachmentsPreview(null);
+}
+window.openExpenseModalFromQuickEntry = openExpenseModalFromQuickEntry;
 
 function toggleQuickFoodEntry(force) {
     const panel = document.getElementById('quick-food-entry');
@@ -4706,6 +4779,7 @@ async function prepareQuickAttachment(file) {
         .join('');
     return {
         file: processedFile,
+        previewUrl: URL.createObjectURL(processedFile),
         originalFileName: file.name,
         originalSize,
         compressedSize,
@@ -4717,13 +4791,17 @@ async function handleQuickExpenseFiles(event) {
     const files = Array.from((event.target && event.target.files) || []);
     if (!files.length) return;
     quickExpenseFileProcessing = true;
+    const errors = [];
     try {
         for (const file of files) {
-            quickExpenseAttachments.push(await prepareQuickAttachment(file));
+            try {
+                quickExpenseAttachments.push(await prepareQuickAttachment(file));
+            } catch (error) {
+                errors.push(`${file.name}: ${error.message}`);
+            }
         }
         renderQuickExpenseFiles();
-    } catch (error) {
-        appAlert(`ไม่สามารถแนบไฟล์ได้: ${error.message}`, 'error');
+        if (errors.length) appAlert(`มีไฟล์ที่แนบไม่สำเร็จ:\n${errors.join('\n')}`, 'warning');
     } finally {
         quickExpenseFileProcessing = false;
         if (event.target) event.target.value = '';
@@ -4838,7 +4916,7 @@ async function submitQuickExpense(event) {
     const saveButton = document.getElementById('quick-exp-save-btn');
 
     if (!organizationId) return appAlert('ไม่พบข้อมูลหน่วยงานของผู้ใช้ กรุณาเข้าสู่ระบบใหม่', 'error');
-    if (!expenseDate || !/^\d{4}-\d{2}$/.test(postingMonth) || !projectId || !description || quantity <= 0 || unitPrice <= 0) {
+    if (!expenseDate || !/^\d{4}-\d{2}$/.test(postingMonth) || !projectId || !description || quantity <= 0 || !unit || unitPrice <= 0) {
         return appAlert('กรุณาระบุวันที่ รอบบันทึก โครงการ รายละเอียด จำนวน และราคาให้ครบถ้วน', 'error');
     }
     if (state.requireAttachment && quickExpenseAttachments.length === 0) {
