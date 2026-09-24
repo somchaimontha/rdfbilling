@@ -128,21 +128,23 @@ button, input, select, textarea {
 
 /* Non-blocking Apps Script / database connection status. */
 .database-load-status {
-    position: fixed;
-    top: 12px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 1100;
-    width: min(620px, calc(100vw - 32px));
     display: flex;
+    flex-shrink: 0;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
     padding: 10px 12px;
+    margin-bottom: 16px;
     border: 1px solid var(--accent);
     border-radius: 10px;
     background: var(--surface-solid);
     color: var(--text-primary);
-    box-shadow: var(--shadow-lg);
+}
+
+/* Author display:flex overrides the browser's default [hidden] styling. */
+.database-load-status[hidden],
+.database-load-status [hidden] {
+    display: none !important;
 }
 
 .database-load-status[data-status="error"] {
@@ -172,12 +174,15 @@ button, input, select, textarea {
     font-size: 13px;
 }
 
-.database-load-status-detail {
+#database-load-status-detail,
+#database-load-status-elapsed {
     color: var(--text-secondary);
     font-size: 12px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .database-load-status-spinner { animation: none; }
 }
 
 @keyframes database-status-spin { to { transform: rotate(360deg); } }

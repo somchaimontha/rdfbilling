@@ -1,7 +1,7 @@
 {
   "scripts": {
     "preflight": "node preflight-check.js",
-    "test": "npm run preflight"
+    "test": "npm run preflight && node --test tests/*.test.js"
   },
   "dependencies": {
     "iconv-lite": "^0.7.2"

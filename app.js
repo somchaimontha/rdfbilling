@@ -5,8 +5,7 @@
 
 const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwxEEhfMfU8hjiR-iijOqcdPbRR-UOQOf4CMD34B0qVlhjgJYEpFXzGkopJ4inI5RyRnA/exec';
 const API_URL = ['127.0.0.1', 'localhost'].includes(window.location.hostname) ? '/api' : GAS_API_URL;
-// Apps Script can take longer during a cold start.  Thirty seconds avoids
-// treating a healthy, waking deployment as an offline service.
+// A bounded per-attempt timeout; background loading must remain usable.
 const API_REQUEST_TIMEOUT_MS = 30000;
 const API_READ_RETRY_ATTEMPTS = 2;
 const API_RETRY_DELAY_MS = 700;
@@ -26,8 +25,21 @@ const RETRYABLE_READ_API_ACTIONS = new Set([
     'getUsers'
 ]);
 
-function waitForApiRetry(ms) {
-    return new Promise(resolve => window.setTimeout(resolve, ms));
+function waitForApiRetry(ms, signal) {
+    return new Promise((resolve, reject) => {
+        const cancel = () => {
+            window.clearTimeout(timer);
+            reject(createApiError('ยกเลิกการโหลดชุดเดิม', { name: 'AbortError' }));
+        };
+        const timer = window.setTimeout(() => {
+            if (signal) signal.removeEventListener('abort', cancel);
+            resolve();
+        }, ms);
+        if (signal) {
+            if (signal.aborted) cancel();
+            else signal.addEventListener('abort', cancel, { once: true });
+        }
+    });
 }
 
 function createApiError(message, options = {}) {
@@ -45,7 +57,7 @@ function isRetryableReadAction(action) {
 }
 
 // API request router (CORS friendly via text/plain payload)
-async function apiCall(action, data = null, filters = null, pagination = null) {
+async function apiCall(action, data = null, filters = null, pagination = null, options = {}) {
     const token = localStorage.getItem('rdf_session_token');
     const canRetry = isRetryableReadAction(action);
     const maxAttempts = canRetry ? API_READ_RETRY_ATTEMPTS : 1;
@@ -53,7 +65,12 @@ async function apiCall(action, data = null, filters = null, pagination = null) {
     let lastError = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (options.signal && options.signal.aborted) {
+            throw createApiError('ยกเลิกการโหลดชุดเดิม', { name: 'AbortError' });
+        }
         const controller = new AbortController();
+        const cancel = () => controller.abort();
+        if (options.signal) options.signal.addEventListener('abort', cancel, { once: true });
         let timeoutId = null;
 
         try {
@@ -110,6 +127,7 @@ async function apiCall(action, data = null, filters = null, pagination = null) {
             }
             return result.data || result;
         } catch (err) {
+            if (options.signal && options.signal.aborted) throw err;
             let requestError = err;
             if (err && err.name === 'AbortError') {
                 requestError = createApiError(
@@ -136,9 +154,12 @@ async function apiCall(action, data = null, filters = null, pagination = null) {
             }
 
             console.warn(`API Call [${action}] attempt ${attempt}/${maxAttempts} failed; retrying.`, requestError);
-            await waitForApiRetry(API_RETRY_DELAY_MS * attempt);
+            if (timeoutId !== null) window.clearTimeout(timeoutId);
+            if (options.onRetry) options.onRetry();
+            await waitForApiRetry(API_RETRY_DELAY_MS * attempt, options.signal);
         } finally {
             if (timeoutId !== null) window.clearTimeout(timeoutId);
+            if (options.signal) options.signal.removeEventListener('abort', cancel);
         }
     }
 
@@ -210,9 +231,9 @@ async function fetchAllPagedRecords(fetchPage, getRecords, options = {}) {
     return firstRecords.concat(...remainingResponses.map(response => getRecords(response) || []));
 }
 
-async function fetchAllExpensesForMonth(month) {
+async function fetchAllExpensesForMonth(month, options = {}) {
     return fetchAllPagedRecords(
-        page => apiCall('getExpenses', null, { month }, { page, limit: API_LIST_PAGE_SIZE }),
+        page => apiCall('getExpenses', null, { month }, { page, limit: API_LIST_PAGE_SIZE }, options),
         response => response.expenses || []
     );
 }
@@ -224,9 +245,9 @@ async function fetchAllExpensesForYear(year) {
     );
 }
 
-async function fetchAllFoodExpensesForMonth(month) {
+async function fetchAllFoodExpensesForMonth(month, options = {}) {
     return fetchAllPagedRecords(
-        page => apiCall('getFoodExpenses', null, { month }, { page, limit: API_LIST_PAGE_SIZE }),
+        page => apiCall('getFoodExpenses', null, { month }, { page, limit: API_LIST_PAGE_SIZE }, options),
         response => response.foodExpenses || [],
         { legacyUnpaged: true }
     );
@@ -386,7 +407,10 @@ function setDatabaseStatus(message, status = 'loading', detail = '', canRetry = 
         detailEl.textContent = detail;
         detailEl.hidden = !detail;
     }
-    if (retryButton) retryButton.hidden = !canRetry;
+    if (retryButton) {
+        retryButton.hidden = !canRetry;
+        retryButton.disabled = !canRetry;
+    }
     bar.dataset.status = status;
     bar.hidden = false;
 }
@@ -397,20 +421,29 @@ function hideDatabaseStatus() {
 }
 
 function showLoading(show) {
+    // A save/dialog finishing must not erase a database failure or active load.
+    if (appLoadProgress && (appLoadProgress.pending || appLoadProgress.failed)) return;
     if (show) {
-        setDatabaseStatus('กำลังโหลดข้อมูลจากฐานข้อมูล...', 'loading');
+        setDatabaseStatus('กำลังประมวลผลข้อมูล...', 'loading');
     } else {
         hideDatabaseStatus();
     }
 }
 
 function retryDatabaseLoad() {
-    setDatabaseStatus('กำลังลองเชื่อมต่อฐานข้อมูลอีกครั้ง...', 'loading');
-    initAppWithAPI();
+    if (appLoadProgress && appLoadProgress.pending) return;
+    return initAppWithAPI({ retryFailed: true });
 }
 
 // Handle login session expiration
 function handleSessionExpired() {
+    appLoadGeneration++;
+    if (appLoadProgress) {
+        appLoadProgress.controller.abort();
+        window.clearInterval(appLoadProgress.timer);
+        appLoadProgress = null;
+    }
+    hideDatabaseStatus();
     localStorage.removeItem('rdf_session_token');
     localStorage.removeItem('rdf_current_user');
     
@@ -562,6 +595,9 @@ function getDefaultState() {
         calculationMode: "all",
         monthStatuses: {}, // แคชสถานะเบิกจ่ายรายเดือน ดึงจาก backend สดทุกครั้งที่เปลี่ยนเดือน/ปี (ดู refreshCarryOverAmount)
         carryOverAmount: 0,
+        carryOverStatus: "idle",
+        claimsLoadStatus: "idle",
+        fundReceiptsLoadStatus: "idle",
 
         // ---- Claims & Signatures ----
         claims: [],
@@ -897,82 +933,165 @@ async function handleLogout() {
 }
 
 let appLoadGeneration = 0;
+let appLoadProgress = null;
 
-function showInitialLoadFailure(error, loadGeneration) {
-    const isConnectionIssue = Boolean(error && error.connectionIssue);
-    const message = isConnectionIssue
-        ? 'ไม่สามารถเชื่อมต่อ Apps Script ได้ชั่วคราว ระบบได้ลองเชื่อมต่อใหม่ให้อัตโนมัติแล้ว'
-        : `ไม่สามารถโหลดข้อมูลได้: ${error && error.message ? error.message : 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ'}`;
-    const detail = error && error.message
-        ? error.message
-        : 'โปรดตรวจสอบการเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่';
-    if (loadGeneration === appLoadGeneration) {
-        setDatabaseStatus(message, 'error', detail, true);
+function updateDatabaseLoadProgress(load) {
+    if (appLoadProgress !== load || load.controller.signal.aborted) return;
+    const completed = Object.keys(load.results).length;
+    const remaining = load.tasks.filter(task => !(task.key in load.results));
+    const elapsed = Math.floor((Date.now() - load.startedAt) / 1000);
+    const clock = document.getElementById('database-load-status-elapsed');
+    if (clock) {
+        clock.hidden = false;
+        clock.textContent = `ผ่านไป ${elapsed} วินาที`;
     }
+    if (!load.pending && !load.failed) {
+        hideDatabaseStatus();
+        return;
+    }
+    const message = load.failed && !load.pending
+        ? `โหลดข้อมูลได้ ${completed}/${load.tasks.length} ส่วน — บางส่วนยังไม่สำเร็จ`
+        : `${load.coreRendered ? 'แสดงรายการแล้ว กำลังโหลดข้อมูลประกอบ' : 'กำลังโหลดข้อมูลจากฐานข้อมูล'} (${completed}/${load.tasks.length})`;
+    const detail = load.failed && !load.pending
+        ? (remaining.map(task => `${task.label}: ${load.errors[task.key]?.message || 'โหลดไม่สำเร็จ'}`).join(' • ')
+            || Object.values(load.errors).map(error => error?.message || 'แสดงข้อมูลไม่สำเร็จ').join(' • '))
+        : `รอ: ${remaining.map(task => task.label).join(', ')}${elapsed >= 10 ? ' — การตอบกลับช้ากว่าปกติ' : ''}${load.retrying ? ' (กำลังลองเชื่อมต่อใหม่)' : ''}`;
+    setDatabaseStatus(message, load.pending ? 'loading' : 'error', detail, !load.pending);
 }
 
 // โหลดฐานข้อมูลหลักแบบ real-time จาก Google Sheets
-async function initAppWithAPI() {
+async function initAppWithAPI({ retryFailed = false } = {}) {
     const loadGeneration = ++appLoadGeneration;
     const selectedMonth = state.selectedMonth;
     const selectedYear = state.selectedYear;
     const monthFilter = `${selectedYear - 543}-${String(selectedMonth).padStart(2, '0')}`;
-    let loadFailed = false;
-
-    try {
-        showLoading(true);
-
-        // ทุก request ชุดนี้เป็นอิสระต่อกัน จึงทำพร้อมกัน. การดึงรายการ
-        // จะจำกัดที่เดือนที่กำลังดูแทนการส่งข้อมูลย้อนหลังทั้งหมดมาที่เบราว์เซอร์.
-        const [runtimeConfig, master, allExpenses, claimsRes, fundReceiptsRes, foodExpenses] = await Promise.all([
-            apiCall('getRuntimeConfig').catch(() => null),
-            apiCall('getMasterData'),
-            fetchAllExpensesForMonth(monthFilter),
-            apiCall('getClaims', null, { month: monthFilter }),
-            apiCall('getFundReceipts', null, { year: String(selectedYear - 543) }),
-            fetchAllFoodExpensesForMonth(monthFilter),
-        ]);
-
-        // ผู้ใช้อาจเปลี่ยนเดือนเร็ว ๆ ระหว่าง request. ห้ามให้ผลของเดือนเก่า
-        // เขียนทับข้อมูลของเดือนล่าสุด.
-        if (loadGeneration !== appLoadGeneration) return;
-
-        state.maxUploadSizeMb = runtimeConfig && runtimeConfig.maxUploadSizeMb
-            ? parseFloat(runtimeConfig.maxUploadSizeMb)
-            : 2;
-        state.requireAttachment = runtimeConfig
-            ? isConfigEnabled(runtimeConfig.requireAttachment)
-            : false;
+    const token = localStorage.getItem('rdf_session_token');
+    const previous = appLoadProgress;
+    const retained = retryFailed && previous && previous.month === monthFilter && previous.token === token
+        ? previous.results : {};
+    if (previous) {
+        previous.controller.abort();
+        window.clearInterval(previous.timer);
+    }
+    const load = {
+        month: monthFilter, token, controller: new AbortController(), startedAt: Date.now(),
+        results: { ...retained }, errors: {}, pending: true, failed: false, coreRendered: false,
+        tasks: [], timer: null, retrying: false
+    };
+    appLoadProgress = load;
+    const isCurrent = () => loadGeneration === appLoadGeneration && !load.controller.signal.aborted
+        && localStorage.getItem('rdf_session_token') === token;
+    const options = {
+        signal: load.controller.signal,
+        onRetry: () => { if (isCurrent()) { load.retrying = true; updateDatabaseLoadProgress(load); } }
+    };
+    const read = (action, data = null, filters = null) => apiCall(action, data, filters, null, options);
+    // Start independent reads together. A slow claim/balance request must not
+    // delay the monthly bill tables, nor discard results that already arrived.
+    load.tasks = [
+        { key: 'runtime', label: 'การตั้งค่า', fetch: () => read('getRuntimeConfig'), apply: value => {
+            state.maxUploadSizeMb = parseFloat(value.maxUploadSizeMb) || 2;
+            state.requireAttachment = isConfigEnabled(value.requireAttachment);
+        } },
+        { key: 'master', label: 'ข้อมูลหลัก', fetch: () => read('getMasterData') },
+        { key: 'expenses', label: 'รายการบิล', fetch: () => fetchAllExpensesForMonth(monthFilter, options) },
+        { key: 'food', label: 'ค่าอาหาร', fetch: () => fetchAllFoodExpensesForMonth(monthFilter, options), apply: value => {
+            state.foodExpenses = value || [];
+            if (load.coreRendered) renderTables();
+        } },
+        { key: 'claims', label: 'ชุดส่งเบิก', fetch: () => read('getClaims', null, { month: monthFilter }), apply: value => {
+            state.claims = value.claims || [];
+            state.claimsLoadStatus = 'ready';
+            if (load.coreRendered && state.activeTab === 'claims-view') renderClaims();
+        } },
+        { key: 'receipts', label: 'เอกสารรับเงิน', fetch: () => read('getFundReceipts', null, { year: String(selectedYear - 543) }), apply: value => {
+            state.fundReceipts = value.fundReceipts || [];
+            state.fundReceiptsLoadStatus = 'ready';
+            if (load.coreRendered) {
+                updateFundReceiptWidget();
+                if (state.activeTab === 'fund-receipts') renderFundReceiptsOverview();
+            }
+        } },
+        { key: 'carry', label: 'ยอดยกมา', fetch: () => read('getCarryOverAmount', { beforeMonth: selectedMonth, beforeYear: selectedYear }), apply: value => {
+            state.carryOverAmount = value.carryOverAmount || 0;
+            state.carryOverStatus = 'ready';
+            if (load.coreRendered) { updateMetricsBar(); renderSpreadsheet(); }
+        } },
+        { key: 'statuses', label: 'สถานะรายเดือน', fetch: () => read('getMonthStatuses', { year: selectedYear - 543 }), apply: value => {
+            state.monthStatuses = value.statuses || {};
+            updateMonthStatusCheckboxUI();
+        } }
+    ];
+    if (!('carry' in load.results)) {
+        state.carryOverAmount = 0;
+        state.carryOverStatus = 'loading';
+    }
+    if (!('claims' in load.results)) {
+        state.claims = [];
+        state.claimsLoadStatus = 'loading';
+    }
+    if (!('receipts' in load.results)) {
+        state.fundReceipts = [];
+        state.fundReceiptsLoadStatus = 'loading';
+    }
+    const publishCore = () => {
+        if (load.coreRendered || !['master', 'expenses'].every(key => key in load.results)) return;
+        const { master, expenses } = load.results;
         state.projects = (master.projects || []).map(p => ({ ...p, name: p.projectName || p.name }));
         state.categories = (master.categories || []).map(c => ({ ...c, name: c.categoryName || c.name }));
         state.vendors = (master.vendors || []).map(v => ({ ...v, name: v.vendorName || v.name }));
         state.fundSources = (master.fundSources || []).map(f => ({ ...f, name: f.name || f.fundSourceName }));
         state.organizations = (master.organizations || []).map(o => ({ ...o, name: o.nameTh || o.name }));
-
-        // แยกบิลปกติ (EXP) และบิลสาธารณูปโภค (ATT) เพื่อแสดงผลในหน้าเว็บอย่างถูกต้อง
-        state.expenses = allExpenses.filter(e => e.id && e.id.startsWith('EXP'));
-        state.attachments = allExpenses.filter(e => e.id && e.id.startsWith('ATT'));
-        state.claims = claimsRes.claims || [];
-        state.fundReceipts = fundReceiptsRes.fundReceipts || [];
-        state.foodExpenses = foodExpenses;
-
-        // ยอดยกไปจากเดือนก่อนหน้า + สถานะเบิกจ่ายรายเดือน (คำนวณที่ backend เสมอ)
-        await refreshCarryOverAmount(selectedMonth, selectedYear);
-        if (loadGeneration !== appLoadGeneration) return;
-
-        // โหลดข้อมูลลายเซ็นจาก LocalStorage ท้องถิ่น (ตาม Phase 2 เดิม)
+        state.expenses = expenses.filter(e => e.id && e.id.startsWith('EXP'));
+        state.attachments = expenses.filter(e => e.id && e.id.startsWith('ATT'));
+        state.foodExpenses = load.results.food || [];
         loadAttachments();
         renderAll();
-    } catch (err) {
-        if (loadGeneration === appLoadGeneration) {
-            loadFailed = true;
-            showLoading(false);
-            if (!err || !err.isAuthenticationError) {
-                await showInitialLoadFailure(err, loadGeneration);
+        load.coreRendered = true;
+    };
+    try {
+        // Retry only the failed resources of this same month/session.
+        load.tasks.forEach(task => { if (task.key in load.results && task.apply) task.apply(load.results[task.key]); });
+        publishCore();
+        updateDatabaseLoadProgress(load);
+        load.timer = window.setInterval(() => updateDatabaseLoadProgress(load), 1000);
+        await Promise.all(load.tasks.map(async task => {
+            if (task.key in load.results) return;
+            try {
+                const value = await task.fetch();
+                if (!isCurrent()) return;
+                load.results[task.key] = value;
+                if (task.apply) task.apply(value);
+                publishCore();
+            } catch (error) {
+                if (!isCurrent()) return;
+                // A failed network read is retryable. A rendering error keeps
+                // the fetched value so retry does not hit Apps Script again.
+                const fetched = task.key in load.results;
+                load.errors[fetched ? `render:${task.key}` : task.key] = error;
+                if (!fetched) {
+                    if (task.key === 'carry') state.carryOverStatus = 'error';
+                    if (task.key === 'claims') {
+                        state.claimsLoadStatus = 'error';
+                        if (state.activeTab === 'claims-view') renderClaims();
+                    }
+                    if (task.key === 'receipts') {
+                        state.fundReceiptsLoadStatus = 'error';
+                        if (state.activeTab === 'fund-receipts') renderFundReceiptsOverview();
+                    }
+                }
             }
-        }
+            if (isCurrent()) updateDatabaseLoadProgress(load);
+        }));
+    } catch (error) {
+        if (isCurrent()) load.errors.render = error;
     } finally {
-        if (loadGeneration === appLoadGeneration && !loadFailed) showLoading(false);
+        window.clearInterval(load.timer);
+        if (isCurrent()) {
+            load.pending = false;
+            load.failed = Object.keys(load.errors).length > 0;
+            updateDatabaseLoadProgress(load);
+        }
     }
 }
 
@@ -1380,27 +1499,31 @@ function syncNavigationActiveState(tabName) {
 
 // ดึงยอดยกไปจากเดือนก่อนหน้า + สถานะเบิกจ่ายรายเดือนของปีนี้จาก backend เสมอ
 // (คำนวณฝั่ง client ไม่ได้ เพราะ state.expenses มีแค่ข้อมูลเดือนที่เลือกอยู่เดือนเดียว)
+let carryOverRefreshGeneration = 0;
 async function refreshCarryOverAmount(targetMonth = state.selectedMonth, targetYear = state.selectedYear) {
-    try {
-        const res = await apiCall('getCarryOverAmount', { beforeMonth: targetMonth, beforeYear: targetYear });
-        if (targetMonth === state.selectedMonth && targetYear === state.selectedYear) {
-            state.carryOverAmount = res.carryOverAmount || 0;
-        }
-    } catch (err) {
-        if (targetMonth === state.selectedMonth && targetYear === state.selectedYear) {
-            state.carryOverAmount = 0;
-        }
+    const refreshGeneration = ++carryOverRefreshGeneration;
+    const token = localStorage.getItem('rdf_session_token');
+    const isCurrent = () => refreshGeneration === carryOverRefreshGeneration
+        && targetMonth === state.selectedMonth
+        && targetYear === state.selectedYear
+        && token === localStorage.getItem('rdf_session_token');
+    state.carryOverStatus = 'loading';
+    const [carryResult, statusesResult] = await Promise.allSettled([
+        apiCall('getCarryOverAmount', { beforeMonth: targetMonth, beforeYear: targetYear }),
+        apiCall('getMonthStatuses', { year: targetYear - 543 })
+    ]);
+    if (!isCurrent()) return;
+    if (carryResult.status === 'fulfilled') {
+        state.carryOverAmount = carryResult.value.carryOverAmount || 0;
+        state.carryOverStatus = 'ready';
+    } else {
+        state.carryOverAmount = 0;
+        state.carryOverStatus = 'error';
     }
-    try {
-        const ceYear = targetYear - 543;
-        const res2 = await apiCall('getMonthStatuses', { year: ceYear });
-        if (targetMonth === state.selectedMonth && targetYear === state.selectedYear) {
-            state.monthStatuses = res2.statuses || {};
-        }
-    } catch (err) {
-        // ดึงไม่สำเร็จ — เก็บค่าที่มีอยู่เดิมไว้แทนการล้างทิ้ง
+    if (statusesResult.status === 'fulfilled') {
+        state.monthStatuses = statusesResult.value.statuses || {};
     }
-    if (targetMonth === state.selectedMonth && targetYear === state.selectedYear) {
+    if (isCurrent()) {
         updateMonthStatusCheckboxUI();
     }
 }
@@ -1570,9 +1693,16 @@ function getFundReceiptByMonth(monthKey) {
 
 async function loadFundReceiptsForYear(yearBE) {
     const ceYear = Number(yearBE) - 543;
-    const res = await apiCall('getFundReceipts', null, { year: String(ceYear) });
-    state.fundReceipts = res.fundReceipts || [];
-    return state.fundReceipts;
+    state.fundReceiptsLoadStatus = 'loading';
+    try {
+        const res = await apiCall('getFundReceipts', null, { year: String(ceYear) });
+        state.fundReceipts = res.fundReceipts || [];
+        state.fundReceiptsLoadStatus = 'ready';
+        return state.fundReceipts;
+    } catch (error) {
+        state.fundReceiptsLoadStatus = 'error';
+        throw error;
+    }
 }
 
 window.onFundReceiptYearChange = async function() {
@@ -1593,6 +1723,11 @@ function updateFundReceiptWidget() {
 
     const thShort = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
     badge.textContent = thShort[state.selectedMonth - 1] + ' ' + state.selectedYear;
+
+    if (state.fundReceiptsLoadStatus === 'loading') {
+        body.innerHTML = `<div style="color:var(--text-muted); font-size:13px;">กำลังโหลดเอกสารรับเงินทุน...</div>`;
+        return;
+    }
 
     const rec = getFundReceiptByMonth(selectedMonthKey());
     if (rec) {
@@ -1801,6 +1936,13 @@ function renderFundReceiptsOverview() {
     const tbody = document.getElementById('fund-receipts-tbody');
     const totalEl = document.getElementById('fund-receipts-year-total');
     if (!tbody) return;
+
+    if (state.fundReceiptsLoadStatus === 'loading' || state.fundReceiptsLoadStatus === 'error') {
+        const failed = state.fundReceiptsLoadStatus === 'error';
+        tbody.innerHTML = `<tr><td colspan="4" class="text-center" style="padding:24px; color:var(--text-muted);">${failed ? 'โหลดเอกสารรับเงินทุนไม่สำเร็จ กรุณากดลองใหม่จากแถบสถานะ' : 'กำลังโหลดเอกสารรับเงินทุน...'}</td></tr>`;
+        if (totalEl) totalEl.textContent = '-';
+        return;
+    }
 
     let total = 0;
     const rows = THAI_MONTH_NAMES.map((name, idx) => {
@@ -2029,7 +2171,7 @@ function calculateTotals() {
         }
     });
 
-    const carryOver = state.carryOverAmount || 0;
+    const carryOver = state.carryOverStatus === 'ready' ? (state.carryOverAmount || 0) : 0;
     let displayClaimable, displayNonClaimable, displayGrand;
 
     if (state.calculationMode === 'claim') {
@@ -2061,7 +2203,10 @@ function updateMetricsBar() {
     const totals = calculateTotals();
 
     const banner = document.getElementById('carry-over-banner');
-    if (totals.carryOver > 0) {
+    if (state.carryOverStatus === 'loading') {
+        banner.style.display = 'flex';
+        (document.getElementById('carry-over-text') || {}).textContent = 'กำลังคำนวณยอดยกมาจากเดือนก่อน...';
+    } else if (totals.carryOver > 0) {
         banner.style.display = 'flex';
         (document.getElementById('carry-over-text') || {}).textContent =
             `ยอดยกมาจากเดือนก่อน: ฿${totals.carryOver.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (สมทบเข้ากับยอดเบิกในเดือนนี้)`;
@@ -2432,7 +2577,7 @@ function renderSpreadsheet() {
         }
     });
 
-    const carryOver = state.carryOverAmount || 0;
+    const carryOver = state.carryOverStatus === 'ready' ? (state.carryOverAmount || 0) : 0;
     const totals = calculateTotals();
     const rowsCount = Math.max(20, 12 + monthlyExp.length + monthlyAttach.length);
 
@@ -5586,7 +5731,14 @@ function renderClaims() {
     tbody.innerHTML = '';
 
     const claims = state.claims || [];
-    (document.getElementById('claims-count-display') || {}).textContent = `จำนวนชุดส่งเบิกทั้งหมด: ${claims.length} รายการ`;
+    const countDisplay = document.getElementById('claims-count-display');
+    if (state.claimsLoadStatus === 'loading' || state.claimsLoadStatus === 'error') {
+        const failed = state.claimsLoadStatus === 'error';
+        if (countDisplay) countDisplay.textContent = failed ? 'โหลดชุดส่งเบิกไม่สำเร็จ' : 'กำลังโหลดชุดส่งเบิก...';
+        tbody.innerHTML = `<tr><td colspan="8" class="text-center" style="padding:24px; color:var(--text-muted);">${failed ? 'กรุณากดลองใหม่จากแถบสถานะ' : 'กำลังโหลดข้อมูล...'}</td></tr>`;
+        return;
+    }
+    if (countDisplay) countDisplay.textContent = `จำนวนชุดส่งเบิกทั้งหมด: ${claims.length} รายการ`;
 
     if (claims.length === 0) {
         tbody.innerHTML = `<tr><td colspan="8" class="text-center" style="padding:24px; color:var(--text-muted);">ยังไม่มีชุดส่งเบิก — กด "สร้างชุดส่งเบิกใหม่" เพื่อเริ่มต้น</td></tr>`;

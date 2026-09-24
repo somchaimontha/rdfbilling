@@ -5,23 +5,9 @@ const path = require('path');
 const PORT = Number(process.env.PORT || 8081);
 const ROOT = __dirname;
 const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwxEEhfMfU8hjiR-iijOqcdPbRR-UOQOf4CMD34B0qVlhjgJYEpFXzGkopJ4inI5RyRnA/exec';
-const API_PROXY_TIMEOUT_MS = 15000;
-const API_PROXY_READ_RETRY_ATTEMPTS = 2;
-const RETRYABLE_PROXY_ACTIONS = new Set([
-    'getAttachmentDataUrl',
-    'getAttachments',
-    'getCarryOverAmount',
-    'getClaims',
-    'getExpenses',
-    'getFoodExpenseById',
-    'getFoodExpenses',
-    'getFundReceipts',
-    'getMasterData',
-    'getMonthStatuses',
-    'getRuntimeConfig',
-    'getSystemConfig',
-    'getUsers'
-]);
+// Leave time for a JSON error to reach the browser before its 30s deadline.
+// The browser owns safe-read retries; retrying here multiplies upstream work.
+const API_PROXY_TIMEOUT_MS = 25000;
 
 const MIME_TYPES = {
     '.html': 'text/html; charset=utf-8',
@@ -58,19 +44,6 @@ function resolveStaticPath(urlPath) {
     return filePath;
 }
 
-function wait(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function getApiAction(body) {
-    try {
-        const payload = JSON.parse(body);
-        return typeof payload.action === 'string' ? payload.action : '';
-    } catch (_) {
-        return '';
-    }
-}
-
 function isJsonPayload(text) {
     try {
         JSON.parse(text);
@@ -93,8 +66,7 @@ function apiErrorBody(message, code) {
     });
 }
 
-async function fetchGasApi(body) {
-    const controller = new AbortController();
+async function fetchGasApi(body, controller) {
     const timeoutId = setTimeout(() => controller.abort(), API_PROXY_TIMEOUT_MS);
     try {
         const response = await fetch(GAS_API_URL, {
@@ -112,58 +84,56 @@ async function fetchGasApi(body) {
 
 async function proxyApi(req, res) {
     let body = '';
+    const controller = new AbortController();
+    let clientDisconnected = false;
+    const abortOnDisconnect = () => {
+        if (res.writableEnded) return;
+        clientDisconnected = true;
+        controller.abort();
+    };
+    req.once('aborted', abortOnDisconnect);
+    req.once('error', abortOnDisconnect);
+    // IncomingMessage's normal "close" can occur after the POST body is read.
+    // ServerResponse's "close" tells us whether the browser stopped waiting.
+    res.once('close', abortOnDisconnect);
     req.on('data', chunk => { body += chunk; });
     req.on('end', async () => {
-        const action = getApiAction(body);
-        const canRetry = RETRYABLE_PROXY_ACTIONS.has(action);
-        const maxAttempts = canRetry ? API_PROXY_READ_RETRY_ATTEMPTS : 1;
+        if (clientDisconnected) return;
+        try {
+            const { response, text } = await fetchGasApi(body, controller);
+            if (clientDisconnected) return;
+            const contentType = response.headers.get('content-type') || '';
 
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                const { response, text } = await fetchGasApi(body);
-                const contentType = response.headers.get('content-type') || '';
-                const hasJsonPayload = isJsonPayload(text);
-                const shouldRetry = canRetry
-                    && attempt < maxAttempts
-                    && (!hasJsonPayload || isTransientApiStatus(response.status));
-
-                if (shouldRetry) {
-                    await wait(700 * attempt);
-                    continue;
-                }
-
-                if (!hasJsonPayload) {
-                    return send(res, 502, apiErrorBody(
-                        'Apps Script ตอบกลับผิดรูปแบบชั่วคราว ระบบโปรดลองใหม่อีกครั้ง',
-                        'UPSTREAM_NON_JSON'
-                    ), { 'Content-Type': 'application/json; charset=utf-8' });
-                }
-
-                if (isTransientApiStatus(response.status)) {
-                    return send(res, 502, apiErrorBody(
-                        `Apps Script ขัดข้องชั่วคราว (HTTP ${response.status})`,
-                        'UPSTREAM_UNAVAILABLE'
-                    ), { 'Content-Type': 'application/json; charset=utf-8' });
-                }
-
-                return send(res, response.status, text, {
-                    'Content-Type': contentType || 'application/json; charset=utf-8'
-                });
-            } catch (err) {
-                const isTimeout = err && err.name === 'AbortError';
-                const shouldRetry = canRetry && attempt < maxAttempts;
-                if (shouldRetry) {
-                    await wait(700 * attempt);
-                    continue;
-                }
-
-                return send(res, isTimeout ? 504 : 502, apiErrorBody(
-                    isTimeout
-                        ? `ใช้เวลาติดต่อ Apps Script เกิน ${Math.round(API_PROXY_TIMEOUT_MS / 1000)} วินาที`
-                        : 'ไม่สามารถเชื่อมต่อ Apps Script ได้ชั่วคราว',
-                    isTimeout ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_CONNECTION_FAILED'
+            if (!isJsonPayload(text)) {
+                return send(res, 502, apiErrorBody(
+                    'Apps Script ตอบกลับผิดรูปแบบชั่วคราว โปรดลองใหม่อีกครั้ง',
+                    'UPSTREAM_NON_JSON'
                 ), { 'Content-Type': 'application/json; charset=utf-8' });
             }
+
+            if (isTransientApiStatus(response.status)) {
+                return send(res, 502, apiErrorBody(
+                    `Apps Script ขัดข้องชั่วคราว (HTTP ${response.status})`,
+                    'UPSTREAM_UNAVAILABLE'
+                ), { 'Content-Type': 'application/json; charset=utf-8' });
+            }
+
+            return send(res, response.status, text, {
+                'Content-Type': contentType || 'application/json; charset=utf-8'
+            });
+        } catch (err) {
+            if (clientDisconnected) return;
+            const isTimeout = err && err.name === 'AbortError';
+            return send(res, isTimeout ? 504 : 502, apiErrorBody(
+                isTimeout
+                    ? `ใช้เวลาติดต่อ Apps Script เกิน ${Math.round(API_PROXY_TIMEOUT_MS / 1000)} วินาที`
+                    : 'ไม่สามารถเชื่อมต่อ Apps Script ได้ชั่วคราว',
+                isTimeout ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_CONNECTION_FAILED'
+            ), { 'Content-Type': 'application/json; charset=utf-8' });
+        } finally {
+            req.removeListener('aborted', abortOnDisconnect);
+            // Keep the one-shot error listener for a late socket reset after abort.
+            res.removeListener('close', abortOnDisconnect);
         }
     });
 }
