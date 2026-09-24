@@ -722,8 +722,8 @@ button, input, select, textarea {
 
 /* ==========================================================================
    Monthly entry workspace
-   Keep entry fields close to the monthly list while grouping them into short,
-   readable rows instead of a horizontally-scrollable spreadsheet.
+   Keep shared classifications compact while receipt-specific fields use a
+   repeatable spreadsheet-style entry table.
    ========================================================================== */
 .entry-widget-actions {
     display: flex;
@@ -776,6 +776,7 @@ button, input, select, textarea {
 
 .quick-entry-grid .quick-span-2 { grid-column: span 2; }
 .quick-entry-grid .quick-span-3 { grid-column: span 3; }
+.quick-entry-grid .quick-span-4 { grid-column: span 4; }
 .quick-entry-grid .quick-span-6 { grid-column: span 6; }
 
 .quick-entry-label-row {
@@ -838,6 +839,234 @@ button, input, select, textarea {
     color: var(--primary-dark);
 }
 
+.quick-entry-common-details {
+    margin-top: 0;
+    border-style: solid;
+}
+
+.quick-entry-common-details summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.quick-entry-common-details summary small {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.quick-batch-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 16px 0 10px;
+}
+
+.quick-batch-toolbar > div:first-child {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.quick-batch-toolbar strong {
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.quick-batch-toolbar span {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.quick-batch-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.quick-expense-batch-container {
+    max-width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-sidebar);
+}
+
+.quick-expense-batch-table {
+    width: 100%;
+    min-width: 1710px;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 12px;
+}
+
+.quick-expense-batch-table th,
+.quick-expense-batch-table td {
+    padding: 8px;
+    border-right: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: top;
+}
+
+.quick-expense-batch-table th:last-child,
+.quick-expense-batch-table td:last-child {
+    border-right: 0;
+}
+
+.quick-expense-batch-table thead th {
+    background: color-mix(in srgb, var(--primary-light) 38%, var(--bg-sidebar));
+    color: var(--text-primary);
+    font-weight: 700;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.quick-expense-batch-table tfoot td {
+    border-bottom: 0;
+    background: color-mix(in srgb, var(--bg-main) 75%, var(--bg-sidebar));
+}
+
+.quick-expense-batch-table .form-input,
+.quick-expense-batch-table .form-select {
+    min-height: 36px;
+    padding: 7px 8px;
+    font-size: 12px;
+}
+
+.quick-expense-batch-table textarea.form-input {
+    min-height: 58px;
+    resize: vertical;
+}
+
+.quick-expense-batch-table .quick-col-index { width: 54px; text-align: center; }
+.quick-expense-batch-table .quick-col-month { width: 130px; }
+.quick-expense-batch-table .quick-col-doc { width: 130px; }
+.quick-expense-batch-table .quick-col-receipt { width: 150px; }
+.quick-expense-batch-table .quick-col-date { width: 132px; }
+.quick-expense-batch-table .quick-col-vendor { width: 180px; }
+.quick-expense-batch-table .quick-col-description { width: 230px; }
+.quick-expense-batch-table .quick-col-number { width: 92px; }
+.quick-expense-batch-table .quick-col-unit { width: 90px; }
+.quick-expense-batch-table .quick-col-total { width: 120px; }
+.quick-expense-batch-table .quick-col-extra { width: 230px; }
+.quick-expense-batch-table .quick-col-actions { width: 105px; text-align: center; }
+
+.quick-expense-row-index {
+    color: var(--text-secondary);
+    font-weight: 700;
+    text-align: center;
+    padding-top: 18px !important;
+}
+
+.quick-expense-doc-cell {
+    color: var(--text-secondary);
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.quick-expense-doc-cell strong {
+    display: block;
+    color: var(--primary-dark);
+    overflow-wrap: anywhere;
+}
+
+.quick-expense-row-total {
+    display: block;
+    padding-top: 9px;
+    color: var(--primary-dark);
+    font-size: 13px;
+    font-weight: 800;
+    text-align: right;
+}
+
+.quick-expense-description-wrap {
+    display: grid;
+    gap: 6px;
+}
+
+.quick-expense-subitems-button {
+    justify-self: start;
+    padding: 3px 7px;
+    font-size: 11px;
+}
+
+.quick-expense-row-details {
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+
+.quick-expense-row-details summary {
+    cursor: pointer;
+    color: var(--primary);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.quick-expense-row-details[open] summary {
+    margin-bottom: 7px;
+}
+
+.quick-expense-row-details .quick-file-list {
+    display: grid;
+}
+
+.quick-expense-row-details .quick-file-chip {
+    width: 100%;
+    border-radius: 7px;
+}
+
+.quick-expense-file-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.quick-expense-row-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+}
+
+.quick-expense-row-status {
+    display: block;
+    margin-top: 7px;
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 1.35;
+}
+
+.quick-expense-batch-row.is-saving {
+    opacity: 0.7;
+}
+
+.quick-expense-batch-row.is-saved td {
+    background: color-mix(in srgb, #dcfce7 48%, var(--bg-sidebar));
+}
+
+.quick-expense-batch-row.has-error td {
+    background: color-mix(in srgb, #fee2e2 48%, var(--bg-sidebar));
+}
+
+.quick-batch-grand-label {
+    color: var(--text-secondary);
+    font-weight: 700;
+    text-align: right;
+}
+
+.quick-batch-grand-total {
+    color: var(--primary-dark);
+    font-size: 14px;
+    font-weight: 800;
+    text-align: right;
+}
+
 .quick-file-list {
     display: flex;
     flex-wrap: wrap;
@@ -890,6 +1119,21 @@ button, input, select, textarea {
     gap: 8px;
     flex-wrap: wrap;
     margin-top: 16px;
+}
+
+@media screen and (max-width: 900px) {
+    .quick-batch-toolbar,
+    .quick-entry-common-details summary {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .quick-entry-grid .quick-span-2,
+    .quick-entry-grid .quick-span-3,
+    .quick-entry-grid .quick-span-4,
+    .quick-entry-grid .quick-span-6 {
+        grid-column: span 12;
+    }
 }
 
 .compact-record-table {

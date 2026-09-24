@@ -380,100 +380,95 @@
                     <div class="quick-entry-header">
                         <div>
                             <h4 id="quick-expense-title">เพิ่มรายการบิลในตาราง</h4>
-                            <p>กรอกข้อมูลหลักให้ครบในจุดเดียว รอบบันทึกจะอ้างอิงจากเดือนที่คุณกำลังดู</p>
+                            <p>กำหนดข้อมูลร่วมครั้งเดียว แล้วเพิ่มใบเสร็จหลายรายการต่อเนื่อง เลขบิลจะสร้างอัตโนมัติหลังบันทึก</p>
                         </div>
                         <button type="button" class="btn btn-icon btn-sm" onclick="toggleQuickExpenseEntry(false)" aria-label="ปิดฟอร์มเพิ่มบิล">
                             <i data-lucide="x"></i>
                         </button>
                     </div>
-                    <form id="quick-expense-form" onsubmit="submitQuickExpense(event)">
-                        <div class="quick-entry-grid">
-                            <div class="form-group quick-span-2">
-                                <label class="form-label" for="inline-exp-docno">เลขบิล</label>
-                                <input id="inline-exp-docno" class="form-input" value="ระบบสร้างอัตโนมัติ" readonly>
-                            </div>
-                            <div class="form-group quick-span-2">
-                                <label class="form-label" for="inline-exp-date">วันที่บิล</label>
-                                <input type="date" id="inline-exp-date" class="form-input" required>
-                            </div>
-                            <div class="form-group quick-span-2">
-                                <label class="form-label" for="inline-exp-posting-month">รอบบันทึก</label>
-                                <input type="month" id="inline-exp-posting-month" class="form-input" required>
-                                <small class="form-help">วันที่บิลอาจเป็นเดือนก่อนหน้าได้ แต่ยอดจะรวมในรอบเดือนนี้</small>
-                            </div>
-                            <div class="form-group quick-span-3">
-                                <div class="quick-entry-label-row">
-                                    <label class="form-label" for="inline-exp-project">โครงการ</label>
-                                    <button type="button" class="btn btn-link btn-xs" onclick="quickAddProject('inline-exp')">
-                                        <i data-lucide="plus"></i> เพิ่มโครงการด่วน
-                                    </button>
-                                </div>
-                                <select id="inline-exp-project" class="form-select" required></select>
-                            </div>
-                            <div class="form-group quick-span-3">
-                                <label class="form-label" for="inline-exp-category-input">หมวดหมู่</label>
-                                <input type="hidden" id="inline-exp-category">
-                                <input type="text" id="inline-exp-category-input" class="form-input" list="inline-exp-category-list" placeholder="พิมพ์หรือเลือกหมวดหมู่" required>
-                                <datalist id="inline-exp-category-list"></datalist>
-                            </div>
-                            <div class="form-group quick-span-3">
-                                <label class="form-label" for="inline-exp-fund-input">แหล่งเงิน</label>
-                                <input type="hidden" id="inline-exp-fund">
-                                <input type="text" id="inline-exp-fund-input" class="form-input" list="inline-exp-fund-list" placeholder="พิมพ์หรือเลือกแหล่งเงิน" required>
-                                <datalist id="inline-exp-fund-list"></datalist>
-                            </div>
-                            <div class="form-group quick-span-3">
-                                <label class="form-label" for="inline-exp-vendor-input">ร้านค้า / ผู้ขาย</label>
-                                <input type="hidden" id="inline-exp-vendor">
-                                <input type="text" id="inline-exp-vendor-input" class="form-input" list="inline-exp-vendor-list" placeholder="พิมพ์หรือเลือกผู้ขาย" required>
-                                <datalist id="inline-exp-vendor-list"></datalist>
-                            </div>
-                            <div class="form-group quick-span-6">
-                                <label class="form-label" for="inline-exp-desc">รายละเอียด</label>
-                                <input type="text" id="inline-exp-desc" class="form-input" placeholder="เช่น ซื้ออุปกรณ์ทำความสะอาด" required>
-                            </div>
-                            <div class="form-group quick-span-2">
-                                <label class="form-label" for="inline-exp-qty">จำนวน</label>
-                                <input type="number" id="inline-exp-qty" class="form-input" min="0.01" step="any" value="1" required>
-                            </div>
-                            <div class="form-group quick-span-2">
-                                <label class="form-label" for="inline-exp-unit">หน่วย</label>
-                                <input type="text" id="inline-exp-unit" class="form-input" value="รายการ" required>
-                            </div>
-                            <div class="form-group quick-span-2">
-                                <label class="form-label" for="inline-exp-price">ราคา/หน่วย</label>
-                                <input type="number" id="inline-exp-price" class="form-input" min="0.01" step="any" value="" required>
-                            </div>
-                            <div class="form-group quick-span-2">
-                                <label class="form-label" for="inline-exp-amount">รวม</label>
-                                <input type="text" id="inline-exp-amount" class="form-input quick-total-input" value="0.00" readonly>
-                            </div>
-                            <div class="form-group quick-span-2">
-                                <label class="form-label" for="inline-exp-claimable">ประเภท</label>
-                                <select id="inline-exp-claimable" class="form-select">
-                                    <option value="true">เบิกมูลนิธิ</option>
-                                    <option value="false">ไม่เบิก</option>
-                                </select>
-                            </div>
-                        </div>
-                        <details class="quick-entry-details">
-                            <summary>รายละเอียดเพิ่มเติมและหลักฐาน (ถ้ามี)</summary>
+                    <form id="quick-expense-form" onsubmit="submitQuickExpenseBatch(event)">
+                        <details class="quick-entry-details quick-entry-common-details" id="quick-expense-common-details" open>
+                            <summary>
+                                <span>ข้อมูลสำคัญที่ใช้ร่วมกัน</span>
+                                <small>โครงการ / หมวดหมู่ / แหล่งเงิน / ประเภท</small>
+                            </summary>
                             <div class="quick-entry-grid quick-entry-extra-grid">
-                                <div class="form-group quick-span-6">
-                                    <label class="form-label" for="quick-exp-note">หมายเหตุ</label>
-                                    <textarea id="quick-exp-note" class="form-input" rows="2" placeholder="ข้อมูลเพิ่มเติม"></textarea>
+                                <div class="form-group quick-span-4">
+                                    <div class="quick-entry-label-row">
+                                        <label class="form-label" for="inline-exp-project">โครงการ</label>
+                                        <button type="button" class="btn btn-link btn-xs" onclick="quickAddProject('inline-exp')">
+                                            <i data-lucide="plus"></i> เพิ่มโครงการด่วน
+                                        </button>
+                                    </div>
+                                    <select id="inline-exp-project" class="form-select" required></select>
                                 </div>
-                                <div class="form-group quick-span-6">
-                                    <label class="form-label" for="quick-exp-files">หลักฐาน</label>
-                                    <input type="file" id="quick-exp-files" class="form-input" accept=".jpg,.jpeg,.png,.webp,.pdf,.xlsx,.docx,.csv" multiple onchange="handleQuickExpenseFiles(event)">
-                                    <div id="quick-exp-file-list" class="quick-file-list" aria-live="polite"></div>
+                                <div class="form-group quick-span-3">
+                                    <label class="form-label" for="inline-exp-category-input">หมวดหมู่</label>
+                                    <input type="hidden" id="inline-exp-category">
+                                    <input type="text" id="inline-exp-category-input" class="form-input" list="inline-exp-category-list" placeholder="พิมพ์หรือเลือกหมวดหมู่" required>
+                                    <datalist id="inline-exp-category-list"></datalist>
+                                </div>
+                                <div class="form-group quick-span-3">
+                                    <label class="form-label" for="inline-exp-fund-input">แหล่งเงิน</label>
+                                    <input type="hidden" id="inline-exp-fund">
+                                    <input type="text" id="inline-exp-fund-input" class="form-input" list="inline-exp-fund-list" placeholder="พิมพ์หรือเลือกแหล่งเงิน" required>
+                                    <datalist id="inline-exp-fund-list"></datalist>
+                                </div>
+                                <div class="form-group quick-span-2">
+                                    <label class="form-label" for="inline-exp-claimable">ประเภท</label>
+                                    <select id="inline-exp-claimable" class="form-select">
+                                        <option value="true">เบิกมูลนิธิ</option>
+                                        <option value="false">ไม่เบิก</option>
+                                    </select>
                                 </div>
                             </div>
                         </details>
+
+                        <div class="quick-batch-toolbar">
+                            <div>
+                                <strong>รายการใบเสร็จที่รอบันทึก</strong>
+                                <span id="quick-expense-row-summary">0 รายการ</span>
+                            </div>
+                            <div class="quick-batch-toolbar-actions">
+                                <button type="button" class="btn btn-outline btn-sm" onclick="clearSavedQuickExpenseRows()"><i data-lucide="eraser"></i> ล้างแถวที่บันทึกแล้ว</button>
+                                <button type="button" class="btn btn-primary btn-sm" onclick="addQuickExpenseRow()"><i data-lucide="plus"></i> เพิ่มใบเสร็จ</button>
+                            </div>
+                        </div>
+
+                        <div class="table-container quick-expense-batch-container">
+                            <table class="quick-expense-batch-table" id="quick-expense-batch-table">
+                                <thead>
+                                    <tr>
+                                        <th class="quick-col-index">ลำดับ</th>
+                                        <th class="quick-col-month">รอบบันทึก</th>
+                                        <th class="quick-col-doc">เลขบิล</th>
+                                        <th class="quick-col-receipt">เลขที่ใบเสร็จ</th>
+                                        <th class="quick-col-date">วันที่บิล</th>
+                                        <th class="quick-col-vendor">ร้านค้า / ผู้ขาย</th>
+                                        <th class="quick-col-description">รายละเอียด</th>
+                                        <th class="quick-col-number">จำนวน</th>
+                                        <th class="quick-col-unit">หน่วย</th>
+                                        <th class="quick-col-number">ราคา/หน่วย</th>
+                                        <th class="quick-col-total">รวม</th>
+                                        <th class="quick-col-extra">รายละเอียดเพิ่มเติมและหลักฐาน</th>
+                                        <th class="quick-col-actions">เครื่องมือ</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="quick-expense-rows"></tbody>
+                                <tfoot>
+                                    <tr>
+                                        <td colspan="10" class="quick-batch-grand-label">รวมรายการที่ยังไม่บันทึก</td>
+                                        <td id="quick-expense-grand-total" class="quick-batch-grand-total">0.00</td>
+                                        <td colspan="2"></td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                        <datalist id="quick-expense-vendor-options"></datalist>
+
                         <div class="quick-entry-actions">
-                            <button type="button" class="btn btn-outline" onclick="resetQuickExpenseEntry()"><i data-lucide="rotate-ccw"></i> ล้างข้อมูล</button>
-                            <button type="button" class="btn btn-outline quick-entry-full-form" onclick="openExpenseModalFromQuickEntry()"><i data-lucide="maximize-2"></i> เปิดฟอร์มเต็มพร้อมข้อมูล</button>
-                            <button type="submit" id="quick-exp-save-btn" class="btn btn-primary"><i data-lucide="save"></i> บันทึกรายการ</button>
+                            <button type="button" class="btn btn-outline" onclick="resetQuickExpenseEntry()"><i data-lucide="rotate-ccw"></i> ล้างข้อมูลทั้งหมด</button>
+                            <button type="submit" id="quick-exp-save-btn" class="btn btn-primary"><i data-lucide="save"></i> บันทึกใบเสร็จที่รอทั้งหมด</button>
                         </div>
                     </form>
                 </section>
@@ -481,7 +476,7 @@
                     <table class="data-table compact-record-table" id="full-bills-table">
                         <thead>
                             <tr>
-                                <th>เลขบิล</th>
+                                <th>เลขบิล / ใบเสร็จ</th>
                                 <th>วันที่ / รอบ</th>
                                 <th>รายละเอียดรายการ</th>
                                 <th class="text-right">จำนวนเงิน</th>
@@ -1482,10 +1477,14 @@
         <form id="form-bill">
             <input type="hidden" id="bill-edit-index">
             <div class="modal-body" style="max-height:520px; overflow-y:auto;">
-                <div class="form-grid form-grid-2">
+                <div class="form-grid form-grid-3">
                     <div class="form-group">
-                        <label class="form-label" for="bill-docno">เลขที่เอกสาร</label>
+                        <label class="form-label" for="bill-docno">เลขบิล (ระบบสร้าง)</label>
                         <input type="text" id="bill-docno" class="form-input" placeholder="ระบบสร้างอัตโนมัติ" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="bill-receipt-no">เลขที่ใบเสร็จ</label>
+                        <input type="text" id="bill-receipt-no" class="form-input" placeholder="เลขที่ตามใบเสร็จรับเงิน" required>
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="bill-date">วันที่บิล</label>
