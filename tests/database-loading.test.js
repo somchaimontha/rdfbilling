@@ -56,6 +56,7 @@ function createHarness() {
     vm.createContext(context);
     vm.runInContext(source + `\n;globalThis.__loadingTest = {
         initAppWithAPI, retryDatabaseLoad,
+        renderSignaturePreviews,
         getState: () => state,
         setMonth: (month, year) => { state.selectedMonth = month; state.selectedYear = year; },
         getProgress: () => appLoadProgress
@@ -137,4 +138,34 @@ test('retry keeps successful resources and requests only failed resources', asyn
     assert.deepEqual(calls.slice(callsBeforeRetry), ['getClaims']);
     assert.equal(api.getState().claimsLoadStatus, 'ready');
     assert.equal(elements.get('database-load-status').hidden, true);
+});
+
+test('missing optional signature preview markup does not break rendering', () => {
+    const { api } = createHarness();
+    assert.doesNotThrow(() => api.renderSignaturePreviews());
+});
+
+test('a core rendering failure is recorded once after all data has loaded', async () => {
+    const { context, api, elements } = createHarness();
+    context.__mockApiCall = async action => successfulValue(action);
+    vm.runInContext(`
+        apiCall = globalThis.__mockApiCall;
+        globalThis.__renders = 0;
+        renderAll = () => {
+            globalThis.__renders++;
+            throw new TypeError("Cannot read properties of null (reading 'style')");
+        };
+        renderTables = updateMetricsBar = renderSpreadsheet = updateFundReceiptWidget = renderClaims = renderFundReceiptsOverview = () => {};
+    `, context);
+
+    await api.initAppWithAPI();
+
+    assert.equal(context.__renders, 1);
+    assert.equal(Object.keys(api.getProgress().results).length, 8);
+    assert.equal(Object.keys(api.getProgress().errors).length, 1);
+    assert.match(elements.get('database-load-status-message').textContent, /โหลดข้อมูลครบ 8\/8/);
+    assert.equal(
+        elements.get('database-load-status-detail').textContent,
+        "Cannot read properties of null (reading 'style')"
+    );
 });

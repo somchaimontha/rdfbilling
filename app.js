@@ -945,6 +945,7 @@ function updateDatabaseLoadProgress(load) {
     if (appLoadProgress !== load || load.controller.signal.aborted) return;
     const completed = Object.keys(load.results).length;
     const remaining = load.tasks.filter(task => !(task.key in load.results));
+    const renderErrors = Object.entries(load.errors).filter(([key]) => key === 'render' || key.startsWith('render:'));
     const elapsed = Math.floor((Date.now() - load.startedAt) / 1000);
     const clock = document.getElementById('database-load-status-elapsed');
     if (clock) {
@@ -956,10 +957,14 @@ function updateDatabaseLoadProgress(load) {
         return;
     }
     const message = load.failed && !load.pending
-        ? `โหลดข้อมูลได้ ${completed}/${load.tasks.length} ส่วน — บางส่วนยังไม่สำเร็จ`
+        ? (remaining.length === 0 && renderErrors.length > 0
+            ? `โหลดข้อมูลครบ ${completed}/${load.tasks.length} ส่วน — แสดงผลบางส่วนไม่สำเร็จ`
+            : `โหลดข้อมูลได้ ${completed}/${load.tasks.length} ส่วน — บางส่วนยังไม่สำเร็จ`)
         : `${load.coreRendered ? 'แสดงรายการแล้ว กำลังโหลดข้อมูลประกอบ' : 'กำลังโหลดข้อมูลจากฐานข้อมูล'} (${completed}/${load.tasks.length})`;
+    const uniqueRenderMessages = [...new Set(renderErrors.map(([, error]) => error?.message || 'แสดงข้อมูลไม่สำเร็จ'))];
     const detail = load.failed && !load.pending
         ? (remaining.map(task => `${task.label}: ${load.errors[task.key]?.message || 'โหลดไม่สำเร็จ'}`).join(' • ')
+            || uniqueRenderMessages.join(' • ')
             || Object.values(load.errors).map(error => error?.message || 'แสดงข้อมูลไม่สำเร็จ').join(' • '))
         : `รอ: ${remaining.map(task => task.label).join(', ')}${elapsed >= 10 ? ' — การตอบกลับช้ากว่าปกติ' : ''}${load.retrying ? ' (กำลังลองเชื่อมต่อใหม่)' : ''}`;
     setDatabaseStatus(message, load.pending ? 'loading' : 'error', detail, !load.pending);
@@ -1052,8 +1057,11 @@ async function initAppWithAPI({ retryFailed = false } = {}) {
         state.attachments = expenses.filter(e => e.id && e.id.startsWith('ATT'));
         state.foodExpenses = load.results.food || [];
         loadAttachments();
-        renderAll();
+        // Mark the core data as published before drawing it. If one optional
+        // widget fails, later API responses must not rerun the whole renderer
+        // and report the same UI error several times.
         load.coreRendered = true;
+        renderAll();
     };
     try {
         // Retry only the failed resources of this same month/session.
@@ -2209,21 +2217,23 @@ function updateMetricsBar() {
     const totals = calculateTotals();
 
     const banner = document.getElementById('carry-over-banner');
-    if (state.carryOverStatus === 'loading') {
-        banner.style.display = 'flex';
-        (document.getElementById('carry-over-text') || {}).textContent = 'กำลังคำนวณยอดยกมาจากเดือนก่อน...';
-    } else if (totals.carryOver > 0) {
-        banner.style.display = 'flex';
-        (document.getElementById('carry-over-text') || {}).textContent =
-            `ยอดยกมาจากเดือนก่อน: ฿${totals.carryOver.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (สมทบเข้ากับยอดเบิกในเดือนนี้)`;
-    } else {
-        banner.style.display = 'none';
+    if (banner) {
+        if (state.carryOverStatus === 'loading') {
+            banner.style.display = 'flex';
+            (document.getElementById('carry-over-text') || {}).textContent = 'กำลังคำนวณยอดยกมาจากเดือนก่อน...';
+        } else if (totals.carryOver > 0) {
+            banner.style.display = 'flex';
+            (document.getElementById('carry-over-text') || {}).textContent =
+                `ยอดยกมาจากเดือนก่อน: ฿${totals.carryOver.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (สมทบเข้ากับยอดเบิกในเดือนนี้)`;
+        } else {
+            banner.style.display = 'none';
+        }
     }
 
     const claimCard = document.getElementById('metric-claimable-card');
     const nonClaimCard = document.getElementById('metric-non-claimable-card');
-    claimCard.style.opacity = state.calculationMode === 'no-claim' ? '0.4' : '1';
-    nonClaimCard.style.opacity = state.calculationMode === 'claim' ? '0.4' : '1';
+    if (claimCard) claimCard.style.opacity = state.calculationMode === 'no-claim' ? '0.4' : '1';
+    if (nonClaimCard) nonClaimCard.style.opacity = state.calculationMode === 'claim' ? '0.4' : '1';
 
     const fmt = v => '฿' + v.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     (document.getElementById('metric-total-expense') || {}).textContent = fmt(totals.grandTotal);
@@ -5978,9 +5988,13 @@ function renderSignaturePreviews() {
         const img = state.signatures?.[role];
         const previewDiv = document.getElementById(`sig-preview-${role}`);
         const statusSpan = document.getElementById(`sig-status-${role}`);
+        // The legacy preview cards are optional and are not present in every
+        // settings layout. Missing optional markup must never break app load.
+        if (!previewDiv || !statusSpan) return;
         if (img) {
             previewDiv.style.display = 'flex';
-            previewDiv.querySelector('img').src = img;
+            const previewImage = previewDiv.querySelector('img');
+            if (previewImage) previewImage.src = img;
             statusSpan.textContent = 'มีลายเซ็นแล้ว';
             statusSpan.style.color = 'var(--success)';
         } else {
