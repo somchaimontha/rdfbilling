@@ -44,7 +44,7 @@ function createHarness() {
 
     const rowFields = new Map(Object.entries(rowValues).map(([field, value]) => [field, { value }]));
     const row = {
-        dataset: { rowId: 'quick-exp-1', saved: 'false' },
+        dataset: { rowId: 'quick-exp-1', requestId: 'expense-test-request-1', saved: 'false' },
         querySelector(selector) {
             const field = selector.match(/^\[data-field="(.+)"\]$/)?.[1];
             return field ? rowFields.get(field) || null : null;
@@ -103,7 +103,9 @@ function createHarness() {
             setProjects: value => { state.projects = value; },
             setVendors: value => { state.vendors = value; },
             getProjects: () => state.projects,
-            getModalSource: () => expenseModalSource
+            getModalSource: () => expenseModalSource,
+            getExpenseRequestId: () => expenseCreateRequestId,
+            getExpenseNoteMetadata: () => expenseModalNoteMetadata
         };
     `, context, { filename: appPath });
     vm.runInContext(`
@@ -129,6 +131,10 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(html, /id="bill-receipt-no"[^>]+required/);
     assert.match(source, /data-field="receiptNo"/);
     assert.match(source, /openQuickExpenseMultiItems/);
+    assert.match(html, /onclick="openExpenseModalMultiItems\(\)"/);
+    assert.match(source, /requestId: item\.draft\.requestId/);
+    assert.match(source, /idPrefix: 'ATT'/);
+    assert.match(source, /retryQuickExpenseRowAttachments/);
 });
 
 test('batch row validation requires all receipt fields and accepts a complete row', () => {
@@ -176,7 +182,12 @@ test('opening a batch row in the full form preserves receipt data, common fields
     assert.equal(elements.get('bill-unit').value, rowValues.unit);
     assert.equal(elements.get('bill-price').value, Number(rowValues.unitPrice));
     assert.equal(elements.get('bill-claim-type').value, 'no-claim');
-    assert.match(elements.get('bill-note').value, /__multi_items__:/);
+    assert.equal(elements.get('bill-note').value, rowValues.note);
+    assert.equal(api.getExpenseRequestId(), 'expense-test-request-1');
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(api.getExpenseNoteMetadata().multiItems)),
+        [{ desc: 'ปากกา', qty: 3, price: 125.5 }]
+    );
     assert.equal(api.getTempAttachments().length, 1);
     assert.equal(api.getTempAttachments()[0].originalFileName, attachment.originalFileName);
     assert.equal(context.__previewExpenseId, null);

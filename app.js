@@ -5,9 +5,11 @@
 
 const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwxEEhfMfU8hjiR-iijOqcdPbRR-UOQOf4CMD34B0qVlhjgJYEpFXzGkopJ4inI5RyRnA/exec';
 const API_URL = ['127.0.0.1', 'localhost'].includes(window.location.hostname) ? '/api' : GAS_API_URL;
-// A bounded per-attempt timeout; background loading must remain usable.
-const API_REQUEST_TIMEOUT_MS = 30000;
-const API_READ_RETRY_ATTEMPTS = 2;
+// Keep background reads short and let the non-blocking status bar offer a
+// manual retry. Writes/uploads get more time and are protected by request IDs.
+const API_READ_REQUEST_TIMEOUT_MS = 12000;
+const API_WRITE_REQUEST_TIMEOUT_MS = 45000;
+const API_READ_RETRY_ATTEMPTS = 1;
 const API_RETRY_DELAY_MS = 700;
 const RETRYABLE_READ_API_ACTIONS = new Set([
     'getAttachmentDataUrl',
@@ -61,6 +63,7 @@ async function apiCall(action, data = null, filters = null, pagination = null, o
     const token = localStorage.getItem('rdf_session_token');
     const canRetry = isRetryableReadAction(action);
     const maxAttempts = canRetry ? API_READ_RETRY_ATTEMPTS : 1;
+    const requestTimeoutMs = canRetry ? API_READ_REQUEST_TIMEOUT_MS : API_WRITE_REQUEST_TIMEOUT_MS;
     const requestBody = JSON.stringify({ action, token, data, filters, pagination });
     let lastError = null;
 
@@ -74,7 +77,7 @@ async function apiCall(action, data = null, filters = null, pagination = null, o
         let timeoutId = null;
 
         try {
-            timeoutId = window.setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+            timeoutId = window.setTimeout(() => controller.abort(), requestTimeoutMs);
             const response = await fetch(API_URL, {
                 method: 'POST',
                 mode: 'cors',
@@ -131,7 +134,7 @@ async function apiCall(action, data = null, filters = null, pagination = null, o
             let requestError = err;
             if (err && err.name === 'AbortError') {
                 requestError = createApiError(
-                    `ใช้เวลาติดต่อ Apps Script เกิน ${Math.round(API_REQUEST_TIMEOUT_MS / 1000)} วินาที`,
+                    `ใช้เวลาติดต่อ Apps Script เกิน ${Math.round(requestTimeoutMs / 1000)} วินาที`,
                     { retryable: true, connectionIssue: true }
                 );
             } else if (!err || (!err.retryable && !err.isAuthenticationError && !err.message)) {
@@ -171,6 +174,7 @@ async function apiCall(action, data = null, filters = null, pagination = null, o
 // พร้อมจำกัดจำนวน request พร้อมกัน เพื่อไม่ให้ Apps Script ถูกโหลดหนักเกินไป.
 const API_LIST_PAGE_SIZE = 200;
 const API_LIST_CONCURRENCY = 3;
+const INITIAL_DATABASE_LOAD_CONCURRENCY = 3;
 const ATTACHMENT_LOAD_CONCURRENCY = 3;
 const REPORT_EMBEDDED_IMAGE_MAX_WIDTH = 1280;
 const REPORT_EMBEDDED_IMAGE_MAX_HEIGHT = 1680;
@@ -533,6 +537,9 @@ let attachmentStore = {};
 // Track whether the expense modal is opened in "Additional Project" mode
 let isNewProjectExpenseMode = false;
 let expenseModalSource = null;
+let expenseCreateRequestId = '';
+let attachmentCreateRequestId = '';
+let expenseModalNoteMetadata = { customFields: {}, multiItems: [] };
 
 // Temporary attachments array for new/editing bills
 let tempBillAttachments = [];
@@ -544,6 +551,29 @@ let currentQuickExpenseRowId = null;
 let quickFoodAttachments = [];
 let quickExpenseFileProcessingCount = 0;
 let quickFoodFileProcessing = false;
+
+function createClientRequestId(scope = 'request') {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return `${scope}-${window.crypto.randomUUID()}`;
+    }
+    return `${scope}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function setFormControlsBusy(form, busy) {
+    if (!form) return;
+    form.setAttribute('aria-busy', busy ? 'true' : 'false');
+    form.querySelectorAll('input, select, textarea, button').forEach(element => {
+        if (busy) {
+            if (!element.disabled) {
+                element.dataset.busyLocked = 'true';
+                element.disabled = true;
+            }
+        } else if (element.dataset.busyLocked === 'true') {
+            element.disabled = false;
+            delete element.dataset.busyLocked;
+        }
+    });
+}
 
 // ==========================================================================
 // Default State (v4)
@@ -1045,58 +1075,68 @@ async function initAppWithAPI({ retryFailed = false } = {}) {
         state.fundReceipts = [];
         state.fundReceiptsLoadStatus = 'loading';
     }
+    const renderSafely = (key, callback) => {
+        try {
+            callback();
+            delete load.errors[`render:${key}`];
+        } catch (error) {
+            load.errors[`render:${key}`] = error;
+            console.error(`Render [${key}] failed:`, error);
+        }
+    };
+    const applyTask = task => {
+        if (!task.apply || !(task.key in load.results)) return;
+        renderSafely(task.key, () => task.apply(load.results[task.key]));
+    };
     const publishCore = () => {
         if (load.coreRendered || !['master', 'expenses'].every(key => key in load.results)) return;
-        const { master, expenses } = load.results;
-        state.projects = (master.projects || []).map(p => ({ ...p, name: p.projectName || p.name }));
-        state.categories = (master.categories || []).map(c => ({ ...c, name: c.categoryName || c.name }));
-        state.vendors = (master.vendors || []).map(v => ({ ...v, name: v.vendorName || v.name }));
-        state.fundSources = (master.fundSources || []).map(f => ({ ...f, name: f.name || f.fundSourceName }));
-        state.organizations = (master.organizations || []).map(o => ({ ...o, name: o.nameTh || o.name }));
-        state.expenses = expenses.filter(e => e.id && e.id.startsWith('EXP'));
-        state.attachments = expenses.filter(e => e.id && e.id.startsWith('ATT'));
-        state.foodExpenses = load.results.food || [];
-        loadAttachments();
         // Mark the core data as published before drawing it. If one optional
         // widget fails, later API responses must not rerun the whole renderer
         // and report the same UI error several times.
         load.coreRendered = true;
-        renderAll();
+        renderSafely('core', () => {
+            const { master, expenses } = load.results;
+            state.projects = (master.projects || []).map(p => ({ ...p, name: p.projectName || p.name }));
+            state.categories = (master.categories || []).map(c => ({ ...c, name: c.categoryName || c.name }));
+            state.vendors = (master.vendors || []).map(v => ({ ...v, name: v.vendorName || v.name }));
+            state.fundSources = (master.fundSources || []).map(f => ({ ...f, name: f.name || f.fundSourceName }));
+            state.organizations = (master.organizations || []).map(o => ({ ...o, name: o.nameTh || o.name }));
+            state.expenses = expenses.filter(e => e.id && e.id.startsWith('EXP'));
+            state.attachments = expenses.filter(e => e.id && e.id.startsWith('ATT'));
+            state.foodExpenses = load.results.food || [];
+            loadAttachments();
+            renderAll();
+        });
     };
     try {
         // Retry only the failed resources of this same month/session.
-        load.tasks.forEach(task => { if (task.key in load.results && task.apply) task.apply(load.results[task.key]); });
+        load.tasks.forEach(applyTask);
         publishCore();
         updateDatabaseLoadProgress(load);
         load.timer = window.setInterval(() => updateDatabaseLoadProgress(load), 1000);
-        await Promise.all(load.tasks.map(async task => {
+        await mapWithConcurrency(load.tasks, INITIAL_DATABASE_LOAD_CONCURRENCY, async task => {
             if (task.key in load.results) return;
             try {
                 const value = await task.fetch();
                 if (!isCurrent()) return;
                 load.results[task.key] = value;
-                if (task.apply) task.apply(value);
+                applyTask(task);
                 publishCore();
             } catch (error) {
                 if (!isCurrent()) return;
-                // A failed network read is retryable. A rendering error keeps
-                // the fetched value so retry does not hit Apps Script again.
-                const fetched = task.key in load.results;
-                load.errors[fetched ? `render:${task.key}` : task.key] = error;
-                if (!fetched) {
-                    if (task.key === 'carry') state.carryOverStatus = 'error';
-                    if (task.key === 'claims') {
-                        state.claimsLoadStatus = 'error';
-                        if (state.activeTab === 'claims-view') renderClaims();
-                    }
-                    if (task.key === 'receipts') {
-                        state.fundReceiptsLoadStatus = 'error';
-                        if (state.activeTab === 'fund-receipts') renderFundReceiptsOverview();
-                    }
+                load.errors[task.key] = error;
+                if (task.key === 'carry') state.carryOverStatus = 'error';
+                if (task.key === 'claims') {
+                    state.claimsLoadStatus = 'error';
+                    if (state.activeTab === 'claims-view') renderSafely('claims', renderClaims);
+                }
+                if (task.key === 'receipts') {
+                    state.fundReceiptsLoadStatus = 'error';
+                    if (state.activeTab === 'fund-receipts') renderSafely('receipts', renderFundReceiptsOverview);
                 }
             }
             if (isCurrent()) updateDatabaseLoadProgress(load);
-        }));
+        });
     } catch (error) {
         if (isCurrent()) load.errors.render = error;
     } finally {
@@ -2254,19 +2294,28 @@ function updateMetricsBar() {
 // Render All
 // ==========================================================================
 function renderAll() {
-    updateMetricsBar();
-    renderTables();
-    renderCharts();
-    renderSpreadsheet();
-    renderProjectFilterDropdown();
-    updateFundReceiptWidget();
+    const renderSection = (name, callback) => {
+        try {
+            callback();
+        } catch (error) {
+            // A missing/older optional panel must not stop the database data
+            // that already loaded from appearing in every other section.
+            console.error(`UI section [${name}] failed:`, error);
+        }
+    };
+    renderSection('metrics', updateMetricsBar);
+    renderSection('tables', renderTables);
+    renderSection('charts', renderCharts);
+    renderSection('spreadsheet', renderSpreadsheet);
+    renderSection('project-filter', renderProjectFilterDropdown);
+    renderSection('fund-receipt-widget', updateFundReceiptWidget);
     if (state.activeTab === 'settings-view') {
-        renderMasterData();
-        renderSignaturePreviews();
-        renderColumnSettingsUI();
+        renderSection('master-data', renderMasterData);
+        renderSection('signature-previews', renderSignaturePreviews);
+        renderSection('column-settings', renderColumnSettingsUI);
     }
-    if (state.activeTab === 'claims-view') renderClaims();
-    if (state.activeTab === 'fund-receipts') renderFundReceiptsOverview();
+    if (state.activeTab === 'claims-view') renderSection('claims', renderClaims);
+    if (state.activeTab === 'fund-receipts') renderSection('fund-receipts', renderFundReceiptsOverview);
 }
 
 // ==========================================================================
@@ -3332,6 +3381,8 @@ window.quickAddProject = quickAddProject;
 
 function openExpenseModal(editIdx = null, isNewProject = false) {
     expenseModalSource = null;
+    expenseCreateRequestId = editIdx === null ? createClientRequestId('expense') : '';
+    expenseModalNoteMetadata = { customFields: {}, multiItems: [] };
     isNewProjectExpenseMode = isNewProject;
     const modal = document.getElementById('modal-bill');
     const form = document.getElementById('form-bill');
@@ -3360,6 +3411,10 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
     }
 
     form.reset();
+    const billQtyInput = document.getElementById('bill-qty');
+    const billPriceInput = document.getElementById('bill-price');
+    if (billQtyInput) billQtyInput.disabled = false;
+    if (billPriceInput) billPriceInput.disabled = false;
     // reset() also clears hidden inputs. Set the edit index afterwards so an
     // existing record is updated instead of being accidentally created again.
     (document.getElementById('bill-edit-index') || {}).value = editIdx !== null ? editIdx : '';
@@ -3373,6 +3428,11 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
 
     if (editIdx !== null) {
         const exp = state.expenses[editIdx];
+        const parsedNote = parseNoteData(exp.note);
+        expenseModalNoteMetadata = {
+            customFields: { ...(parsedNote.customFields || {}) },
+            multiItems: (parsedNote.multiItems || []).map(item => ({ ...item }))
+        };
         (document.getElementById('bill-docno') || {}).value = exp.documentNo;
         (document.getElementById('bill-receipt-no') || {}).value = exp.receiptNo || '';
         (document.getElementById('bill-date') || {}).value = exp.expenseDate;
@@ -3385,8 +3445,12 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
         (document.getElementById('bill-qty') || {}).value = exp.quantity;
         (document.getElementById('bill-unit') || {}).value = exp.unit || 'รายการ';
         (document.getElementById('bill-price') || {}).value = exp.unitPrice;
+        if (expenseModalNoteMetadata.multiItems.length > 1) {
+            if (billQtyInput) billQtyInput.disabled = true;
+            if (billPriceInput) billPriceInput.disabled = true;
+        }
         (document.getElementById('bill-claim-type') || {}).value = exp.claimable ? 'claim' : 'no-claim';
-        (document.getElementById('bill-note') || {}).value = exp.note || '';
+        (document.getElementById('bill-note') || {}).value = parsedNote.text || '';
     } else {
         (document.getElementById('bill-docno') || {}).value = 'ระบบสร้างอัตโนมัติ';
         (document.getElementById('bill-receipt-no') || {}).value = '';
@@ -3398,6 +3462,7 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
     }
 
     const expId = editIdx !== null && state.expenses[editIdx] ? state.expenses[editIdx].id : null;
+    updateExpenseModalMultiItemsSummary();
     renderTempBillAttachmentsPreview(expId);
     const modalBody = modal.querySelector('.modal-body');
     if (modalBody) modalBody.scrollTop = 0;
@@ -3407,11 +3472,17 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
 function closeExpenseModal() {
     isNewProjectExpenseMode = false;
     expenseModalSource = null;
+    tempBillAttachments.forEach(item => {
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    });
+    tempBillAttachments = [];
     document.getElementById('modal-bill').classList.remove('active');
 }
 
 async function handleExpenseSubmit(e) {
     e.preventDefault();
+    const form = e.currentTarget || document.getElementById('form-bill');
+    if (form && form.getAttribute('aria-busy') === 'true') return;
     const editIdx = document.getElementById('bill-edit-index').value;
     const claimable = (document.getElementById('bill-claim-type') || {}).value === 'claim';
     const receiptNo = String((document.getElementById('bill-receipt-no') || {}).value || '').trim();
@@ -3430,6 +3501,7 @@ async function handleExpenseSubmit(e) {
         return;
     }
 
+    setFormControlsBusy(form, true);
     showLoading(true);
     try {
         let projectId = document.getElementById('bill-project').value;
@@ -3465,8 +3537,16 @@ async function handleExpenseSubmit(e) {
         const categoryId = await resolveExpenseMasterSelection('category');
         const vendorId = await resolveExpenseMasterSelection('vendor');
         const fundSourceId = await resolveExpenseMasterSelection('fundSource');
+        if (expenseModalNoteMetadata.multiItems.length === 1) {
+            expenseModalNoteMetadata.multiItems = [{
+                desc: description,
+                qty,
+                price: unitPrice
+            }];
+        }
 
         const expData = {
+            ...(editIdx === '' && { requestId: expenseCreateRequestId || createClientRequestId('expense') }),
             receiptNo: receiptNo,
             expenseDate: expenseDate,
             postingMonth: postingMonth,
@@ -3480,7 +3560,11 @@ async function handleExpenseSubmit(e) {
             unit: unit,
             unitPrice: unitPrice,
             claimable: claimable,
-            note: document.getElementById('bill-note').value.trim()
+            note: formatNoteData(
+                document.getElementById('bill-note').value.trim(),
+                expenseModalNoteMetadata.customFields,
+                expenseModalNoteMetadata.multiItems
+            )
         };
 
         let finalExpId = null;
@@ -3512,42 +3596,36 @@ async function handleExpenseSubmit(e) {
             appAlert('เพิ่มรายจ่ายใหม่เรียบร้อย!');
         }
         
+        let attachmentFailures = [];
         // Handle uploading temporary attachments if any
         if (tempBillAttachments.length > 0 && finalExpId) {
             Swal.fire({ title: 'กำลังอัปโหลดไฟล์แนบ...', text: 'กรุณารอสักครู่', allowOutsideClick: false, didOpen: () => { Swal.showLoading(); }});
-            for (const item of tempBillAttachments) {
-                try {
-                    const reader = new FileReader();
-                    const base64Promise = new Promise((resolve, reject) => {
-                        reader.onload = () => resolve(reader.result.split(',')[1]);
-                        reader.onerror = error => reject(error);
-                        reader.readAsDataURL(item.file);
-                    });
-                    const base64Data = await base64Promise;
-                    await apiCall('uploadAttachment', {
-                        expenseId: finalExpId,
-                        fileName: item.originalFileName,
-                        mimeType: item.file.type,
-                        base64Data: base64Data,
-                        originalSize: item.originalSize,
-                        compressedSize: item.compressedSize,
-                        sha256Hash: item.sha256Hash
-                    });
-                } catch(e) {
-                    console.error("Upload temp file failed:", e);
-                }
+            const uploadResult = await uploadQuickExpenseAttachments(finalExpId, tempBillAttachments);
+            uploadResult.uploaded.forEach(uploaded => {
+                if (uploaded.attachment.previewUrl) URL.revokeObjectURL(uploaded.attachment.previewUrl);
+            });
+            attachmentFailures = uploadResult.failed.map(failure => failure.attachment);
+            tempBillAttachments = attachmentFailures;
+            try {
+                const res = await apiCall('getAttachments', { expenseId: finalExpId });
+                attachmentStore[finalExpId] = res.attachments || attachmentStore[finalExpId] || [];
+                saveAttachments();
+            } catch (attachmentRefreshError) {
+                console.warn('Attachments uploaded but the attachment list could not refresh:', attachmentRefreshError);
             }
-            // Fetch updated attachments
-            const res = await apiCall('getAttachments', { expenseId: finalExpId });
-            attachmentStore[finalExpId] = res.attachments || [];
-            saveAttachments();
         }
 
         const modalSource = expenseModalSource;
-        closeExpenseModal();
+        if (attachmentFailures.length && !modalSource) {
+            renderTempBillAttachmentsPreview(finalExpId);
+        } else {
+            closeExpenseModal();
+        }
         if (modalSource && modalSource.startsWith('quick-row:')) {
             const rowId = modalSource.slice('quick-row:'.length);
-            markQuickExpenseRowSaved(rowId, savedExpense && savedExpense.documentNo, 0);
+            quickExpenseAttachmentsByRow[rowId] = attachmentFailures;
+            renderQuickExpenseRowFiles(rowId);
+            markQuickExpenseRowSaved(rowId, savedExpense && savedExpense.documentNo, attachmentFailures.length, finalExpId);
             if (!quickExpenseRows.some(id => {
                 const row = getQuickExpenseRowElement(id);
                 return row && row.dataset.saved !== 'true' && isQuickExpenseDraftEmpty(getQuickExpenseRowDraft(id));
@@ -3568,10 +3646,14 @@ async function handleExpenseSubmit(e) {
             }
             appAlert('บันทึกสำเร็จแล้ว ตารางจะแสดงข้อมูลที่บันทึกทันที และระบบจะซิงก์ข้อมูลอีกครั้งเมื่อเชื่อมต่อพร้อม', 'warning');
         }
+        if (attachmentFailures.length) {
+            appAlert(`บันทึกรายการสำเร็จแล้ว แต่มีหลักฐาน ${attachmentFailures.length} ไฟล์ที่ยังอัปโหลดไม่สำเร็จ${modalSource ? ' กดปุ่มลองใหม่ที่แถวรายการได้ทันที' : ' ฟอร์มยังเปิดอยู่และสามารถกดบันทึกอีกครั้งเพื่อลองอัปโหลดใหม่ได้'}`, 'warning');
+        }
     } catch (err) {
         appAlert('บันทึกรายจ่ายล้มเหลว: ' + err.message);
     } finally {
         showLoading(false);
+        setFormControlsBusy(form, false);
     }
 }
 
@@ -3743,6 +3825,7 @@ function renderTempBillAttachmentsPreview(expId) {
 // Attachment Modal
 // ==========================================================================
 function openAttachmentModal(editIdx = null) {
+    attachmentCreateRequestId = editIdx === null ? createClientRequestId('attachment') : '';
     const modal = document.getElementById('modal-attachment');
     const form = document.getElementById('form-attachment');
     (document.getElementById('modal-attachment-title') || {}).textContent = editIdx !== null ? 'แก้ไขบิลแนบ' : 'เพิ่มบิลแนบ / ค่าสาธารณูปโภค';
@@ -3784,6 +3867,8 @@ function closeAttachmentModal() {
 
 async function handleAttachmentSubmit(e) {
     e.preventDefault();
+    const form = e.currentTarget || document.getElementById('form-attachment');
+    if (form && form.getAttribute('aria-busy') === 'true') return;
     const editIdx = document.getElementById('attachment-edit-index').value;
     const claimable = (document.getElementById('attach-claim-type') || {}).value === 'claim';
     const amount = Math.max(0, parseFloat(document.getElementById('attach-amount').value) || 0);
@@ -3803,11 +3888,14 @@ async function handleAttachmentSubmit(e) {
         return;
     }
 
+    setFormControlsBusy(form, true);
     showLoading(true);
     try {
         const categoryId = await resolveExpenseMasterSelection('category', 'attach');
         const fundSourceId = await resolveExpenseMasterSelection('fundSource', 'attach');
         const attachData = {
+            idPrefix: 'ATT',
+            ...(editIdx === '' && { requestId: attachmentCreateRequestId || createClientRequestId('attachment') }),
             expenseDate: expenseDate,
             postingMonth: postingMonth,
             organizationId: orgId,
@@ -3817,6 +3905,7 @@ async function handleAttachmentSubmit(e) {
             fundSourceId: fundSourceId,
             description: description,
             quantity: 1,
+            unit: 'รายการ',
             unitPrice: amount,
             claimable: claimable,
             note: ''
@@ -3843,6 +3932,7 @@ async function handleAttachmentSubmit(e) {
         appAlert('บันทึกบิลแนบล้มเหลว: ' + err.message);
     } finally {
         showLoading(false);
+        setFormControlsBusy(form, false);
     }
 }
 
@@ -4663,11 +4753,13 @@ function getQuickExpenseRowField(rowId, field) {
 }
 
 function getQuickExpenseRowDraft(rowId) {
+    const row = getQuickExpenseRowElement(rowId);
     const value = field => String((getQuickExpenseRowField(rowId, field) || {}).value || '').trim();
     const quantity = Number(value('quantity')) || 0;
     const unitPrice = Number(value('unitPrice')) || 0;
     return {
         rowId,
+        requestId: (row && row.dataset.requestId) || createClientRequestId('expense'),
         postingMonth: value('postingMonth'),
         receiptNo: value('receiptNo'),
         expenseDate: value('expenseDate'),
@@ -4678,12 +4770,13 @@ function getQuickExpenseRowDraft(rowId) {
         unitPrice,
         amount: quantity * unitPrice,
         note: value('note'),
-        multiItems: quickExpenseMultiItemsByRow[rowId] || [],
-        attachments: quickExpenseAttachmentsByRow[rowId] || []
+        multiItems: (quickExpenseMultiItemsByRow[rowId] || []).map(item => ({ ...item })),
+        attachments: (quickExpenseAttachmentsByRow[rowId] || []).map(item => ({ ...item }))
     };
 }
 
 function buildQuickExpenseRowHTML(rowId, initial = {}) {
+    const requestId = initial.requestId || createClientRequestId('expense');
     const postingMonth = initial.postingMonth || getSelectedPostingMonth();
     const expenseDate = initial.expenseDate || getSelectedMonthDefaultDateStr();
     const receiptNo = initial.receiptNo || '';
@@ -4694,7 +4787,7 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
     const unitPrice = initial.unitPrice || '';
     const note = initial.note || '';
     return `
-        <tr class="quick-expense-batch-row" data-row-id="${rowId}" data-saved="false">
+        <tr class="quick-expense-batch-row" data-row-id="${rowId}" data-request-id="${escapeHTML(requestId)}" data-saved="false">
             <td class="quick-expense-row-index">1</td>
             <td><input type="month" class="form-input" data-field="postingMonth" value="${escapeHTML(postingMonth)}"></td>
             <td class="quick-expense-doc-cell" data-role="document-number">
@@ -4729,6 +4822,7 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
             <td>
                 <div class="quick-expense-row-actions">
                     <button type="button" class="btn btn-icon quick-expense-open-full" onclick="openExpenseModalFromQuickExpenseRow('${rowId}')" title="เปิดในฟอร์มเต็ม"><i data-lucide="maximize-2"></i></button>
+                    <button type="button" class="btn btn-icon quick-expense-retry-attachments" data-row-retry-attachments onclick="retryQuickExpenseRowAttachments('${rowId}')" title="ลองอัปโหลดหลักฐานอีกครั้ง" hidden disabled><i data-lucide="refresh-cw"></i></button>
                     <button type="button" class="btn btn-icon quick-expense-remove-row" data-row-remove onclick="removeQuickExpenseRow('${rowId}')" title="ลบแถว"><i data-lucide="trash-2"></i></button>
                 </div>
                 <span class="quick-expense-row-status" data-role="row-status">รอบันทึก</span>
@@ -4743,7 +4837,7 @@ function addQuickExpenseRow(initial = {}) {
     const rowId = `quick-exp-${++quickExpenseRowSequence}`;
     quickExpenseRows.push(rowId);
     quickExpenseAttachmentsByRow[rowId] = [];
-    quickExpenseMultiItemsByRow[rowId] = Array.isArray(initial.multiItems) ? initial.multiItems : [];
+    quickExpenseMultiItemsByRow[rowId] = Array.isArray(initial.multiItems) ? initial.multiItems.map(item => ({ ...item })) : [];
     tbody.insertAdjacentHTML('beforeend', buildQuickExpenseRowHTML(rowId, initial));
     updateQuickExpenseRowTotal(rowId);
     renumberQuickExpenseRows();
@@ -4773,7 +4867,8 @@ function updateQuickExpenseRowTotal(rowId) {
 function updateQuickExpenseBatchSummary() {
     const pendingRows = quickExpenseRows
         .map(getQuickExpenseRowElement)
-        .filter(row => row && row.dataset.saved !== 'true');
+        .filter(row => row && row.dataset.saved !== 'true')
+        .filter(row => !isQuickExpenseDraftEmpty(getQuickExpenseRowDraft(row.dataset.rowId)));
     const total = pendingRows.reduce((sum, row) => sum + getQuickExpenseRowDraft(row.dataset.rowId).amount, 0);
     const summary = document.getElementById('quick-expense-row-summary');
     const totalElement = document.getElementById('quick-expense-grand-total');
@@ -4818,17 +4913,26 @@ function setQuickExpenseRowStatus(rowId, message, status = '') {
     if (element) element.textContent = message;
 }
 
-function markQuickExpenseRowSaved(rowId, documentNo, attachmentErrorCount = 0) {
+function markQuickExpenseRowSaved(rowId, documentNo, attachmentErrorCount = 0, expenseId = '') {
     const row = getQuickExpenseRowElement(rowId);
     if (!row) return;
     row.dataset.saved = 'true';
+    if (expenseId) row.dataset.expenseId = expenseId;
     row.classList.remove('is-saving', 'has-error');
     row.classList.add('is-saved');
     const docCell = row.querySelector('[data-role="document-number"]');
     if (docCell) docCell.innerHTML = `<strong>${escapeHTML(documentNo || 'บันทึกแล้ว')}</strong>`;
-    row.querySelectorAll('input, select, textarea, button').forEach(element => { element.disabled = true; });
+    row.querySelectorAll('input, select, textarea, button').forEach(element => {
+        element.disabled = true;
+        delete element.dataset.busyLocked;
+    });
     const removeButton = row.querySelector('[data-row-remove]');
     if (removeButton) removeButton.disabled = false;
+    const retryButton = row.querySelector('[data-row-retry-attachments]');
+    if (retryButton) {
+        retryButton.hidden = attachmentErrorCount === 0;
+        retryButton.disabled = attachmentErrorCount === 0;
+    }
     const status = row.querySelector('[data-role="row-status"]');
     if (status) status.textContent = attachmentErrorCount ? `บันทึกแล้ว · แนบไฟล์ไม่สำเร็จ ${attachmentErrorCount} ไฟล์` : 'บันทึกแล้ว';
     updateQuickExpenseBatchSummary();
@@ -4872,7 +4976,7 @@ function toggleQuickExpenseEntry(force) {
     const open = typeof force === 'boolean' ? force : panel.hidden;
     panel.hidden = !open;
     if (open) {
-        resetQuickExpenseEntry();
+        if (quickExpenseRows.length === 0) resetQuickExpenseEntry();
         panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
     initializeLucide();
@@ -4890,12 +4994,16 @@ function openExpenseModalFromQuickExpenseRow(rowId) {
         fundSourceId: value('inline-exp-fund'),
         fundSourceName: value('inline-exp-fund-input'),
         vendorId: vendor ? vendor.id : '',
-        claimable: value('inline-exp-claimable') === 'true',
-        note: formatNoteData(rowDraft.note, {}, rowDraft.multiItems)
+        claimable: value('inline-exp-claimable') === 'true'
     };
 
     openExpenseModal();
     expenseModalSource = `quick-row:${rowId}`;
+    expenseCreateRequestId = rowDraft.requestId;
+    expenseModalNoteMetadata = {
+        customFields: {},
+        multiItems: rowDraft.multiItems.map(item => ({ ...item }))
+    };
     const set = (id, nextValue) => {
         const element = document.getElementById(id);
         if (element) element.value = nextValue;
@@ -4914,8 +5022,15 @@ function openExpenseModalFromQuickExpenseRow(rowId) {
     set('bill-qty', draft.quantity || '1');
     set('bill-unit', draft.unit || 'รายการ');
     set('bill-price', draft.unitPrice);
+    const billQtyInput = document.getElementById('bill-qty');
+    const billPriceInput = document.getElementById('bill-price');
+    if (draft.multiItems.length > 1) {
+        if (billQtyInput) billQtyInput.disabled = true;
+        if (billPriceInput) billPriceInput.disabled = true;
+    }
     set('bill-claim-type', draft.claimable ? 'claim' : 'no-claim');
-    set('bill-note', draft.note);
+    set('bill-note', rowDraft.note);
+    updateExpenseModalMultiItemsSummary();
 
     tempBillAttachments = draft.attachments.map(item => ({
         ...item,
@@ -5071,10 +5186,11 @@ function fileAsBase64(file) {
 }
 
 async function uploadQuickExpenseAttachments(expenseId, attachments = []) {
-    const errors = [];
+    const uploaded = [];
+    const failed = [];
     for (const attachment of attachments) {
         try {
-            await apiCall('uploadAttachment', {
+            const result = await apiCall('uploadAttachment', {
                 expenseId,
                 fileName: attachment.originalFileName,
                 mimeType: attachment.file.type,
@@ -5083,12 +5199,68 @@ async function uploadQuickExpenseAttachments(expenseId, attachments = []) {
                 compressedSize: attachment.compressedSize,
                 sha256Hash: attachment.sha256Hash
             });
+            const storedAttachment = {
+                id: result.id,
+                expenseId,
+                originalFileName: attachment.originalFileName,
+                fileName: result.fileName || attachment.originalFileName,
+                fileType: attachment.file.type,
+                fileSize: attachment.originalSize,
+                compressedSize: attachment.compressedSize,
+                sha256Hash: attachment.sha256Hash,
+                driveFileId: result.driveFileId || '',
+                fileUrl: result.viewUrl || '',
+                viewUrl: result.viewUrl || ''
+            };
+            if (!attachmentStore[expenseId]) attachmentStore[expenseId] = [];
+            const alreadyStored = attachmentStore[expenseId].some(item =>
+                (storedAttachment.id && item.id === storedAttachment.id) ||
+                (storedAttachment.sha256Hash && item.sha256Hash === storedAttachment.sha256Hash)
+            );
+            if (!alreadyStored) attachmentStore[expenseId].push(storedAttachment);
+            uploaded.push({ attachment, storedAttachment });
         } catch (error) {
-            errors.push(error);
+            failed.push({ attachment, error });
         }
     }
-    return errors;
+    if (uploaded.length) saveAttachments();
+    return { uploaded, failed };
 }
+
+async function retryQuickExpenseRowAttachments(rowId) {
+    const row = getQuickExpenseRowElement(rowId);
+    const expenseId = row && row.dataset.expenseId;
+    const attachments = (quickExpenseAttachmentsByRow[rowId] || []).map(item => ({ ...item }));
+    if (!row || !expenseId || attachments.length === 0) return;
+
+    const retryButton = row.querySelector('[data-row-retry-attachments]');
+    if (retryButton) retryButton.disabled = true;
+    setQuickExpenseRowStatus(rowId, 'กำลังอัปโหลดหลักฐานอีกครั้ง...', 'saving');
+    try {
+        const result = await uploadQuickExpenseAttachments(expenseId, attachments);
+        result.uploaded.forEach(item => {
+            if (item.attachment.previewUrl) URL.revokeObjectURL(item.attachment.previewUrl);
+        });
+        quickExpenseAttachmentsByRow[rowId] = result.failed.map(item => item.attachment);
+        renderQuickExpenseRowFiles(rowId);
+        row.classList.remove('is-saving');
+        row.classList.toggle('has-error', result.failed.length > 0);
+        const status = row.querySelector('[data-role="row-status"]');
+        if (status) status.textContent = result.failed.length
+            ? `บันทึกแล้ว · แนบไฟล์ไม่สำเร็จ ${result.failed.length} ไฟล์`
+            : 'บันทึกแล้ว · แนบหลักฐานครบถ้วน';
+        if (retryButton) {
+            retryButton.hidden = result.failed.length === 0;
+            retryButton.disabled = result.failed.length === 0;
+        }
+        renderAll();
+        appAlert(result.failed.length ? 'ยังมีหลักฐานบางไฟล์อัปโหลดไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' : 'อัปโหลดหลักฐานครบถ้วนแล้ว', result.failed.length ? 'warning' : 'success');
+    } catch (error) {
+        setQuickExpenseRowStatus(rowId, `อัปโหลดหลักฐานไม่สำเร็จ: ${error.message}`, 'error');
+        if (retryButton) retryButton.disabled = false;
+    }
+}
+window.retryQuickExpenseRowAttachments = retryQuickExpenseRowAttachments;
 
 async function uploadQuickFoodAttachments(foodExpenseItemId) {
     const errors = [];
@@ -5152,6 +5324,8 @@ function validateQuickExpenseDraft(draft, rowNumber) {
 
 async function submitQuickExpenseBatch(event) {
     event.preventDefault();
+    const form = event.currentTarget || document.getElementById('quick-expense-form');
+    if (form && form.getAttribute('aria-busy') === 'true') return;
     if (quickExpenseFileProcessingCount > 0) {
         appAlert('กำลังเตรียมไฟล์หลักฐาน กรุณารอสักครู่', 'info');
         return;
@@ -5161,7 +5335,6 @@ async function submitQuickExpenseBatch(event) {
     const organizationId = currentUser.organizationId;
     const projectId = (document.getElementById('inline-exp-project') || {}).value || '';
     const claimable = (document.getElementById('inline-exp-claimable') || {}).value === 'true';
-    const saveButton = document.getElementById('quick-exp-save-btn');
 
     if (!organizationId) return appAlert('ไม่พบข้อมูลหน่วยงานของผู้ใช้ กรุณาเข้าสู่ระบบใหม่', 'error');
     if (!projectId) {
@@ -5187,7 +5360,7 @@ async function submitQuickExpenseBatch(event) {
         return appAlert(`กรุณากรอกข้อมูลให้ครบถ้วน\n${validationErrors.join('\n')}`, 'error');
     }
 
-    if (saveButton) saveButton.disabled = true;
+    setFormControlsBusy(form, true);
     showLoading(true);
     const savedRows = [];
     const failedRows = [];
@@ -5201,6 +5374,7 @@ async function submitQuickExpenseBatch(event) {
             try {
                 const vendorId = await resolveExpenseMasterName('vendor', item.draft.vendorName);
                 const payload = {
+                    requestId: item.draft.requestId,
                     receiptNo: item.draft.receiptNo,
                     expenseDate: item.draft.expenseDate,
                     postingMonth: item.draft.postingMonth,
@@ -5226,11 +5400,21 @@ async function submitQuickExpenseBatch(event) {
                     status: 'draft'
                 };
                 upsertExpenseRecord(savedExpense);
-                const attachmentErrors = result.id
+                const attachmentResult = result.id
                     ? await uploadQuickExpenseAttachments(result.id, item.draft.attachments)
-                    : [];
-                attachmentErrorCount += attachmentErrors.length;
-                markQuickExpenseRowSaved(item.rowId, savedExpense.documentNo || result.documentNo, attachmentErrors.length);
+                    : { uploaded: [], failed: [] };
+                attachmentResult.uploaded.forEach(uploaded => {
+                    if (uploaded.attachment.previewUrl) URL.revokeObjectURL(uploaded.attachment.previewUrl);
+                });
+                quickExpenseAttachmentsByRow[item.rowId] = attachmentResult.failed.map(failure => failure.attachment);
+                renderQuickExpenseRowFiles(item.rowId);
+                attachmentErrorCount += attachmentResult.failed.length;
+                markQuickExpenseRowSaved(
+                    item.rowId,
+                    savedExpense.documentNo || result.documentNo,
+                    attachmentResult.failed.length,
+                    result.id
+                );
                 savedRows.push({
                     receiptNo: item.draft.receiptNo,
                     documentNo: savedExpense.documentNo || result.documentNo || '-',
@@ -5271,7 +5455,7 @@ async function submitQuickExpenseBatch(event) {
         appAlert('ไม่สามารถเริ่มบันทึกรายการได้: ' + error.message, 'error');
     } finally {
         showLoading(false);
-        if (saveButton) saveButton.disabled = false;
+        setFormControlsBusy(form, false);
     }
 }
 window.submitQuickExpenseBatch = submitQuickExpenseBatch;
@@ -5678,6 +5862,29 @@ function openQuickExpenseMultiItems(rowId) {
 }
 window.openQuickExpenseMultiItems = openQuickExpenseMultiItems;
 
+function updateExpenseModalMultiItemsSummary() {
+    const summary = document.getElementById('bill-multi-items-summary');
+    if (!summary) return;
+    const items = expenseModalNoteMetadata.multiItems || [];
+    summary.textContent = items.length
+        ? `${items.length} รายการย่อย · รวม ${items.reduce((sum, item) => sum + ((Number(item.qty) || 0) * (Number(item.price) || 0)), 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท`
+        : 'ยังไม่มีรายการย่อย';
+}
+
+function openExpenseModalMultiItems() {
+    currentQuickExpenseRowId = null;
+    currentMultiItemsTarget = 'FULL_EXPENSE';
+    currentMultiItems = JSON.parse(JSON.stringify(expenseModalNoteMetadata.multiItems || []));
+    renderMultiItemsInModal();
+    const modal = document.getElementById('modal-multi-items');
+    if (modal) {
+        modal.style.display = 'flex';
+        modal.classList.add('active');
+    }
+    initializeLucide();
+}
+window.openExpenseModalMultiItems = openExpenseModalMultiItems;
+
 function closeMultiItemsModal() {
     const modal = document.getElementById('modal-multi-items');
     if (modal) {
@@ -5802,6 +6009,31 @@ function saveMultiItems() {
         }
         quickExpenseMultiItemsByRow[currentQuickExpenseRowId] = validItems;
         updateQuickExpenseRowTotal(currentQuickExpenseRowId);
+        closeMultiItemsModal();
+        return;
+    }
+
+    if (currentMultiItemsTarget === 'FULL_EXPENSE') {
+        const descInput = document.getElementById('bill-desc');
+        const qtyInput = document.getElementById('bill-qty');
+        const priceInput = document.getElementById('bill-price');
+        if (descInput && qtyInput && priceInput) {
+            if (validItems.length === 1) {
+                descInput.value = validItems[0].desc;
+                qtyInput.value = validItems[0].qty;
+                priceInput.value = validItems[0].price;
+                qtyInput.disabled = false;
+                priceInput.disabled = false;
+            } else {
+                descInput.value = `[หลายรายการ] ${validItems[0].desc} และรายการอื่นๆ รวม ${validItems.length} รายการ`;
+                qtyInput.value = 1;
+                priceInput.value = totalAmount;
+                qtyInput.disabled = true;
+                priceInput.disabled = true;
+            }
+        }
+        expenseModalNoteMetadata.multiItems = validItems.map(item => ({ ...item }));
+        updateExpenseModalMultiItemsSummary();
         closeMultiItemsModal();
         return;
     }
@@ -7765,8 +7997,11 @@ function openUserProfileModal() {
     
     document.getElementById('profile-modal-avatar-preview').src = user.avatar || 'https://ui-avatars.com/api/?name=' + encodeURIComponent(user.name || user.username || user.id || 'User') + '&background=random';
     (document.getElementById('profile-modal-email') || {}).value = user.email || '';
-    (document.getElementById('profile-modal-password') || {}).value = '';
+    (document.getElementById('profile-current-password') || {}).value = '';
+    (document.getElementById('profile-new-password') || {}).value = '';
     (document.getElementById('profile-modal-avatar') || {}).value = '';
+    (document.getElementById('profile-modal-name') || {}).textContent = user.name || user.username || user.id || '-';
+    (document.getElementById('profile-modal-role') || {}).textContent = user.role || '-';
     
     const modal = document.getElementById('modal-user-profile');
     modal.classList.add('active');
@@ -7790,23 +8025,29 @@ function previewProfileAvatar(input) {
 }
 
 // หมายเหตุ: ยังไม่รองรับอัปโหลดรูปโปรไฟล์ขึ้น Drive เพราะ users sheet ไม่มีคอลัมน์ avatar
-// (เดิมเรียก action 'upload_file'/'update_profile' ที่ไม่มีอยู่จริงใน backend เลย) —
-// ตอนนี้แก้ให้ใช้ action 'updateUser'/'changePassword' ที่มีอยู่แล้วจริงแทน จำกัดแค่แก้อีเมล/รหัสผ่าน
 async function saveUserProfile() {
     const userJson = localStorage.getItem('rdf_current_user');
     if (!userJson) return;
     const user = JSON.parse(userJson);
 
-    const email = document.getElementById('profile-modal-email').value.trim();
-    const password = document.getElementById('profile-modal-password').value.trim();
+    const email = String((document.getElementById('profile-modal-email') || {}).value || '').trim();
+    const currentPassword = String((document.getElementById('profile-current-password') || {}).value || '');
+    const newPassword = String((document.getElementById('profile-new-password') || {}).value || '');
+    if ((currentPassword && !newPassword) || (!currentPassword && newPassword)) {
+        return appAlert('หากต้องการเปลี่ยนรหัสผ่าน กรุณากรอกทั้งรหัสผ่านปัจจุบันและรหัสผ่านใหม่', 'warning');
+    }
+    if (newPassword && !/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/.test(newPassword)) {
+        return appAlert('รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัว และมี A-Z, a-z, 0-9', 'warning');
+    }
 
     appAlert('กำลังบันทึกข้อมูล...', 'info');
     try {
-        await apiCall('updateUser', { id: user.id, email });
-        if (password) {
-            const passwordHash = await sha256(password);
-            await apiCall('changePassword', { id: user.id, passwordHash });
+        const payload = { email };
+        if (newPassword) {
+            payload.currentPasswordHash = await sha256(currentPassword);
+            payload.newPasswordHash = await sha256(newPassword);
         }
+        await apiCall('updateProfile', payload);
         user.email = email;
         localStorage.setItem('rdf_current_user', JSON.stringify(user));
         showUserProfile(user);

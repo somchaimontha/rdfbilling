@@ -80,13 +80,12 @@ function successfulValue(action) {
 
 test('monthly records render before slow supplementary reads finish', async () => {
     const { context, api, elements } = createHarness();
-    const pending = new Map();
+    const slowCarry = deferred();
     const calls = [];
     context.__mockApiCall = (action) => {
         calls.push(action);
-        const request = deferred();
-        pending.set(action, request);
-        return request.promise;
+        if (action === 'getCarryOverAmount') return slowCarry.promise;
+        return Promise.resolve(successfulValue(action));
     };
     vm.runInContext(`
         apiCall = globalThis.__mockApiCall;
@@ -96,25 +95,64 @@ test('monthly records render before slow supplementary reads finish', async () =
     `, context);
 
     const loading = api.initAppWithAPI();
+    assert.deepEqual(calls, [
+        'getRuntimeConfig', 'getMasterData', 'getExpenses'
+    ], 'the bounded loader must launch only three database tasks initially');
+
+    await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(new Set(calls), new Set([
         'getRuntimeConfig', 'getMasterData', 'getExpenses', 'getFoodExpenses',
         'getClaims', 'getFundReceipts', 'getCarryOverAmount', 'getMonthStatuses'
     ]));
-
-    pending.get('getMasterData').resolve(successfulValue('getMasterData'));
-    pending.get('getExpenses').resolve(successfulValue('getExpenses'));
-    await new Promise(resolve => setImmediate(resolve));
     assert.equal(context.__renders, 1);
     assert.equal(api.getState().expenses.length, 1);
     assert.equal(api.getState().carryOverAmount, 0, 'old/supplementary totals must not leak into the first render');
     assert.equal(elements.get('database-load-status').hidden, false);
 
-    for (const [action, request] of pending) {
-        if (!['getMasterData', 'getExpenses'].includes(action)) request.resolve(successfulValue(action));
-    }
+    slowCarry.resolve(successfulValue('getCarryOverAmount'));
     await loading;
     assert.equal(api.getState().carryOverAmount, 25);
     assert.equal(elements.get('database-load-status').hidden, true);
+});
+
+test('initial database loading never runs more than three tasks concurrently', async () => {
+    const { context, api } = createHarness();
+    const pending = new Map();
+    const resolved = new Set();
+    const calls = [];
+    let active = 0;
+    let maxActive = 0;
+
+    context.__mockApiCall = action => {
+        calls.push(action);
+        active++;
+        maxActive = Math.max(maxActive, active);
+        const request = deferred();
+        pending.set(action, request);
+        return request.promise.finally(() => { active--; });
+    };
+    vm.runInContext(`
+        apiCall = globalThis.__mockApiCall;
+        renderAll = () => {};
+        renderTables = updateMetricsBar = renderSpreadsheet = updateFundReceiptWidget = renderClaims = renderFundReceiptsOverview = () => {};
+    `, context);
+
+    const loading = api.initAppWithAPI();
+    assert.equal(active, 3);
+    assert.equal(calls.length, 3);
+
+    while (resolved.size < 8) {
+        const nextAction = calls.find(action => !resolved.has(action));
+        assert.ok(nextAction, 'a queued task should start after an active task finishes');
+        resolved.add(nextAction);
+        pending.get(nextAction).resolve(successfulValue(nextAction));
+        await new Promise(resolve => setImmediate(resolve));
+        assert.ok(active <= 3, `expected at most 3 active tasks, saw ${active}`);
+    }
+
+    await loading;
+    assert.equal(calls.length, 8);
+    assert.equal(maxActive, 3);
 });
 
 test('retry keeps successful resources and requests only failed resources', async () => {
@@ -138,6 +176,33 @@ test('retry keeps successful resources and requests only failed resources', asyn
     assert.deepEqual(calls.slice(callsBeforeRetry), ['getClaims']);
     assert.equal(api.getState().claimsLoadStatus, 'ready');
     assert.equal(elements.get('database-load-status').hidden, true);
+});
+
+test('a retained renderer failure does not abort retrying a failed network resource', async () => {
+    const { context, api } = createHarness();
+    const calls = [];
+    let claimsAttempt = 0;
+    context.__mockApiCall = async action => {
+        calls.push(action);
+        if (action === 'getClaims' && claimsAttempt++ === 0) throw new TypeError('offline');
+        return successfulValue(action);
+    };
+    vm.runInContext(`
+        apiCall = globalThis.__mockApiCall;
+        renderAll = () => {};
+        renderTables = updateMetricsBar = renderSpreadsheet = updateFundReceiptWidget = renderClaims = renderFundReceiptsOverview = () => {};
+        updateMonthStatusCheckboxUI = () => { throw new TypeError("Cannot read properties of null (reading 'style')"); };
+    `, context);
+
+    await api.initAppWithAPI();
+    assert.equal(api.getState().claimsLoadStatus, 'error');
+
+    const callsBeforeRetry = calls.length;
+    await api.retryDatabaseLoad();
+
+    assert.deepEqual(calls.slice(callsBeforeRetry), ['getClaims']);
+    assert.equal(api.getState().claimsLoadStatus, 'ready');
+    assert.ok(api.getProgress().errors['render:statuses']);
 });
 
 test('missing optional signature preview markup does not break rendering', () => {

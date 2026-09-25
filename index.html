@@ -1534,6 +1534,12 @@
                 <div class="form-group">
                     <label class="form-label" for="bill-desc">รายละเอียดรายการ</label>
                     <input type="text" id="bill-desc" class="form-input" placeholder="รายละเอียดสินค้า/บริการ" required>
+                    <div style="display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap;">
+                        <button type="button" class="btn btn-outline btn-sm" onclick="openExpenseModalMultiItems()">
+                            <i data-lucide="list-plus" style="width:16px; height:16px;"></i> เพิ่มรายละเอียดรายการย่อย
+                        </button>
+                        <span id="bill-multi-items-summary" class="text-muted" style="font-size:12px;">ยังไม่มีรายการย่อย</span>
+                    </div>
                 </div>
                 <div class="form-grid form-grid-3">
                     <div class="form-group">
@@ -2239,7 +2245,7 @@
 
 <!-- Application Scripts -->
 <script src="thai-baht.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=20260925-2"></script>
 <script>
     // Wire up Master Data modal buttons
     (document.getElementById('modal-master-close') || {}).addEventListener?.('click', closeMasterModal);

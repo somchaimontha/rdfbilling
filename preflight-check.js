@@ -97,7 +97,7 @@ function main() {
     pass(`HTML div balance: ${openDivs}`);
   }
 
-  if (/<script\b[^>]*\bsrc\s*=\s*["']app\.js["']/i.test(html)) {
+  if (/<script\b[^>]*\bsrc\s*=\s*["']app\.js(?:\?[^"']*)?["']/i.test(html)) {
     pass('index.html loads app.js');
   } else {
     fail('index.html does not load app.js');
