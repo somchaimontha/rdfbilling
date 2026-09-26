@@ -1905,6 +1905,7 @@
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="category" checked onchange="renderExportPreview()"> หมวดหมู่</label>
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="vendor" checked onchange="renderExportPreview()"> ร้านค้า/ผู้ขาย</label>
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="amount" checked onchange="renderExportPreview()"> ยอดรวม</label>
+                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="attachmentsCount" checked onchange="renderExportPreview()"> จำนวนหลักฐาน</label>
                                 <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="claimType" checked onchange="renderExportPreview()"> ประเภทเบิก</label>
                             </div>
                         </div>
@@ -2015,14 +2016,41 @@
                             <div>
                                 <label class="form-label" style="font-size:11px; margin-bottom:3px;">ผู้จัดทำ</label>
                                 <input type="text" id="pdf-preparer-name" class="form-input" style="font-size:13px;padding:6px 10px;" placeholder="ชื่อ-สกุล / ตำแหน่ง" oninput="renderExportPreview()">
+                                <div class="signature-source-row">
+                                    <select id="pdf-preparer-signature-select" class="form-select" style="font-size:12px;padding:6px 8px;" onchange="selectSignatureForRole('prepared', this.value)"><option value="">เว้นพื้นที่สำหรับเซ็นด้วยปากกา</option></select>
+                                    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:5px;">
+                                        <button type="button" class="btn btn-outline btn-sm" onclick="openSignatureModal('prepared')"><i data-lucide="pen-line" style="width:13px;height:13px;"></i> เซ็นผ่านจอ</button>
+                                        <label class="btn btn-outline btn-sm" style="cursor:pointer;"><i data-lucide="upload" style="width:13px;height:13px;"></i> อัปโหลด<input type="file" accept="image/png,image/jpeg,image/webp" hidden onchange="handleSignatureUpload('prepared', event)"></label>
+                                        <button type="button" class="btn btn-outline btn-sm" onclick="removeSelectedSignature('prepared')">ล้าง</button>
+                                    </div>
+                                    <span id="pdf-preparer-signature-status" style="font-size:11px;color:var(--text-muted);">ยังไม่เลือกลายเซ็น — จะเว้นช่องให้เซ็นด้วยปากกา</span>
+                                </div>
                             </div>
                             <div>
                                 <label class="form-label" style="font-size:11px; margin-bottom:3px;">ผู้ตรวจสอบ</label>
                                 <input type="text" id="pdf-reviewer-name" class="form-input" style="font-size:13px;padding:6px 10px;" placeholder="ชื่อ-สกุล / ตำแหน่ง" oninput="renderExportPreview()">
+                                <div class="signature-source-row">
+                                    <select id="pdf-reviewer-signature-select" class="form-select" style="font-size:12px;padding:6px 8px;" onchange="selectSignatureForRole('checked', this.value)"><option value="">เว้นพื้นที่สำหรับเซ็นด้วยปากกา</option></select>
+                                    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:5px;">
+                                        <button type="button" class="btn btn-outline btn-sm" onclick="openSignatureModal('checked')"><i data-lucide="pen-line" style="width:13px;height:13px;"></i> เซ็นผ่านจอ</button>
+                                        <label class="btn btn-outline btn-sm" style="cursor:pointer;"><i data-lucide="upload" style="width:13px;height:13px;"></i> อัปโหลด<input type="file" accept="image/png,image/jpeg,image/webp" hidden onchange="handleSignatureUpload('checked', event)"></label>
+                                        <button type="button" class="btn btn-outline btn-sm" onclick="removeSelectedSignature('checked')">ล้าง</button>
+                                    </div>
+                                    <span id="pdf-reviewer-signature-status" style="font-size:11px;color:var(--text-muted);">ยังไม่เลือกลายเซ็น — จะเว้นช่องให้เซ็นด้วยปากกา</span>
+                                </div>
                             </div>
                             <div>
                                 <label class="form-label" style="font-size:11px; margin-bottom:3px;">ผู้อนุมัติ</label>
                                 <input type="text" id="pdf-approver-name" class="form-input" style="font-size:13px;padding:6px 10px;" placeholder="ชื่อ-สกุล / ตำแหน่ง" oninput="renderExportPreview()">
+                                <div class="signature-source-row">
+                                    <select id="pdf-approver-signature-select" class="form-select" style="font-size:12px;padding:6px 8px;" onchange="selectSignatureForRole('approved', this.value)"><option value="">เว้นพื้นที่สำหรับเซ็นด้วยปากกา</option></select>
+                                    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:5px;">
+                                        <button type="button" class="btn btn-outline btn-sm" onclick="openSignatureModal('approved')"><i data-lucide="pen-line" style="width:13px;height:13px;"></i> เซ็นผ่านจอ</button>
+                                        <label class="btn btn-outline btn-sm" style="cursor:pointer;"><i data-lucide="upload" style="width:13px;height:13px;"></i> อัปโหลด<input type="file" accept="image/png,image/jpeg,image/webp" hidden onchange="handleSignatureUpload('approved', event)"></label>
+                                        <button type="button" class="btn btn-outline btn-sm" onclick="removeSelectedSignature('approved')">ล้าง</button>
+                                    </div>
+                                    <span id="pdf-approver-signature-status" style="font-size:11px;color:var(--text-muted);">ยังไม่เลือกลายเซ็น — จะเว้นช่องให้เซ็นด้วยปากกา</span>
+                                </div>
                             </div>
                         </div>
                     </div>

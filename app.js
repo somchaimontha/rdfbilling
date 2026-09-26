@@ -23,6 +23,8 @@ const RETRYABLE_READ_API_ACTIONS = new Set([
     'getMasterData',
     'getMonthStatuses',
     'getRuntimeConfig',
+    'getSignatures',
+    'getSignatureDataUrl',
     'getSystemConfig',
     'getUsers'
 ]);
@@ -640,6 +642,8 @@ function getDefaultState() {
         claimBillMap: [],
         fundReceipts: [],
         signatures: { prepared: null, checked: null, approved: null },
+        signatureLibrary: [],
+        signatureSelection: { prepared: '', checked: '', approved: '' },
         columns: [
             { id: "documentNo", label: "เลขบิล", visible: true, custom: false },
             { id: "receiptNo", label: "เลขที่ใบเสร็จ", visible: true, custom: false },
@@ -1178,7 +1182,19 @@ function loadState() {
             state.selectedMonth = parsed.selectedMonth || defaults.selectedMonth;
             state.selectedYear = parsed.selectedYear || defaults.selectedYear;
             state.calculationMode = parsed.calculationMode || 'all';
-            state.signatures = parsed.signatures || { prepared: null, checked: null, approved: null };
+            state.signatures = { ...defaults.signatures, ...(parsed.signatures || {}) };
+            state.signatureLibrary = Array.isArray(parsed.signatureLibrary) ? parsed.signatureLibrary : [];
+            state.signatureSelection = { ...defaults.signatureSelection, ...(parsed.signatureSelection || {}) };
+            // Migrate signatures created by the original canvas-only implementation
+            // into the selectable local library without losing the legacy data URL.
+            ['prepared', 'checked', 'approved'].forEach(role => {
+                const dataUrl = state.signatures[role];
+                if (typeof dataUrl === 'string' && dataUrl && !state.signatureLibrary.some(item => item.dataUrl === dataUrl)) {
+                    const id = `local-legacy-${role}`;
+                    state.signatureLibrary.push({ id, roleInDoc: role, name: `ลายเซ็น ${role}`, fileName: `signature-${role}.png`, mimeType: 'image/png', source: 'drawn', dataUrl, createdAt: new Date().toISOString() });
+                    state.signatureSelection[role] = id;
+                }
+            });
             state.loginBg = parsed.loginBg || '';
             state.loginBgMode = parsed.loginBgMode || 'slideshow';
             if (parsed.columns) {
@@ -1204,6 +1220,8 @@ function saveState() {
         selectedYear: state.selectedYear,
         calculationMode: state.calculationMode,
         signatures: state.signatures,
+        signatureLibrary: state.signatureLibrary || [],
+        signatureSelection: state.signatureSelection || { prepared: '', checked: '', approved: '' },
         columns: state.columns,
         loginBg: state.loginBg,
         loginBgMode: state.loginBgMode
@@ -6238,6 +6256,182 @@ function renderSignaturePreviews() {
 }
 
 // ==========================================================================
+// Signature library and report signing workflow. This is declared after the
+// legacy canvas-only helpers so existing saved data remains compatible.
+const SIGNATURE_ROLES = ['prepared', 'checked', 'approved'];
+const SIGNATURE_ROLE_LABELS = { prepared: 'ผู้จัดทำ', checked: 'ผู้ตรวจสอบ', approved: 'ผู้อนุมัติ' };
+let signatureLibraryLoadPromise = null;
+
+function ensureSignatureState() {
+    if (!state.signatures) state.signatures = { prepared: null, checked: null, approved: null };
+    if (!Array.isArray(state.signatureLibrary)) state.signatureLibrary = [];
+    if (!state.signatureSelection) state.signatureSelection = { prepared: '', checked: '', approved: '' };
+    SIGNATURE_ROLES.forEach(role => { if (state.signatureSelection[role] === undefined) state.signatureSelection[role] = ''; });
+}
+
+function getSignatureControlRoleId(role, suffix) {
+    const prefix = role === 'prepared' ? 'preparer' : role === 'checked' ? 'reviewer' : 'approver';
+    return `pdf-${prefix}-signature-${suffix}`;
+}
+
+function getActiveSignatureDataUrl(role) {
+    ensureSignatureState();
+    const id = state.signatureSelection[role];
+    const item = id ? state.signatureLibrary.find(entry => entry.id === id) : null;
+    return (item && item.dataUrl) || (typeof state.signatures[role] === 'string' ? state.signatures[role] : '') || '';
+}
+
+function signatureDataParts(dataUrl) {
+    const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
+    return match ? { mimeType: match[1], base64Data: match[2] } : null;
+}
+
+async function loadSignatureLibrary(force = false) {
+    ensureSignatureState();
+    if (!force && signatureLibraryLoadPromise) return signatureLibraryLoadPromise;
+    signatureLibraryLoadPromise = apiCall('getSignatures').then(result => {
+        const remote = Array.isArray(result && result.signatures) ? result.signatures : [];
+        remote.forEach(meta => {
+            const existing = state.signatureLibrary.find(item => item.id === meta.id);
+            if (existing) Object.assign(existing, meta, { dataUrl: existing.dataUrl || '' });
+            else state.signatureLibrary.push({ ...meta, name: meta.fileName, dataUrl: '' });
+        });
+        renderSignatureControls();
+        saveState();
+        return state.signatureLibrary;
+    }).catch(error => {
+        console.warn('[signature] online library unavailable:', error && error.message);
+        renderSignatureControls();
+        return state.signatureLibrary;
+    }).finally(() => { signatureLibraryLoadPromise = null; });
+    return signatureLibraryLoadPromise;
+}
+
+async function ensureActiveSignaturesLoaded() {
+    ensureSignatureState();
+    await loadSignatureLibrary();
+    for (const role of SIGNATURE_ROLES) {
+        const id = state.signatureSelection[role];
+        const item = id ? state.signatureLibrary.find(entry => entry.id === id) : null;
+        if (!item || item.dataUrl || !String(id).startsWith('SIG')) continue;
+        try {
+            const result = await apiCall('getSignatureDataUrl', { id });
+            if (result && result.dataUrl) { item.dataUrl = result.dataUrl; state.signatures[role] = result.dataUrl; }
+        } catch (error) { console.warn('[signature] cannot load signature:', id, error && error.message); }
+    }
+    saveState();
+    renderSignatureControls();
+}
+
+async function selectSignatureForRole(role, id) {
+    ensureSignatureState();
+    if (!SIGNATURE_ROLES.includes(role)) return;
+    state.signatureSelection[role] = id || '';
+    if (!id) state.signatures[role] = null;
+    else {
+        const item = state.signatureLibrary.find(entry => entry.id === id);
+        try {
+            if (item && !item.dataUrl && String(id).startsWith('SIG')) {
+                const result = await apiCall('getSignatureDataUrl', { id });
+                if (result && result.dataUrl) item.dataUrl = result.dataUrl;
+            }
+            state.signatures[role] = (item && item.dataUrl) || null;
+        } catch (error) {
+            state.signatureSelection[role] = '';
+            state.signatures[role] = null;
+            appAlert('โหลดลายเซ็นไม่สำเร็จ: ' + (error.message || error), 'error');
+        }
+    }
+    saveState();
+    renderSignatureControls();
+    renderExportPreview();
+}
+window.selectSignatureForRole = selectSignatureForRole;
+
+async function uploadSignatureFile(role, file, source = 'uploaded') {
+    if (!file || !SIGNATURE_ROLES.includes(role)) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return appAlert('กรุณาเลือกไฟล์ PNG, JPG หรือ WEBP', 'warning');
+    if (file.size > 2 * 1024 * 1024) return appAlert('ไฟล์ลายเซ็นต้องมีขนาดไม่เกิน 2 MB', 'warning');
+    const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+    ensureSignatureState();
+    const localItem = { id: `local-${createClientRequestId('signature')}`, roleInDoc: role, name: file.name, fileName: file.name, mimeType: file.type, source, dataUrl, createdAt: new Date().toISOString() };
+    state.signatureLibrary.push(localItem);
+    state.signatureSelection[role] = localItem.id;
+    state.signatures[role] = dataUrl;
+    saveState(); renderSignatureControls(); renderExportPreview();
+    try {
+        const parts = signatureDataParts(dataUrl);
+        const result = await apiCall('uploadSignature', { roleInDoc: role, fileName: file.name, mimeType: file.type, base64Data: parts && parts.base64Data, source });
+        if (result && result.id) { Object.assign(localItem, result, { name: result.fileName || file.name, dataUrl }); state.signatureSelection[role] = result.id; saveState(); renderSignatureControls(); }
+        appAlert('บันทึกลายเซ็นไว้ในระบบแล้ว', 'success');
+    } catch (error) { appAlert('บันทึกไว้ในเครื่องแล้ว แต่ส่งขึ้นฐานข้อมูลไม่สำเร็จ', 'warning'); }
+}
+
+function handleSignatureUpload(role, event) {
+    const file = event && event.target && event.target.files && event.target.files[0];
+    if (file) uploadSignatureFile(role, file, 'uploaded');
+    if (event && event.target) event.target.value = '';
+}
+window.handleSignatureUpload = handleSignatureUpload;
+
+async function removeSelectedSignature(role) {
+    ensureSignatureState();
+    const id = state.signatureSelection[role];
+    if (!id) return;
+    state.signatureLibrary = state.signatureLibrary.filter(item => item.id !== id);
+    state.signatureSelection[role] = '';
+    state.signatures[role] = null;
+    saveState(); renderSignatureControls(); renderExportPreview();
+    if (String(id).startsWith('SIG')) { try { await apiCall('deleteSignature', { id }); } catch (error) { appAlert('ลบจากเครื่องแล้ว แต่ลบจากฐานข้อมูลไม่สำเร็จ', 'warning'); } }
+}
+window.removeSelectedSignature = removeSelectedSignature;
+
+function renderSignatureControls() {
+    ensureSignatureState();
+    SIGNATURE_ROLES.forEach(role => {
+        const select = document.getElementById(getSignatureControlRoleId(role, 'select'));
+        const status = document.getElementById(getSignatureControlRoleId(role, 'status'));
+        const preview = document.getElementById(`pdf-${role}-signature-preview`);
+        if (select) {
+            const current = state.signatureSelection[role] || '';
+            select.innerHTML = '<option value="">เว้นพื้นที่สำหรับเซ็นด้วยปากกา</option>' + state.signatureLibrary.filter(item => !item.roleInDoc || item.roleInDoc === role).map(item => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.name || item.fileName || 'ลายเซ็นที่บันทึกไว้')}</option>`).join('');
+            select.value = current;
+        }
+        const dataUrl = getActiveSignatureDataUrl(role);
+        if (status) { status.textContent = dataUrl ? 'เลือกลายเซ็นแล้ว (จะแสดงใน PDF)' : 'ยังไม่เลือกลายเซ็น — จะเว้นช่องให้เซ็นด้วยปากกา'; status.style.color = dataUrl ? 'var(--success)' : 'var(--text-muted)'; }
+        if (preview) { preview.style.display = dataUrl ? 'block' : 'none'; if (dataUrl) preview.src = dataUrl; }
+    });
+    // Keep legacy settings cards safe when they exist.
+    if (typeof renderSignaturePreviews === 'function') renderSignaturePreviews();
+}
+
+function openSignatureModal(role) {
+    ensureSignatureState();
+    if (!SIGNATURE_ROLES.includes(role)) return;
+    (document.getElementById('sig-role-target') || {}).value = role;
+    const titles = { prepared: 'ลายเซ็น: ผู้จัดทำ / Prepared By', checked: 'ลายเซ็น: ผู้ตรวจสอบ / Checked By', approved: 'ลายเซ็น: ผู้อนุมัติ / Approved By' };
+    (document.getElementById('modal-sig-title') || {}).textContent = titles[role] || 'เขียนลายเซ็นดิจิทัล';
+    const modal = document.getElementById('modal-signature'); if (modal) modal.classList.add('active');
+    initSignatureCanvas(); clearSignatureCanvas();
+}
+
+async function saveSignatureCanvas() {
+    const canvas = document.getElementById('sig-canvas'); if (!canvas) return;
+    const blank = document.createElement('canvas'); blank.width = canvas.width; blank.height = canvas.height;
+    if (canvas.toDataURL() === blank.toDataURL()) return appAlert('กรุณาวาดลายเซ็นก่อนบันทึก', 'warning');
+    const role = (document.getElementById('sig-role-target') || {}).value; if (!SIGNATURE_ROLES.includes(role)) return;
+    const dataUrl = canvas.toDataURL('image/png'); ensureSignatureState();
+    const localItem = { id: `local-${createClientRequestId('signature')}`, roleInDoc: role, name: `ลายเซ็น${SIGNATURE_ROLE_LABELS[role] || ''} ${new Date().toLocaleDateString('th-TH')}`, fileName: `signature-${role}.png`, mimeType: 'image/png', source: 'drawn', dataUrl, createdAt: new Date().toISOString() };
+    state.signatureLibrary.push(localItem); state.signatureSelection[role] = localItem.id; state.signatures[role] = dataUrl;
+    saveState(); renderSignatureControls(); closeSignatureModal(); renderExportPreview();
+    try {
+        const parts = signatureDataParts(dataUrl);
+        const result = await apiCall('uploadSignature', { roleInDoc: role, fileName: localItem.fileName, mimeType: 'image/png', base64Data: parts && parts.base64Data, source: 'drawn' });
+        if (result && result.id) { Object.assign(localItem, result, { dataUrl }); state.signatureSelection[role] = result.id; saveState(); renderSignatureControls(); }
+        appAlert('บันทึกลายเซ็นเรียบร้อยแล้ว', 'success');
+    } catch (error) { appAlert('บันทึกลายเซ็นไว้ในเครื่องแล้ว แต่ซิงก์ฐานข้อมูลไม่สำเร็จ', 'warning'); }
+}
+
 // Claims Management (Phase 2)
 // ==========================================================================
 function openClaimModal() {
@@ -6544,6 +6738,7 @@ async function deleteClaimPackage(claimId) {
 }
 
 async function exportClaimPDF(claimId) {
+    await ensureActiveSignaturesLoaded();
     const claim = state.claims.find(c => c.id === claimId);
     if (!claim) return appAlert("ไม่พบชุดส่งเบิกนี้!");
 
@@ -7291,6 +7486,8 @@ async function openExportModal(context) {
     } catch (err) {
         appAlert('โหลดข้อมูลสำหรับรายงานไม่สำเร็จ: ' + err.message, 'error');
     }
+    await loadSignatureLibrary();
+    renderSignatureControls();
     renderExportPreview();
 }
 
@@ -7385,7 +7582,8 @@ function buildExportSectionData(section) {
 // เติมของที่ยังไม่มีในแคชก่อนเสมอ ไม่ได้เพิ่ม endpoint ใหม่ แค่เรียกของเดิมเป็นชุด
 async function ensureAttachmentsLoaded(rows, section) {
     const missing = rows.filter(r => !attachmentStore[r.id]);
-    if (missing.length === 0) return;
+    if (missing.length === 0) return [];
+    const errors = [];
 
     if (section === 'food') {
         await mapWithConcurrency(missing, ATTACHMENT_LOAD_CONCURRENCY, async r => {
@@ -7395,7 +7593,7 @@ async function ensureAttachmentsLoaded(rows, section) {
                 (res.items || []).forEach(item => (item.attachments || []).forEach(a => files.push(a)));
                 attachmentStore[r.id] = files;
             } catch (err) {
-                attachmentStore[r.id] = [];
+                errors.push({ id: r.id, message: err && err.message ? err.message : 'โหลดหลักฐานไม่สำเร็จ' });
             }
         });
     } else {
@@ -7404,10 +7602,11 @@ async function ensureAttachmentsLoaded(rows, section) {
                 const res = await apiCall('getAttachments', { expenseId: r.id });
                 attachmentStore[r.id] = res.attachments || [];
             } catch (err) {
-                attachmentStore[r.id] = [];
+                errors.push({ id: r.id, message: err && err.message ? err.message : 'โหลดหลักฐานไม่สำเร็จ' });
             }
         });
     }
+    return errors;
 }
 
 // ดึงรูปจาก URL (ไฟล์ Google Drive) มาแปลงเป็น base64 data URL — pdfmake ฝังรูปในเอกสารได้เฉพาะ base64
@@ -7830,6 +8029,10 @@ async function buildReportModel() {
     const preparer = (document.getElementById('pdf-preparer-name') || {}).value || '';
     const reviewer = (document.getElementById('pdf-reviewer-name') || {}).value || '';
     const approver = (document.getElementById('pdf-approver-name') || {}).value || '';
+    if (inclSig) await ensureActiveSignaturesLoaded();
+    const preparerImage = inclSig ? getActiveSignatureDataUrl('prepared') : '';
+    const reviewerImage = inclSig ? getActiveSignatureDataUrl('checked') : '';
+    const approverImage = inclSig ? getActiveSignatureDataUrl('approved') : '';
 
     const inclBills = (document.getElementById('export-chk-bills') || {}).checked;
     const inclFood = (document.getElementById('export-chk-food') || {}).checked;
@@ -7859,7 +8062,9 @@ async function buildReportModel() {
     for (const spec of specs) {
         if (!spec.on) continue;
         const rows = buildExportSectionData(spec.key);
-        if (reportOptions.needsEvidence && (showImg || showPdf)) await ensureAttachmentsLoaded(rows, spec.key);
+        const attachmentLoadErrors = reportOptions.needsEvidence && (showImg || showPdf)
+            ? await ensureAttachmentsLoaded(rows, spec.key)
+            : [];
         const attachmentItems = await buildAttachmentItems(rows, spec.key, showImg, showPdf);
         sections.push({
             key: spec.key,
@@ -7870,6 +8075,7 @@ async function buildReportModel() {
             detailed: reportOptions.detailed,
             attachmentOnly: reportOptions.attachmentOnly,
             attachmentItems,
+            attachmentWarnings: attachmentLoadErrors,
         });
     }
 
@@ -7893,7 +8099,7 @@ async function buildReportModel() {
 
     return {
         header: { orgName, title, subHeading, docNum, monthLabel, logoSrc, qrDataUrl, verifyCode },
-        signature: inclSig ? { preparer, reviewer, approver } : null,
+        signature: inclSig ? { preparer, reviewer, approver, preparerImage, reviewerImage, approverImage } : null,
         sections,
         reportOptions,
     };
@@ -9344,6 +9550,7 @@ const EXPORT_BILL_COLUMNS = [
     { id: 'category', label: 'หมวดหมู่', align: 'left', get: r => r.category },
     { id: 'vendor', label: 'ผู้ขาย', align: 'left', get: r => r.vendor },
     { id: 'amount', label: 'ยอดรวม', align: 'right', get: r => formatNumber(r.amount), isAmount: true },
+    { id: 'attachmentsCount', label: 'จำนวนหลักฐาน', align: 'right', get: r => r.attachmentsCount || 0 },
     { id: 'claimType', label: 'ประเภทเบิก', align: 'left', get: r => r.claimType }
 ];
 const EXPORT_FOOD_COLUMNS = [
@@ -9519,12 +9726,18 @@ function buildPdfDocDefinition(model) {
                 content.push({ stack, margin: [0, 0, 0, 12] });
             });
         }
+        if (section.attachmentWarnings && section.attachmentWarnings.length) {
+            content.push({
+                text: `หลักฐานแนบโหลดไม่สำเร็จ ${section.attachmentWarnings.length} รายการ — ตรวจสอบการเชื่อมต่อแล้วลองสร้างรายงานใหม่`,
+                fontSize: 8.5, color: '#b45309', margin: [0, 2, 0, 12]
+            });
+        }
     });
 
-    if (signature && (signature.preparer || signature.reviewer || signature.approver)) {
-        const sigBlock = (role, name) => ({
+    if (signature && (signature.preparer || signature.reviewer || signature.approver || signature.preparerImage || signature.reviewerImage || signature.approverImage)) {
+        const sigBlock = (role, name, image) => ({
             stack: [
-                { text: ' ', margin: [0, 30, 0, 0] },
+                image ? { image: registerImage(image), fit: [120, 48], alignment: 'center', margin: [0, 0, 0, 5] } : { text: ' ', margin: [0, 30, 0, 0] },
                 { text: '........................................', alignment: 'center', fontSize: 9 },
                 { text: '(' + (name || '.........................') + ')', alignment: 'center', fontSize: 9, margin: [0, 2, 0, 0] },
                 { text: role, alignment: 'center', fontSize: 9, color: '#6b7280' },
@@ -9532,9 +9745,9 @@ function buildPdfDocDefinition(model) {
         });
         content.push({
             columns: [
-                sigBlock('ผู้จัดทำ', signature.preparer),
-                sigBlock('ผู้ตรวจสอบ', signature.reviewer),
-                sigBlock('ผู้อนุมัติ', signature.approver),
+                sigBlock('ผู้จัดทำ', signature.preparer, signature.preparerImage),
+                sigBlock('ผู้ตรวจสอบ', signature.reviewer, signature.reviewerImage),
+                sigBlock('ผู้อนุมัติ', signature.approver, signature.approverImage),
             ],
             unbreakable: true,
             margin: [0, 20, 0, 0],
@@ -9596,7 +9809,7 @@ async function generateAndShowPreview() {
         // โหลด pdfmake/ฟอนต์แบบ lazy (ปกติเตรียมไว้เบื้องหลังแล้ว → resolve ทันที)
         await ensureExportLibs();
         setPreviewLoadingText('กำลังสร้างตัวอย่าง PDF...');
-        const model = await withTimeout(buildReportModel(), 20000, 'การรวบรวมข้อมูล/ไฟล์แนบ');
+        const model = await withTimeout(buildReportModel(), 45000, 'การรวบรวมข้อมูล/ไฟล์แนบ');
         if (myGeneration !== _previewGeneration) return; // มีคำขอใหม่กว่าเข้ามาแล้ว
 
         updateExportPreviewPaperSize((model.reportOptions || {}).pageOrientation);
