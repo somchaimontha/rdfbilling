@@ -121,9 +121,11 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(html, /onsubmit="submitQuickExpenseBatch\(event\)"/);
     assert.match(html, /id="quick-expense-common-details"/);
     assert.match(html, /ข้อมูลสำคัญที่ใช้ร่วมกัน/);
-    assert.match(html, /โครงการ \/ หมวดหมู่ \/ แหล่งเงิน \/ ประเภท/);
+    assert.match(html, /รอบบันทึก \/ โครงการ \/ หมวดหมู่ \/ แหล่งเงิน \/ ประเภท/);
     assert.match(html, /id="quick-expense-rows"/);
-    assert.match(html, /<th class="quick-col-month">รอบบันทึก<\/th>/);
+    assert.match(html, /id="bills-widget-month-badge"/);
+    assert.match(html, /id="inline-exp-posting-month"/);
+    assert.doesNotMatch(html, /<th class="quick-col-month">รอบบันทึก<\/th>/);
     assert.match(html, /เลขที่ใบเสร็จ/);
     assert.match(html, /ร้านค้า \/ ผู้ขาย/);
     assert.match(html, /รายละเอียดเพิ่มเติมและหลักฐาน/);
@@ -135,6 +137,8 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(source, /requestId: item\.draft\.requestId/);
     assert.match(source, /idPrefix: 'ATT'/);
     assert.match(source, /retryQuickExpenseRowAttachments/);
+    assert.match(source, /getQuickExpenseDocumentPreview/);
+    assert.match(source, /editQuickExpenseDocumentNo/);
 });
 
 test('batch row validation requires all receipt fields and accepts a complete row', () => {

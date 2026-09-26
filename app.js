@@ -1230,8 +1230,15 @@ function saveState() {
 }
 
 function initializeLucide() {
-    if (window.lucide) {
-        window.lucide.createIcons();
+    const iconApi = (typeof window !== 'undefined' && window.lucide) || (typeof lucide !== 'undefined' && lucide);
+    if (!iconApi || typeof iconApi.createIcons !== 'function') return;
+    iconApi.createIcons();
+    // Rows are inserted after the first page render. A second pass keeps the
+    // tool icons visible even when the CDN finishes loading a tick later.
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => {
+            try { iconApi.createIcons(); } catch (error) { console.warn('[icons] refresh failed', error); }
+        });
     }
 }
 
@@ -2504,6 +2511,7 @@ function renderTables() {
 
     // Dynamic headings — show selected month/year
     const monthYear = `${THAI_MONTH_NAMES[state.selectedMonth - 1]} พ.ศ. ${state.selectedYear}`;
+    updateBillsWidgetMonthBadge();
     const billsTitle = document.getElementById('bills-widget-title');
     const attachTitle = document.getElementById('attach-widget-title');
     const additionalTitle = document.getElementById('additional-bills-widget-title');
@@ -4711,10 +4719,12 @@ function populateQuickExpenseProjectOptions(selectedId = '') {
 }
 
 function syncQuickExpenseEntryPeriod(force = false) {
-    quickExpenseRows.forEach(rowId => {
-        const postingMonth = getQuickExpenseRowField(rowId, 'postingMonth');
-        if (postingMonth && (force || !postingMonth.value)) postingMonth.value = getSelectedPostingMonth();
-    });
+    const postingMonth = document.getElementById('inline-exp-posting-month');
+    if (!postingMonth) return;
+    if (force || postingMonth.dataset.autoPeriod !== 'false' || !postingMonth.value) {
+        postingMonth.value = getSelectedPostingMonth();
+        postingMonth.dataset.autoPeriod = 'true';
+    }
 }
 
 function syncQuickFoodEntryPeriod() {
@@ -4773,12 +4783,13 @@ function getQuickExpenseRowField(rowId, field) {
 function getQuickExpenseRowDraft(rowId) {
     const row = getQuickExpenseRowElement(rowId);
     const value = field => String((getQuickExpenseRowField(rowId, field) || {}).value || '').trim();
+    const sharedPostingMonth = String((document.getElementById('inline-exp-posting-month') || {}).value || '').trim();
     const quantity = Number(value('quantity')) || 0;
     const unitPrice = Number(value('unitPrice')) || 0;
     return {
         rowId,
         requestId: (row && row.dataset.requestId) || createClientRequestId('expense'),
-        postingMonth: value('postingMonth'),
+        postingMonth: sharedPostingMonth || value('postingMonth'),
         receiptNo: value('receiptNo'),
         expenseDate: value('expenseDate'),
         vendorName: value('vendorName'),
@@ -4791,6 +4802,13 @@ function getQuickExpenseRowDraft(rowId) {
         multiItems: (quickExpenseMultiItemsByRow[rowId] || []).map(item => ({ ...item })),
         attachments: (quickExpenseAttachmentsByRow[rowId] || []).map(item => ({ ...item }))
     };
+}
+
+function getQuickExpenseDocumentPreview(postingMonth) {
+    const match = String(postingMonth || '').match(/^(\d{4})-(\d{2})$/);
+    if (!match) return 'MISMONTHYEAR_001';
+    const monthNames = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
+    return `MIS${monthNames[Number(match[2]) - 1] || 'MONTH'}${match[1]}_001`;
 }
 
 function buildQuickExpenseRowHTML(rowId, initial = {}) {
@@ -4807,9 +4825,9 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
     return `
         <tr class="quick-expense-batch-row" data-row-id="${rowId}" data-request-id="${escapeHTML(requestId)}" data-saved="false">
             <td class="quick-expense-row-index">1</td>
-            <td><input type="month" class="form-input" data-field="postingMonth" value="${escapeHTML(postingMonth)}"></td>
             <td class="quick-expense-doc-cell" data-role="document-number">
-                <span>สร้างอัตโนมัติ</span>
+                <span class="quick-expense-doc-preview">ตัวอย่าง ${escapeHTML(getQuickExpenseDocumentPreview(postingMonth))}</span>
+                <small>สร้างเลขจริงเมื่อบันทึก</small>
             </td>
             <td><input type="text" class="form-input" data-field="receiptNo" value="${escapeHTML(receiptNo)}" placeholder="เช่น RC-001"></td>
             <td><input type="date" class="form-input" data-field="expenseDate" value="${escapeHTML(expenseDate)}"></td>
@@ -4847,6 +4865,16 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
             </td>
         </tr>
     `;
+}
+
+function refreshQuickExpenseDocumentPreviews() {
+    const postingMonth = String((document.getElementById('inline-exp-posting-month') || {}).value || '').trim();
+    quickExpenseRows.forEach(rowId => {
+        const row = getQuickExpenseRowElement(rowId);
+        if (!row || row.dataset.saved === 'true') return;
+        const preview = row.querySelector('.quick-expense-doc-preview');
+        if (preview) preview.textContent = `ตัวอย่าง ${getQuickExpenseDocumentPreview(postingMonth)}`;
+    });
 }
 
 function addQuickExpenseRow(initial = {}) {
@@ -4939,11 +4967,13 @@ function markQuickExpenseRowSaved(rowId, documentNo, attachmentErrorCount = 0, e
     row.classList.remove('is-saving', 'has-error');
     row.classList.add('is-saved');
     const docCell = row.querySelector('[data-role="document-number"]');
-    if (docCell) docCell.innerHTML = `<strong>${escapeHTML(documentNo || 'บันทึกแล้ว')}</strong>`;
-    row.querySelectorAll('input, select, textarea, button').forEach(element => {
+    if (docCell) docCell.innerHTML = `<button type="button" class="quick-expense-doc-edit" data-role="document-edit" onclick="editQuickExpenseDocumentNo('${rowId}')" title="คลิกเพื่อแก้ไขเลขบิล"><strong>${escapeHTML(documentNo || 'บันทึกแล้ว')}</strong><small>คลิกเพื่อแก้ไข</small></button>`;
+    row.querySelectorAll('input, select, textarea, button:not([data-role="document-edit"])').forEach(element => {
         element.disabled = true;
         delete element.dataset.busyLocked;
     });
+    const documentEditButton = row.querySelector('[data-role="document-edit"]');
+    if (documentEditButton) documentEditButton.disabled = false;
     const removeButton = row.querySelector('[data-row-remove]');
     if (removeButton) removeButton.disabled = false;
     const retryButton = row.querySelector('[data-row-retry-attachments]');
@@ -4955,6 +4985,29 @@ function markQuickExpenseRowSaved(rowId, documentNo, attachmentErrorCount = 0, e
     if (status) status.textContent = attachmentErrorCount ? `บันทึกแล้ว · แนบไฟล์ไม่สำเร็จ ${attachmentErrorCount} ไฟล์` : 'บันทึกแล้ว';
     updateQuickExpenseBatchSummary();
 }
+
+async function editQuickExpenseDocumentNo(rowId) {
+    const row = getQuickExpenseRowElement(rowId);
+    const expenseId = row && row.dataset.expenseId;
+    const current = row && row.querySelector('[data-role="document-edit"] strong');
+    if (!expenseId || !current) return;
+    const next = window.prompt('แก้ไขเลขบิล', current.textContent.trim());
+    if (next === null) return;
+    const documentNo = String(next).trim();
+    if (!documentNo) return appAlert('กรุณาระบุเลขบิล', 'warning');
+    if (documentNo.length > 60) return appAlert('เลขบิลยาวเกิน 60 ตัวอักษร', 'warning');
+    if (documentNo === current.textContent.trim()) return;
+    try {
+        await apiCall('updateExpense', { id: expenseId, documentNo });
+        current.textContent = documentNo;
+        const match = (state.expenses || []).find(item => item.id === expenseId);
+        if (match) match.documentNo = documentNo;
+        appAlert('แก้ไขเลขบิลเรียบร้อยแล้ว', 'success');
+    } catch (error) {
+        appAlert('แก้ไขเลขบิลไม่สำเร็จ: ' + (error.message || error), 'error');
+    }
+}
+window.editQuickExpenseDocumentNo = editQuickExpenseDocumentNo;
 
 function resetQuickExpenseEntry() {
     const form = document.getElementById('quick-expense-form');
@@ -9437,6 +9490,21 @@ function updateFoodWidgetMonthBadge() {
     if (selMonth && selYear) {
         const thMonths = ['', 'ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
         badge.textContent = thMonths[parseInt(selMonth.value)] + ' ' + selYear.value;
+    }
+}
+
+function updateBillsWidgetMonthBadge() {
+    const badge = document.getElementById('bills-widget-month-badge');
+    if (!badge) return;
+    const selMonth = document.getElementById('select-month');
+    const selYear = document.getElementById('select-year');
+    if (selMonth && selYear) {
+        const thMonths = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+        badge.textContent = `${thMonths[parseInt(selMonth.value, 10)] || ''} ${selYear.value || ''}`.trim();
+    } else {
+        const [year, month] = String(getSelectedPostingMonth() || '').split('-');
+        const thMonths = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+        badge.textContent = `${thMonths[parseInt(month, 10)] || ''} ${year ? Number(year) + 543 : ''}`.trim();
     }
 }
 

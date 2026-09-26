@@ -943,8 +943,7 @@ button, input, select, textarea {
 }
 
 .quick-expense-batch-table .quick-col-index { width: 54px; text-align: center; }
-.quick-expense-batch-table .quick-col-month { width: 130px; }
-.quick-expense-batch-table .quick-col-doc { width: 130px; }
+.quick-expense-batch-table .quick-col-doc { width: 112px; }
 .quick-expense-batch-table .quick-col-receipt { width: 150px; }
 .quick-expense-batch-table .quick-col-date { width: 132px; }
 .quick-expense-batch-table .quick-col-vendor { width: 180px; }
@@ -972,6 +971,31 @@ button, input, select, textarea {
     display: block;
     color: var(--primary-dark);
     overflow-wrap: anywhere;
+}
+
+.quick-expense-doc-cell small,
+.quick-expense-doc-preview {
+    display: block;
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.quick-expense-doc-edit {
+    display: block;
+    width: 100%;
+    padding: 2px 4px;
+    border: 1px dashed var(--primary);
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.quick-expense-doc-edit:hover {
+    background: color-mix(in srgb, var(--primary-light) 35%, transparent);
 }
 
 .quick-expense-row-total {
@@ -1032,6 +1056,14 @@ button, input, select, textarea {
     align-items: center;
     justify-content: center;
     gap: 5px;
+}
+
+.quick-expense-row-actions .btn-icon svg,
+.quick-expense-row-actions .btn-icon [data-lucide] {
+    width: 16px;
+    height: 16px;
+    display: block;
+    flex: 0 0 16px;
 }
 
 .quick-expense-row-status {

@@ -366,7 +366,10 @@
             <!-- Expense Records Table -->
             <div class="widget" style="margin-bottom:24px;">
                 <div class="widget-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-                    <h3 class="widget-title" id="bills-widget-title" style="margin-bottom:0;">รายการบิลประจำเดือน</h3>
+                    <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+                        <h3 class="widget-title" id="bills-widget-title" style="margin-bottom:0;">รายการบิลประจำเดือน</h3>
+                        <span id="bills-widget-month-badge" style="font-size:12px; color:var(--text-secondary); background:var(--bg-main); padding:3px 10px; border-radius:20px; border:1px solid var(--border-color);"></span>
+                    </div>
                     <div class="entry-widget-actions">
                         <button class="btn btn-primary btn-sm" type="button" onclick="toggleQuickExpenseEntry()" style="display:flex; align-items:center; gap:6px;">
                             <i data-lucide="table-2" style="width:16px; height:16px;"></i> เพิ่มในตาราง
@@ -390,10 +393,10 @@
                         <details class="quick-entry-details quick-entry-common-details" id="quick-expense-common-details" open>
                             <summary>
                                 <span>ข้อมูลสำคัญที่ใช้ร่วมกัน</span>
-                                <small>โครงการ / หมวดหมู่ / แหล่งเงิน / ประเภท</small>
+                                <small>รอบบันทึก / โครงการ / หมวดหมู่ / แหล่งเงิน / ประเภท</small>
                             </summary>
                             <div class="quick-entry-grid quick-entry-extra-grid">
-                                <div class="form-group quick-span-4">
+                                <div class="form-group quick-span-3">
                                     <div class="quick-entry-label-row">
                                         <label class="form-label" for="inline-exp-project">โครงการ</label>
                                         <button type="button" class="btn btn-link btn-xs" onclick="quickAddProject('inline-exp')">
@@ -402,13 +405,13 @@
                                     </div>
                                     <select id="inline-exp-project" class="form-select" required></select>
                                 </div>
-                                <div class="form-group quick-span-3">
+                                <div class="form-group quick-span-2">
                                     <label class="form-label" for="inline-exp-category-input">หมวดหมู่</label>
                                     <input type="hidden" id="inline-exp-category">
                                     <input type="text" id="inline-exp-category-input" class="form-input" list="inline-exp-category-list" placeholder="พิมพ์หรือเลือกหมวดหมู่" required>
                                     <datalist id="inline-exp-category-list"></datalist>
                                 </div>
-                                <div class="form-group quick-span-3">
+                                <div class="form-group quick-span-2">
                                     <label class="form-label" for="inline-exp-fund-input">แหล่งเงิน</label>
                                     <input type="hidden" id="inline-exp-fund">
                                     <input type="text" id="inline-exp-fund-input" class="form-input" list="inline-exp-fund-list" placeholder="พิมพ์หรือเลือกแหล่งเงิน" required>
@@ -420,6 +423,10 @@
                                         <option value="true">เบิกมูลนิธิ</option>
                                         <option value="false">ไม่เบิก</option>
                                     </select>
+                                </div>
+                                <div class="form-group quick-span-3">
+                                    <label class="form-label" for="inline-exp-posting-month">รอบบันทึก</label>
+                                    <input type="month" id="inline-exp-posting-month" class="form-input" required data-auto-period="true" onchange="this.dataset.autoPeriod='false'; refreshQuickExpenseDocumentPreviews();">
                                 </div>
                             </div>
                         </details>
@@ -440,7 +447,6 @@
                                 <thead>
                                     <tr>
                                         <th class="quick-col-index">ลำดับ</th>
-                                        <th class="quick-col-month">รอบบันทึก</th>
                                         <th class="quick-col-doc">เลขบิล</th>
                                         <th class="quick-col-receipt">เลขที่ใบเสร็จ</th>
                                         <th class="quick-col-date">วันที่บิล</th>
@@ -457,7 +463,7 @@
                                 <tbody id="quick-expense-rows"></tbody>
                                 <tfoot>
                                     <tr>
-                                        <td colspan="10" class="quick-batch-grand-label">รวมรายการที่ยังไม่บันทึก</td>
+                                        <td colspan="9" class="quick-batch-grand-label">รวมรายการที่ยังไม่บันทึก</td>
                                         <td id="quick-expense-grand-total" class="quick-batch-grand-total">0.00</td>
                                         <td colspan="2"></td>
                                     </tr>
