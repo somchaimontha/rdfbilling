@@ -612,6 +612,7 @@ let attachmentStore = {};
 // Track whether the expense modal is opened in "Additional Project" mode
 let isNewProjectExpenseMode = false;
 let expenseModalSource = null;
+let expenseModalOrganizationId = '';
 let expenseCreateRequestId = '';
 let attachmentCreateRequestId = '';
 let expenseModalNoteMetadata = { customFields: {}, multiItems: [] };
@@ -3492,6 +3493,7 @@ window.quickAddProject = quickAddProject;
 
 function openExpenseModal(editIdx = null, isNewProject = false) {
     expenseModalSource = null;
+    expenseModalOrganizationId = '';
     expenseCreateRequestId = editIdx === null ? createClientRequestId('expense') : '';
     expenseModalNoteMetadata = { customFields: {}, multiItems: [] };
     isNewProjectExpenseMode = isNewProject;
@@ -3539,6 +3541,7 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
 
     if (editIdx !== null) {
         const exp = state.expenses[editIdx];
+        expenseModalOrganizationId = exp.organizationId || '';
         const parsedNote = parseNoteData(exp.note);
         expenseModalNoteMetadata = {
             customFields: { ...(parsedNote.customFields || {}) },
@@ -3583,6 +3586,7 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
 function closeExpenseModal() {
     isNewProjectExpenseMode = false;
     expenseModalSource = null;
+    expenseModalOrganizationId = '';
     tempBillAttachments.forEach(item => {
         if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
     });
@@ -3602,7 +3606,9 @@ async function handleExpenseSubmit(e) {
     const unitPrice = Math.max(0, parseFloat(document.getElementById('bill-price').value) || 0);
 
     const user = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
-    const orgId = user.organizationId;
+    const orgId = isAdminUser(user) && expenseModalOrganizationId
+        ? expenseModalOrganizationId
+        : user.organizationId;
     if (state.requireAttachment && editIdx === '' && tempBillAttachments.length === 0) {
         appAlert('ระบบกำหนดให้แนบหลักฐานอย่างน้อย 1 ไฟล์ก่อนบันทึกรายการใหม่', 'error');
         return;
@@ -4804,6 +4810,73 @@ function populateQuickExpenseProjectOptions(selectedId = '') {
     ].join('');
 }
 
+function getQuickExpenseSharedOrganizationId() {
+    const currentUser = getCurrentUser() || {};
+    const select = document.getElementById('inline-exp-organization');
+    if (isAdminUser(currentUser) && select) {
+        return String(select.value || currentUser.organizationId || '').trim();
+    }
+    return String(currentUser.organizationId || '').trim();
+}
+
+function getOrganizationShortName(organizationId) {
+    const organization = (state.organizations || []).find(item => String(item.id) === String(organizationId));
+    const shortName = organization && (organization.shortName || organization.short_name);
+    return String(shortName || 'MIS').trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || 'MIS';
+}
+
+function getQuickExpenseOrganizationOptions(selectedId = '') {
+    return (state.organizations || [])
+        .filter(item => item && item.id && item.active !== false)
+        .map(item => {
+            const shortName = getOrganizationShortName(item.id);
+            const name = item.name || item.nameTh || item.nameEn || item.id;
+            const selected = String(item.id) === String(selectedId) ? ' selected' : '';
+            return `<option value="${escapeHTML(item.id)}"${selected}>${escapeHTML(shortName)} — ${escapeHTML(name)}</option>`;
+        })
+        .join('');
+}
+
+function populateQuickExpenseOrganizationContext(selectedId = '') {
+    const wrapper = document.getElementById('quick-expense-admin-context');
+    const select = document.getElementById('inline-exp-organization');
+    if (!wrapper || !select) return '';
+    const currentUser = getCurrentUser() || {};
+    if (!isAdminUser(currentUser)) {
+        wrapper.hidden = true;
+        select.innerHTML = '';
+        return String(currentUser.organizationId || '');
+    }
+
+    const organizations = (state.organizations || []).filter(item => item && item.id && item.active !== false);
+    const organizationId = selectedId || select.value || currentUser.organizationId || (organizations[0] || {}).id || '';
+    select.innerHTML = getQuickExpenseOrganizationOptions(organizationId);
+    wrapper.hidden = false;
+    return organizationId;
+}
+
+function buildQuickExpenseRowOrganizationControl(selectedId, followsShared = true) {
+    if (!isAdminUser()) return '';
+    return `<select class="form-select quick-expense-org-select" data-field="organizationId" data-follow-shared="${followsShared ? 'true' : 'false'}" aria-label="บันทึกในนาม" onchange="onQuickExpenseRowOrganizationChange(this)">${getQuickExpenseOrganizationOptions(selectedId)}</select>`;
+}
+
+function onQuickExpenseRowOrganizationChange(select) {
+    if (select && select.dataset) select.dataset.followShared = 'false';
+    refreshQuickExpenseDocumentPreviews();
+}
+
+function onQuickExpenseOrganizationChange(organizationId) {
+    quickExpenseRows.forEach(rowId => {
+        const row = getQuickExpenseRowElement(rowId);
+        if (!row || row.dataset.saved === 'true') return;
+        const select = row.querySelector('[data-field="organizationId"]');
+        if (select && select.dataset.followShared !== 'false') select.value = organizationId;
+    });
+    refreshQuickExpenseDocumentPreviews();
+}
+window.onQuickExpenseOrganizationChange = onQuickExpenseOrganizationChange;
+window.onQuickExpenseRowOrganizationChange = onQuickExpenseRowOrganizationChange;
+
 function syncQuickExpenseEntryPeriod(force = false) {
     const postingMonth = document.getElementById('inline-exp-posting-month');
     if (!postingMonth) return;
@@ -4875,6 +4948,7 @@ function getQuickExpenseRowDraft(rowId) {
     return {
         rowId,
         requestId: (row && row.dataset.requestId) || createClientRequestId('expense'),
+        organizationId: value('organizationId') || getQuickExpenseSharedOrganizationId(),
         postingMonth: sharedPostingMonth || value('postingMonth'),
         receiptNo: value('receiptNo'),
         expenseDate: value('expenseDate'),
@@ -4890,11 +4964,12 @@ function getQuickExpenseRowDraft(rowId) {
     };
 }
 
-function getQuickExpenseDocumentPreview(postingMonth) {
+function getQuickExpenseDocumentPreview(postingMonth, organizationId = getQuickExpenseSharedOrganizationId()) {
     const match = String(postingMonth || '').match(/^(\d{4})-(\d{2})$/);
-    if (!match) return 'MISMONTHYEAR_001';
+    const prefix = getOrganizationShortName(organizationId);
+    if (!match) return `${prefix}MONTHYEAR_001`;
     const monthNames = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
-    return `MIS${monthNames[Number(match[2]) - 1] || 'MONTH'}${match[1]}_001`;
+    return `${prefix}${monthNames[Number(match[2]) - 1] || 'MONTH'}${match[1]}_001`;
 }
 
 function buildQuickExpenseRowHTML(rowId, initial = {}) {
@@ -4908,12 +4983,14 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
     const unit = initial.unit || 'รายการ';
     const unitPrice = initial.unitPrice || '';
     const note = initial.note || '';
+    const organizationId = initial.organizationId || getQuickExpenseSharedOrganizationId();
+    const organizationControl = buildQuickExpenseRowOrganizationControl(organizationId, !initial.organizationId);
     return `
         <tr class="quick-expense-batch-row" data-row-id="${rowId}" data-request-id="${escapeHTML(requestId)}" data-saved="false">
             <td class="quick-expense-row-index">1</td>
             <td class="quick-expense-doc-cell" data-role="document-number">
-                <span class="quick-expense-doc-preview">ตัวอย่าง ${escapeHTML(getQuickExpenseDocumentPreview(postingMonth))}</span>
-                <small>สร้างเลขจริงเมื่อบันทึก</small>
+                <strong class="quick-expense-doc-preview">${escapeHTML(getQuickExpenseDocumentPreview(postingMonth, organizationId))}</strong>
+                ${organizationControl}
             </td>
             <td><input type="text" class="form-input" data-field="receiptNo" value="${escapeHTML(receiptNo)}" placeholder="เล่ม 1 / เลขที่ 001"></td>
             <td><input type="date" class="form-input" data-field="expenseDate" value="${escapeHTML(expenseDate)}"></td>
@@ -4959,7 +5036,8 @@ function refreshQuickExpenseDocumentPreviews() {
         const row = getQuickExpenseRowElement(rowId);
         if (!row || row.dataset.saved === 'true') return;
         const preview = row.querySelector('.quick-expense-doc-preview');
-        if (preview) preview.textContent = `ตัวอย่าง ${getQuickExpenseDocumentPreview(postingMonth)}`;
+        const organizationId = String((row.querySelector('[data-field="organizationId"]') || {}).value || getQuickExpenseSharedOrganizationId());
+        if (preview) preview.textContent = getQuickExpenseDocumentPreview(postingMonth, organizationId);
     });
 }
 
@@ -5106,6 +5184,7 @@ function resetQuickExpenseEntry() {
     quickExpenseFileProcessingCount = 0;
     const tbody = document.getElementById('quick-expense-rows');
     if (tbody) tbody.innerHTML = '';
+    populateQuickExpenseOrganizationContext();
     populateQuickExpenseProjectOptions();
     populateQuickExpenseVendorOptions();
     syncQuickExpenseEntryPeriod(true);
@@ -5156,6 +5235,7 @@ function openExpenseModalFromQuickExpenseRow(rowId) {
 
     openExpenseModal();
     expenseModalSource = `quick-row:${rowId}`;
+    expenseModalOrganizationId = rowDraft.organizationId;
     expenseCreateRequestId = rowDraft.requestId;
     expenseModalNoteMetadata = {
         customFields: {},
@@ -5467,6 +5547,7 @@ function isQuickExpenseDraftEmpty(draft) {
 
 function validateQuickExpenseDraft(draft, rowNumber) {
     const missing = [];
+    if (!draft.organizationId) missing.push('หน่วยงาน');
     if (!/^\d{4}-\d{2}$/.test(draft.postingMonth)) missing.push('รอบบันทึก');
     if (!draft.receiptNo) missing.push('เลขที่ใบเสร็จ');
     if (!draft.expenseDate) missing.push('วันที่บิล');
@@ -5488,12 +5569,9 @@ async function submitQuickExpenseBatch(event) {
         return;
     }
 
-    const currentUser = getCurrentUser() || {};
-    const organizationId = currentUser.organizationId;
     const projectId = (document.getElementById('inline-exp-project') || {}).value || '';
     const claimable = (document.getElementById('inline-exp-claimable') || {}).value === 'true';
 
-    if (!organizationId) return appAlert('ไม่พบข้อมูลหน่วยงานของผู้ใช้ กรุณาเข้าสู่ระบบใหม่', 'error');
     if (!projectId) {
         return appAlert('กรุณาระบุโครงการในส่วนข้อมูลสำคัญให้ครบถ้วน', 'error');
     }
@@ -5535,7 +5613,7 @@ async function submitQuickExpenseBatch(event) {
                     receiptNo: item.draft.receiptNo,
                     expenseDate: item.draft.expenseDate,
                     postingMonth: item.draft.postingMonth,
-                    organizationId,
+                    organizationId: item.draft.organizationId,
                     projectId,
                     categoryId,
                     fundSourceId,

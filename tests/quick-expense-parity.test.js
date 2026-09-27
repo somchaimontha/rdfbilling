@@ -19,6 +19,7 @@ const commonValues = {
 };
 
 const rowValues = {
+    organizationId: 'ORG-BS',
     postingMonth: '2026-09',
     receiptNo: 'RC-2026-001',
     expenseDate: '2026-08-28',
@@ -94,6 +95,7 @@ function createHarness() {
             quickAddProject,
             validateQuickExpenseDraft,
             isQuickExpenseDraftEmpty,
+            getQuickExpenseDocumentPreview,
             setQuickRow: (rowId, attachments, multiItems) => {
                 quickExpenseRows = [rowId];
                 quickExpenseAttachmentsByRow[rowId] = attachments;
@@ -102,8 +104,10 @@ function createHarness() {
             getTempAttachments: () => tempBillAttachments,
             setProjects: value => { state.projects = value; },
             setVendors: value => { state.vendors = value; },
+            setOrganizations: value => { state.organizations = value; },
             getProjects: () => state.projects,
             getModalSource: () => expenseModalSource,
+            getModalOrganizationId: () => expenseModalOrganizationId,
             getExpenseRequestId: () => expenseCreateRequestId,
             getExpenseNoteMetadata: () => expenseModalNoteMetadata
         };
@@ -121,6 +125,8 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(html, /onsubmit="submitQuickExpenseBatch\(event\)"/);
     assert.match(html, /id="quick-expense-common-details"/);
     assert.match(html, /ข้อมูลสำคัญที่ใช้ร่วมกัน/);
+    assert.match(html, /id="inline-exp-organization"/);
+    assert.match(html, /บันทึกในนาม/);
     assert.match(html, /รอบบันทึก \/ โครงการ \/ หมวดหมู่ \/ แหล่งเงิน \/ ประเภท/);
     assert.match(html, /id="quick-expense-rows"/);
     assert.match(html, /id="bills-widget-month-badge"/);
@@ -144,7 +150,7 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
 test('batch row validation requires all receipt fields and accepts a complete row', () => {
     const { api } = createHarness();
     const complete = {
-        postingMonth: '2026-09', receiptNo: 'RC-001', expenseDate: '2026-09-01', vendorName: 'ร้านค้า',
+        organizationId: 'ORG-BS', postingMonth: '2026-09', receiptNo: 'RC-001', expenseDate: '2026-09-01', vendorName: 'ร้านค้า',
         description: 'วัสดุ', quantity: 2, unit: 'ชิ้น', unitPrice: 50,
         note: '', attachments: [], multiItems: []
     };
@@ -173,6 +179,7 @@ test('opening a batch row in the full form preserves receipt data, common fields
 
     assert.equal(context.__modalOpened, true);
     assert.equal(api.getModalSource(), 'quick-row:quick-exp-1');
+    assert.equal(api.getModalOrganizationId(), rowValues.organizationId);
     assert.equal(elements.get('bill-receipt-no').value, rowValues.receiptNo);
     assert.equal(elements.get('bill-date').value, rowValues.expenseDate);
     assert.equal(elements.get('bill-posting-month').value, rowValues.postingMonth);
@@ -195,6 +202,18 @@ test('opening a batch row in the full form preserves receipt data, common fields
     assert.equal(api.getTempAttachments().length, 1);
     assert.equal(api.getTempAttachments()[0].originalFileName, attachment.originalFileName);
     assert.equal(context.__previewExpenseId, null);
+});
+
+test('bill preview uses the selected organization short code without explanatory text', () => {
+    const { api } = createHarness();
+    api.setOrganizations([
+        { id: 'ORG-OF', name: 'office', shortName: 'OF', active: true },
+        { id: 'ORG-BS', name: 'Boribhat Suksa', shortName: 'BS', active: true }
+    ]);
+
+    assert.equal(api.getQuickExpenseDocumentPreview('2026-09', 'ORG-BS'), 'BSSEPTEMBER2026_001');
+    assert.doesNotMatch(source, /ตัวอย่าง \$\{escapeHTML\(getQuickExpenseDocumentPreview/);
+    assert.doesNotMatch(source, /สร้างเลขจริงเมื่อบันทึก/);
 });
 
 test('quick project creation selects the new project without reloading all database data', async () => {

@@ -392,8 +392,14 @@
                     <form id="quick-expense-form" onsubmit="submitQuickExpenseBatch(event)">
                         <details class="quick-entry-details quick-entry-common-details" id="quick-expense-common-details" open>
                             <summary>
-                                <span>ข้อมูลสำคัญที่ใช้ร่วมกัน</span>
-                                <small>รอบบันทึก / โครงการ / หมวดหมู่ / แหล่งเงิน / ประเภท</small>
+                                <span class="quick-common-heading">
+                                    <span>ข้อมูลสำคัญที่ใช้ร่วมกัน</span>
+                                    <small>รอบบันทึก / โครงการ / หมวดหมู่ / แหล่งเงิน / ประเภท</small>
+                                </span>
+                                <span class="quick-admin-context" id="quick-expense-admin-context" hidden onclick="event.stopPropagation()">
+                                    <label for="inline-exp-organization">กำลังบันทึกในนาม</label>
+                                    <select id="inline-exp-organization" class="form-select" onchange="onQuickExpenseOrganizationChange(this.value)"></select>
+                                </span>
                             </summary>
                             <div class="quick-entry-grid quick-entry-extra-grid">
                                 <div class="form-group quick-span-3">

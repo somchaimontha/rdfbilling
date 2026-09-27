@@ -857,6 +857,39 @@ button, input, select, textarea {
     font-weight: 500;
 }
 
+.quick-common-heading {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.quick-admin-context {
+    display: grid;
+    grid-template-columns: auto minmax(190px, 260px);
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border-color));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--primary-light) 32%, var(--bg-sidebar));
+}
+
+.quick-admin-context[hidden] {
+    display: none !important;
+}
+
+.quick-admin-context label {
+    color: var(--text-secondary);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.quick-admin-context .form-select {
+    min-height: 32px;
+    padding: 4px 28px 4px 8px;
+    font-size: 12px;
+}
+
 .quick-batch-toolbar {
     display: flex;
     align-items: center;
@@ -898,7 +931,7 @@ button, input, select, textarea {
 
 .quick-expense-batch-table {
     width: 100%;
-    min-width: 1710px;
+    min-width: 1830px;
     border-collapse: collapse;
     table-layout: fixed;
     font-size: 12px;
@@ -943,7 +976,7 @@ button, input, select, textarea {
 }
 
 .quick-expense-batch-table .quick-col-index { width: 54px; text-align: center; }
-.quick-expense-batch-table .quick-col-doc { width: 112px; }
+.quick-expense-batch-table .quick-col-doc { width: 190px; }
 .quick-expense-batch-table .quick-col-receipt { width: 150px; }
 .quick-expense-batch-table thead .quick-col-receipt {
     white-space: normal;
@@ -956,7 +989,7 @@ button, input, select, textarea {
 .quick-expense-batch-table .quick-col-unit { width: 90px; }
 .quick-expense-batch-table .quick-col-total { width: 120px; }
 .quick-expense-batch-table .quick-col-extra { width: 230px; }
-.quick-expense-batch-table .quick-col-actions { width: 105px; text-align: center; }
+.quick-expense-batch-table .quick-col-actions { width: 136px; text-align: center; }
 
 .quick-expense-row-index {
     color: var(--text-secondary);
@@ -977,13 +1010,28 @@ button, input, select, textarea {
     overflow-wrap: anywhere;
 }
 
-.quick-expense-doc-cell small,
-.quick-expense-doc-preview {
+.quick-expense-doc-cell small {
     display: block;
     color: var(--text-muted);
     font-size: 10px;
     line-height: 1.35;
     overflow-wrap: anywhere;
+}
+
+.quick-expense-doc-preview {
+    display: block;
+    color: var(--primary-dark);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.quick-expense-org-select {
+    min-height: 32px !important;
+    margin-top: 8px;
+    padding: 4px 24px 4px 6px !important;
+    font-size: 11px !important;
 }
 
 .quick-expense-doc-edit {
@@ -1057,9 +1105,52 @@ button, input, select, textarea {
 
 .quick-expense-row-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: center;
-    gap: 5px;
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+}
+
+.quick-expense-row-actions [hidden] {
+    display: none !important;
+}
+
+.quick-expense-row-actions .btn-icon {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid transparent;
+    color: #fff;
+}
+
+.quick-expense-row-actions .quick-expense-open-full {
+    background: #2563eb;
+    border-color: #1d4ed8 !important;
+}
+
+.quick-expense-row-actions .quick-expense-open-full:hover {
+    background: #1d4ed8;
+}
+
+.quick-expense-row-actions .quick-expense-retry-attachments {
+    background: #d97706;
+    border-color: #b45309 !important;
+}
+
+.quick-expense-row-actions .quick-expense-retry-attachments:hover {
+    background: #b45309;
+}
+
+.quick-expense-row-actions .quick-expense-remove-row {
+    background: #dc2626;
+    border-color: #b91c1c !important;
+}
+
+.quick-expense-row-actions .quick-expense-remove-row:hover {
+    background: #b91c1c;
 }
 
 .quick-expense-row-actions .btn-icon svg,
@@ -1169,6 +1260,11 @@ button, input, select, textarea {
     .quick-entry-grid .quick-span-4,
     .quick-entry-grid .quick-span-6 {
         grid-column: span 12;
+    }
+
+    .quick-admin-context {
+        width: 100%;
+        grid-template-columns: 1fr;
     }
 }
 
