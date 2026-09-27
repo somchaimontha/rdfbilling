@@ -7,9 +7,11 @@ const vm = require('node:vm');
 const appPath = path.join(__dirname, '..', 'app.js');
 const htmlPath = path.join(__dirname, '..', 'index.html');
 const backendExpensePath = path.join(__dirname, '..', 'backend', 'ExpenseService.gs');
+const backendSheetHelperPath = path.join(__dirname, '..', 'backend', 'SheetHelper.gs');
 const source = fs.readFileSync(appPath, 'utf8');
 const html = fs.readFileSync(htmlPath, 'utf8');
 const backendExpenseSource = fs.readFileSync(backendExpensePath, 'utf8');
+const backendSheetHelperSource = fs.readFileSync(backendSheetHelperPath, 'utf8');
 
 const commonValues = {
     'inline-exp-project': 'PRJ-9',
@@ -224,7 +226,7 @@ test('bill preview offers all billing profiles and keeps row labels compact', ()
         { id: 'ORG-BS', name: 'Boribhat Suksa', shortName: 'BS', active: true }
     ]);
 
-    assert.equal(api.getQuickExpenseDocumentPreview('2026-09', 'BS'), 'BSSEPTEMBER2026_001');
+    assert.equal(api.getQuickExpenseDocumentPreview('2026-09', 'BS'), 'BSSEP26_1');
     const compactOptions = api.getQuickExpenseBillingProfileOptions('BS', true);
     assert.match(compactOptions, />OF<\/option>/);
     assert.match(compactOptions, />BS<\/option>/);
@@ -239,6 +241,9 @@ test('backend uses an admin billing profile before the organization fallback', (
     assert.match(backendExpenseSource, /let docPrefix = authCtx\.role === 'admin' \? requestedDocumentPrefix : ''/);
     assert.match(backendExpenseSource, /if \(!docPrefix && resolvedOrgId\)/);
     assert.match(backendExpenseSource, /documentPrefix: docPrefix/);
+    assert.match(backendSheetHelperSource, /monthStr\.slice\(0, 3\)/);
+    assert.match(backendSheetHelperSource, /String\(year\)\.slice\(-2\)/);
+    assert.match(backendSheetHelperSource, /_\$\{seq\}/);
 });
 
 test('quick project creation selects the new project without reloading all database data', async () => {

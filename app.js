@@ -4987,9 +4987,9 @@ function getQuickExpenseRowDraft(rowId) {
 function getQuickExpenseDocumentPreview(postingMonth, documentPrefix = getQuickExpenseSharedBillingCode()) {
     const match = String(postingMonth || '').match(/^(\d{4})-(\d{2})$/);
     const prefix = String(documentPrefix || 'MIS').trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || 'MIS';
-    if (!match) return `${prefix}MONTHYEAR_001`;
-    const monthNames = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
-    return `${prefix}${monthNames[Number(match[2]) - 1] || 'MONTH'}${match[1]}_001`;
+    if (!match) return `${prefix}MMMYY_1`;
+    const monthCodes = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    return `${prefix}${monthCodes[Number(match[2]) - 1] || 'MMM'}${match[1].slice(-2)}_1`;
 }
 
 function buildQuickExpenseRowHTML(rowId, initial = {}) {
