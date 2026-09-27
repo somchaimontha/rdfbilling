@@ -126,7 +126,7 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(html, /id="bills-widget-month-badge"/);
     assert.match(html, /id="inline-exp-posting-month"/);
     assert.doesNotMatch(html, /<th class="quick-col-month">รอบบันทึก<\/th>/);
-    assert.match(html, /เลขที่ใบเสร็จ/);
+    assert.match(html, /เล่มที่ \/ เลขที่ใบเสร็จ/);
     assert.match(html, /ร้านค้า \/ ผู้ขาย/);
     assert.match(html, /รายละเอียดเพิ่มเติมและหลักฐาน/);
     assert.match(html, /onclick="addQuickExpenseRow\(\)"/);

@@ -293,6 +293,64 @@ function escapeHTML(str) {
         .replace(/'/g, '&#039;');
 }
 
+// Language-aware wrapping for generated documents. Thai has no spaces between
+// words, so add invisible break opportunities after browser-native word
+// segmentation. English, numbers, file references, and URLs remain unchanged.
+const DOCUMENT_ZWSP = '\u200B';
+let thaiDocumentSegmenter = null;
+
+function addDocumentBreakOpportunities(value) {
+    const text = String(value ?? '');
+    if (!/[\u0E00-\u0E7F]/.test(text) || typeof Intl === 'undefined' || typeof Intl.Segmenter !== 'function') {
+        return text;
+    }
+    if (!thaiDocumentSegmenter) {
+        thaiDocumentSegmenter = new Intl.Segmenter('th', { granularity: 'word' });
+    }
+    const preserveUrls = /(https?:\/\/[^\s]+|www\.[^\s]+|mailto:[^\s]+)/giu;
+    return text.split(preserveUrls).map(part => {
+        if (/^(?:https?:\/\/|www\.|mailto:)/iu.test(part)) return part;
+        return part.replace(/[\u0E00-\u0E7F]+/g, thaiRun =>
+            Array.from(thaiDocumentSegmenter.segment(thaiRun), segment => segment.segment).join(DOCUMENT_ZWSP)
+        );
+    }).join('');
+}
+
+function preparePdfDocumentText(value, seen = new WeakSet()) {
+    if (!value || typeof value !== 'object' || seen.has(value)) return value;
+    seen.add(value);
+    if (Array.isArray(value)) {
+        value.forEach(item => preparePdfDocumentText(item, seen));
+        return value;
+    }
+    Object.entries(value).forEach(([key, child]) => {
+        if (key === 'text' && typeof child === 'string') {
+            value[key] = addDocumentBreakOpportunities(child);
+        } else if (key !== 'images') {
+            preparePdfDocumentText(child, seen);
+        }
+    });
+    return value;
+}
+
+function preparePrintDocumentText(targetDocument) {
+    if (!targetDocument || !targetDocument.body || typeof targetDocument.createTreeWalker !== 'function') return;
+    const showText = targetDocument.defaultView?.NodeFilter?.SHOW_TEXT || 4;
+    const walker = targetDocument.createTreeWalker(targetDocument.body, showText);
+    const textNodes = [];
+    let node;
+    while ((node = walker.nextNode())) textNodes.push(node);
+    textNodes.forEach(textNode => {
+        const tagName = textNode.parentElement?.tagName || '';
+        if (!['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'CODE'].includes(tagName)) {
+            textNode.nodeValue = addDocumentBreakOpportunities(textNode.nodeValue);
+        }
+    });
+    targetDocument.body.style.overflowWrap = 'anywhere';
+    targetDocument.body.style.wordBreak = 'normal';
+    targetDocument.body.style.lineBreak = 'auto';
+}
+
 // ==========================================================================
 // Lazy-load ไลบรารีหนักที่ใช้เฉพาะตอน "ส่งออกรายงาน" (pdfmake + sarabun + xlsx ~2.4MB)
 // ย้ายออกจาก <head> (เดิม blocking ทำให้หน้าแรกโหลดช้า) → โหลดครั้งแรกที่ต้องใช้จริง
@@ -661,7 +719,7 @@ function getDefaultState() {
         signatureSelection: { prepared: '', checked: '', approved: '' },
         columns: [
             { id: "documentNo", label: "เลขบิล", visible: true, custom: false },
-            { id: "receiptNo", label: "เลขที่ใบเสร็จ", visible: true, custom: false },
+            { id: "receiptNo", label: "เล่มที่ / เลขที่ใบเสร็จ", visible: true, custom: false },
             { id: "expenseDate", label: "วันที่บิล", visible: true, custom: false },
             { id: "postingMonth", label: "รอบบันทึก", visible: true, custom: false },
             { id: "projectId", label: "โครงการ", visible: true, custom: false },
@@ -1911,6 +1969,7 @@ async function exportFundReceiptSlip(monthKey) {
         return;
     }
     printWin.document.write(html);
+    preparePrintDocumentText(printWin.document);
     printWin.document.close();
 }
 window.exportFundReceiptSlip = exportFundReceiptSlip;
@@ -4463,6 +4522,7 @@ function renderExpenseRow(exp, idx, tbody) {
                 break;
             case 'receiptNo':
                 td.textContent = exp.receiptNo || '-';
+                td.classList.add('receipt-reference');
                 break;
             case 'expenseDate':
                 td.textContent = formatThaiDate(exp.expenseDate);
@@ -4575,7 +4635,7 @@ function renderCompactExpenseRow(exp, idx, tbody) {
         <td data-label="เลขบิล / ใบเสร็จ">
             <button type="button" class="btn btn-icon btn-icon-edit" data-idx="${idx}" title="แก้ไขรายการ"><i data-lucide="pencil" style="width:14px;height:14px;"></i></button>
             <span class="record-primary">${escapeHTML(exp.documentNo || 'รอเลขบิล')}</span>
-            <span class="record-secondary">ใบเสร็จ ${escapeHTML(exp.receiptNo || '-')}</span>
+            <span class="record-secondary receipt-reference">เล่มที่/เลขที่ ${escapeHTML(exp.receiptNo || '-')}</span>
         </td>
         <td data-label="วันที่ / รอบ">
             <span class="record-primary">${escapeHTML(formatThaiDate(exp.expenseDate) || '-')}</span>
@@ -4855,7 +4915,7 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
                 <span class="quick-expense-doc-preview">ตัวอย่าง ${escapeHTML(getQuickExpenseDocumentPreview(postingMonth))}</span>
                 <small>สร้างเลขจริงเมื่อบันทึก</small>
             </td>
-            <td><input type="text" class="form-input" data-field="receiptNo" value="${escapeHTML(receiptNo)}" placeholder="เช่น RC-001"></td>
+            <td><input type="text" class="form-input" data-field="receiptNo" value="${escapeHTML(receiptNo)}" placeholder="เล่ม 1 / เลขที่ 001"></td>
             <td><input type="date" class="form-input" data-field="expenseDate" value="${escapeHTML(expenseDate)}"></td>
             <td><input type="text" class="form-input" data-field="vendorName" list="quick-expense-vendor-options" value="${escapeHTML(vendorName)}" placeholder="พิมพ์หรือเลือกผู้ขาย"></td>
             <td>
@@ -7028,6 +7088,7 @@ tr:nth-child(even) td{background:#f8fafc;}
         return;
     }
     printWin.document.write(html);
+    preparePrintDocumentText(printWin.document);
     printWin.document.close();
 }
 
@@ -7365,7 +7426,7 @@ function extractSchemaFromData(dataArray) {
         let isDefault = true;
         
         const dictionary = {
-            id: 'รหัสอ้างอิง', documentNo: 'เลขที่เอกสาร', receiptNo: 'เลขที่ใบเสร็จ', expenseDate: 'วันที่',
+            id: 'รหัสอ้างอิง', documentNo: 'เลขที่เอกสาร', receiptNo: 'เล่มที่ / เลขที่ใบเสร็จ', expenseDate: 'วันที่',
             month: 'เดือน', year: 'ปี', projectId: 'รหัสโครงการ', projectName: 'ชื่อโครงการ', 
             categoryId: 'รหัสหมวดหมู่', categoryName: 'หมวดหมู่', description: 'รายละเอียด', 
             amount: 'จำนวนเงิน', totalAmount: 'รวมเงิน', vat: 'VAT', recordedBy: 'ผู้บันทึก', 
@@ -7419,7 +7480,7 @@ function buildDynamicExportDictionary(context) {
             getData: () => state.expenses,
             fields: [
                 { id: 'documentNo', label: 'เลขที่เอกสาร', default: true },
-                { id: 'receiptNo', label: 'เลขที่ใบเสร็จ', default: true },
+                { id: 'receiptNo', label: 'เล่มที่ / เลขที่ใบเสร็จ', default: true },
                 { id: 'expenseDate', label: 'วันที่', default: true, type: 'date' },
                 { id: 'projectId', label: 'โครงการ', default: true, source: 'projects' },
                 { id: 'categoryId', label: 'หมวดรายจ่าย', default: true, source: 'categories' },
@@ -9005,6 +9066,7 @@ window.exportFoodPDF = async function() {
         return;
     }
     printWin.document.write(html);
+    preparePrintDocumentText(printWin.document);
     printWin.document.close();
 };
 
@@ -9637,7 +9699,7 @@ function updateExportSectionBadges() {
    each id matches a checkbox `value` in the modal so selection state maps 1:1. */
 const EXPORT_BILL_COLUMNS = [
     { id: 'docNo', label: 'เลขบิล', align: 'left', get: r => r.docNo },
-    { id: 'receiptNo', label: 'เลขที่ใบเสร็จ', align: 'left', get: r => r.receiptNo },
+    { id: 'receiptNo', label: 'เล่มที่ / เลขที่ใบเสร็จ', align: 'left', get: r => r.receiptNo },
     { id: 'date', label: 'วันที่', align: 'left', get: r => formatDateThai(r.date) },
     { id: 'postingMonth', label: 'รอบบันทึก', align: 'left', get: r => formatPostingMonth(r.postingMonth) },
     { id: 'project', label: 'โครงการ', align: 'left', get: r => r.project },
@@ -9848,7 +9910,7 @@ function buildPdfDocDefinition(model) {
         });
     }
 
-    return {
+    return preparePdfDocumentText({
         pageSize: 'A4',
         pageOrientation,
         pageMargins: PDF_MARGIN,
@@ -9860,7 +9922,7 @@ function buildPdfDocDefinition(model) {
             text: `หน้า ${currentPage} / ${pageCount}`,
             alignment: 'center', fontSize: 8, color: '#9ca3af', margin: [0, 14, 0, 0],
         }),
-    };
+    });
 }
 
 /* Preview: สร้าง PDF จริงด้วย pdfmake แล้วฝังใน iframe — debounce กันเรียกถี่เกินไปตอนพิมพ์ในฟอร์ม

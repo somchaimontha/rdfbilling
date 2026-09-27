@@ -945,6 +945,10 @@ button, input, select, textarea {
 .quick-expense-batch-table .quick-col-index { width: 54px; text-align: center; }
 .quick-expense-batch-table .quick-col-doc { width: 112px; }
 .quick-expense-batch-table .quick-col-receipt { width: 150px; }
+.quick-expense-batch-table thead .quick-col-receipt {
+    white-space: normal;
+    line-height: 1.35;
+}
 .quick-expense-batch-table .quick-col-date { width: 132px; }
 .quick-expense-batch-table .quick-col-vendor { width: 180px; }
 .quick-expense-batch-table .quick-col-description { width: 230px; }
@@ -1205,6 +1209,19 @@ button, input, select, textarea {
     color: var(--text-secondary);
     font-size: 12px;
     line-height: 1.4;
+}
+
+.receipt-reference {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.compact-record-table .receipt-reference {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
 }
 
 .compact-record-table .record-meta {
