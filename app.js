@@ -613,6 +613,7 @@ let attachmentStore = {};
 let isNewProjectExpenseMode = false;
 let expenseModalSource = null;
 let expenseModalOrganizationId = '';
+let expenseModalDocumentPrefix = '';
 let expenseCreateRequestId = '';
 let attachmentCreateRequestId = '';
 let expenseModalNoteMetadata = { customFields: {}, multiItems: [] };
@@ -627,6 +628,13 @@ let currentQuickExpenseRowId = null;
 let quickFoodAttachments = [];
 let quickExpenseFileProcessingCount = 0;
 let quickFoodFileProcessing = false;
+
+const QUICK_EXPENSE_BILLING_PROFILES = Object.freeze([
+    { code: 'OF', name: 'office' },
+    { code: 'BS', name: 'Boribhat Suksa' },
+    { code: 'VC', name: 'Vocational College' },
+    { code: 'P', name: 'โปรเจกต์อื่นๆ' }
+]);
 
 function createClientRequestId(scope = 'request') {
     if (window.crypto && typeof window.crypto.randomUUID === 'function') {
@@ -3494,6 +3502,7 @@ window.quickAddProject = quickAddProject;
 function openExpenseModal(editIdx = null, isNewProject = false) {
     expenseModalSource = null;
     expenseModalOrganizationId = '';
+    expenseModalDocumentPrefix = '';
     expenseCreateRequestId = editIdx === null ? createClientRequestId('expense') : '';
     expenseModalNoteMetadata = { customFields: {}, multiItems: [] };
     isNewProjectExpenseMode = isNewProject;
@@ -3542,6 +3551,7 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
     if (editIdx !== null) {
         const exp = state.expenses[editIdx];
         expenseModalOrganizationId = exp.organizationId || '';
+        expenseModalDocumentPrefix = exp.documentPrefix || '';
         const parsedNote = parseNoteData(exp.note);
         expenseModalNoteMetadata = {
             customFields: { ...(parsedNote.customFields || {}) },
@@ -3587,6 +3597,7 @@ function closeExpenseModal() {
     isNewProjectExpenseMode = false;
     expenseModalSource = null;
     expenseModalOrganizationId = '';
+    expenseModalDocumentPrefix = '';
     tempBillAttachments.forEach(item => {
         if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
     });
@@ -3668,6 +3679,7 @@ async function handleExpenseSubmit(e) {
             expenseDate: expenseDate,
             postingMonth: postingMonth,
             organizationId: orgId,
+            ...(expenseModalDocumentPrefix && { documentPrefix: expenseModalDocumentPrefix }),
             projectId: projectId,
             categoryId: categoryId,
             vendorId: vendorId,
@@ -4810,72 +4822,78 @@ function populateQuickExpenseProjectOptions(selectedId = '') {
     ].join('');
 }
 
-function getQuickExpenseSharedOrganizationId() {
-    const currentUser = getCurrentUser() || {};
-    const select = document.getElementById('inline-exp-organization');
-    if (isAdminUser(currentUser) && select) {
-        return String(select.value || currentUser.organizationId || '').trim();
-    }
-    return String(currentUser.organizationId || '').trim();
-}
-
 function getOrganizationShortName(organizationId) {
     const organization = (state.organizations || []).find(item => String(item.id) === String(organizationId));
     const shortName = organization && (organization.shortName || organization.short_name);
     return String(shortName || 'MIS').trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || 'MIS';
 }
 
-function getQuickExpenseOrganizationOptions(selectedId = '') {
-    return (state.organizations || [])
-        .filter(item => item && item.id && item.active !== false)
-        .map(item => {
-            const shortName = getOrganizationShortName(item.id);
-            const name = item.name || item.nameTh || item.nameEn || item.id;
-            const selected = String(item.id) === String(selectedId) ? ' selected' : '';
-            return `<option value="${escapeHTML(item.id)}"${selected}>${escapeHTML(shortName)} — ${escapeHTML(name)}</option>`;
+function getQuickExpenseSharedBillingCode() {
+    const currentUser = getCurrentUser() || {};
+    const select = document.getElementById('inline-exp-billing-profile');
+    if (isAdminUser(currentUser) && select) {
+        return String(select.value || QUICK_EXPENSE_BILLING_PROFILES[0].code).trim().toUpperCase();
+    }
+    return getOrganizationShortName(currentUser.organizationId);
+}
+
+function getQuickExpenseOrganizationId(billingCode) {
+    const currentUser = getCurrentUser() || {};
+    if (!isAdminUser(currentUser)) return String(currentUser.organizationId || '');
+    const matchingOrganization = (state.organizations || []).find(item =>
+        item && item.id && item.active !== false && getOrganizationShortName(item.id) === String(billingCode || '').toUpperCase()
+    );
+    return String((matchingOrganization && matchingOrganization.id) || currentUser.organizationId || '');
+}
+
+function getQuickExpenseBillingProfileOptions(selectedCode = '', compact = false) {
+    return QUICK_EXPENSE_BILLING_PROFILES
+        .map(profile => {
+            const selected = profile.code === String(selectedCode).toUpperCase() ? ' selected' : '';
+            const label = compact ? profile.code : `${profile.code} — ${profile.name}`;
+            return `<option value="${escapeHTML(profile.code)}"${selected}>${escapeHTML(label)}</option>`;
         })
         .join('');
 }
 
-function populateQuickExpenseOrganizationContext(selectedId = '') {
+function populateQuickExpenseBillingProfileContext(selectedCode = '') {
     const wrapper = document.getElementById('quick-expense-admin-context');
-    const select = document.getElementById('inline-exp-organization');
+    const select = document.getElementById('inline-exp-billing-profile');
     if (!wrapper || !select) return '';
     const currentUser = getCurrentUser() || {};
     if (!isAdminUser(currentUser)) {
         wrapper.hidden = true;
         select.innerHTML = '';
-        return String(currentUser.organizationId || '');
+        return getOrganizationShortName(currentUser.organizationId);
     }
 
-    const organizations = (state.organizations || []).filter(item => item && item.id && item.active !== false);
-    const organizationId = selectedId || select.value || currentUser.organizationId || (organizations[0] || {}).id || '';
-    select.innerHTML = getQuickExpenseOrganizationOptions(organizationId);
+    const billingCode = String(selectedCode || select.value || QUICK_EXPENSE_BILLING_PROFILES[0].code).toUpperCase();
+    select.innerHTML = getQuickExpenseBillingProfileOptions(billingCode, false);
     wrapper.hidden = false;
-    return organizationId;
+    return billingCode;
 }
 
-function buildQuickExpenseRowOrganizationControl(selectedId, followsShared = true) {
+function buildQuickExpenseRowBillingProfileControl(selectedCode, followsShared = true) {
     if (!isAdminUser()) return '';
-    return `<select class="form-select quick-expense-org-select" data-field="organizationId" data-follow-shared="${followsShared ? 'true' : 'false'}" aria-label="บันทึกในนาม" onchange="onQuickExpenseRowOrganizationChange(this)">${getQuickExpenseOrganizationOptions(selectedId)}</select>`;
+    return `<select class="form-select quick-expense-org-select" data-field="documentPrefix" data-follow-shared="${followsShared ? 'true' : 'false'}" aria-label="รหัสผู้ออกบิล" onchange="onQuickExpenseRowBillingProfileChange(this)">${getQuickExpenseBillingProfileOptions(selectedCode, true)}</select>`;
 }
 
-function onQuickExpenseRowOrganizationChange(select) {
+function onQuickExpenseRowBillingProfileChange(select) {
     if (select && select.dataset) select.dataset.followShared = 'false';
     refreshQuickExpenseDocumentPreviews();
 }
 
-function onQuickExpenseOrganizationChange(organizationId) {
+function onQuickExpenseBillingProfileChange(billingCode) {
     quickExpenseRows.forEach(rowId => {
         const row = getQuickExpenseRowElement(rowId);
         if (!row || row.dataset.saved === 'true') return;
-        const select = row.querySelector('[data-field="organizationId"]');
-        if (select && select.dataset.followShared !== 'false') select.value = organizationId;
+        const select = row.querySelector('[data-field="documentPrefix"]');
+        if (select && select.dataset.followShared !== 'false') select.value = billingCode;
     });
     refreshQuickExpenseDocumentPreviews();
 }
-window.onQuickExpenseOrganizationChange = onQuickExpenseOrganizationChange;
-window.onQuickExpenseRowOrganizationChange = onQuickExpenseRowOrganizationChange;
+window.onQuickExpenseBillingProfileChange = onQuickExpenseBillingProfileChange;
+window.onQuickExpenseRowBillingProfileChange = onQuickExpenseRowBillingProfileChange;
 
 function syncQuickExpenseEntryPeriod(force = false) {
     const postingMonth = document.getElementById('inline-exp-posting-month');
@@ -4945,10 +4963,12 @@ function getQuickExpenseRowDraft(rowId) {
     const sharedPostingMonth = String((document.getElementById('inline-exp-posting-month') || {}).value || '').trim();
     const quantity = Number(value('quantity')) || 0;
     const unitPrice = Number(value('unitPrice')) || 0;
+    const documentPrefix = value('documentPrefix') || getQuickExpenseSharedBillingCode();
     return {
         rowId,
         requestId: (row && row.dataset.requestId) || createClientRequestId('expense'),
-        organizationId: value('organizationId') || getQuickExpenseSharedOrganizationId(),
+        organizationId: getQuickExpenseOrganizationId(documentPrefix),
+        documentPrefix,
         postingMonth: sharedPostingMonth || value('postingMonth'),
         receiptNo: value('receiptNo'),
         expenseDate: value('expenseDate'),
@@ -4964,9 +4984,9 @@ function getQuickExpenseRowDraft(rowId) {
     };
 }
 
-function getQuickExpenseDocumentPreview(postingMonth, organizationId = getQuickExpenseSharedOrganizationId()) {
+function getQuickExpenseDocumentPreview(postingMonth, documentPrefix = getQuickExpenseSharedBillingCode()) {
     const match = String(postingMonth || '').match(/^(\d{4})-(\d{2})$/);
-    const prefix = getOrganizationShortName(organizationId);
+    const prefix = String(documentPrefix || 'MIS').trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || 'MIS';
     if (!match) return `${prefix}MONTHYEAR_001`;
     const monthNames = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
     return `${prefix}${monthNames[Number(match[2]) - 1] || 'MONTH'}${match[1]}_001`;
@@ -4983,14 +5003,14 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
     const unit = initial.unit || 'รายการ';
     const unitPrice = initial.unitPrice || '';
     const note = initial.note || '';
-    const organizationId = initial.organizationId || getQuickExpenseSharedOrganizationId();
-    const organizationControl = buildQuickExpenseRowOrganizationControl(organizationId, !initial.organizationId);
+    const documentPrefix = initial.documentPrefix || getQuickExpenseSharedBillingCode();
+    const billingProfileControl = buildQuickExpenseRowBillingProfileControl(documentPrefix, !initial.documentPrefix);
     return `
         <tr class="quick-expense-batch-row" data-row-id="${rowId}" data-request-id="${escapeHTML(requestId)}" data-saved="false">
             <td class="quick-expense-row-index">1</td>
             <td class="quick-expense-doc-cell" data-role="document-number">
-                <strong class="quick-expense-doc-preview">${escapeHTML(getQuickExpenseDocumentPreview(postingMonth, organizationId))}</strong>
-                ${organizationControl}
+                <strong class="quick-expense-doc-preview">${escapeHTML(getQuickExpenseDocumentPreview(postingMonth, documentPrefix))}</strong>
+                ${billingProfileControl}
             </td>
             <td><input type="text" class="form-input" data-field="receiptNo" value="${escapeHTML(receiptNo)}" placeholder="เล่ม 1 / เลขที่ 001"></td>
             <td><input type="date" class="form-input" data-field="expenseDate" value="${escapeHTML(expenseDate)}"></td>
@@ -5036,8 +5056,8 @@ function refreshQuickExpenseDocumentPreviews() {
         const row = getQuickExpenseRowElement(rowId);
         if (!row || row.dataset.saved === 'true') return;
         const preview = row.querySelector('.quick-expense-doc-preview');
-        const organizationId = String((row.querySelector('[data-field="organizationId"]') || {}).value || getQuickExpenseSharedOrganizationId());
-        if (preview) preview.textContent = getQuickExpenseDocumentPreview(postingMonth, organizationId);
+        const documentPrefix = String((row.querySelector('[data-field="documentPrefix"]') || {}).value || getQuickExpenseSharedBillingCode());
+        if (preview) preview.textContent = getQuickExpenseDocumentPreview(postingMonth, documentPrefix);
     });
 }
 
@@ -5184,7 +5204,7 @@ function resetQuickExpenseEntry() {
     quickExpenseFileProcessingCount = 0;
     const tbody = document.getElementById('quick-expense-rows');
     if (tbody) tbody.innerHTML = '';
-    populateQuickExpenseOrganizationContext();
+    populateQuickExpenseBillingProfileContext();
     populateQuickExpenseProjectOptions();
     populateQuickExpenseVendorOptions();
     syncQuickExpenseEntryPeriod(true);
@@ -5236,6 +5256,7 @@ function openExpenseModalFromQuickExpenseRow(rowId) {
     openExpenseModal();
     expenseModalSource = `quick-row:${rowId}`;
     expenseModalOrganizationId = rowDraft.organizationId;
+    expenseModalDocumentPrefix = rowDraft.documentPrefix;
     expenseCreateRequestId = rowDraft.requestId;
     expenseModalNoteMetadata = {
         customFields: {},
@@ -5548,6 +5569,7 @@ function isQuickExpenseDraftEmpty(draft) {
 function validateQuickExpenseDraft(draft, rowNumber) {
     const missing = [];
     if (!draft.organizationId) missing.push('หน่วยงาน');
+    if (!draft.documentPrefix) missing.push('รหัสผู้ออกบิล');
     if (!/^\d{4}-\d{2}$/.test(draft.postingMonth)) missing.push('รอบบันทึก');
     if (!draft.receiptNo) missing.push('เลขที่ใบเสร็จ');
     if (!draft.expenseDate) missing.push('วันที่บิล');
@@ -5614,6 +5636,7 @@ async function submitQuickExpenseBatch(event) {
                     expenseDate: item.draft.expenseDate,
                     postingMonth: item.draft.postingMonth,
                     organizationId: item.draft.organizationId,
+                    documentPrefix: item.draft.documentPrefix,
                     projectId,
                     categoryId,
                     fundSourceId,

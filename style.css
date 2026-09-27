@@ -931,7 +931,7 @@ button, input, select, textarea {
 
 .quick-expense-batch-table {
     width: 100%;
-    min-width: 1830px;
+    min-width: 1780px;
     border-collapse: collapse;
     table-layout: fixed;
     font-size: 12px;
@@ -976,7 +976,7 @@ button, input, select, textarea {
 }
 
 .quick-expense-batch-table .quick-col-index { width: 54px; text-align: center; }
-.quick-expense-batch-table .quick-col-doc { width: 190px; }
+.quick-expense-batch-table .quick-col-doc { width: 140px; }
 .quick-expense-batch-table .quick-col-receipt { width: 150px; }
 .quick-expense-batch-table thead .quick-col-receipt {
     white-space: normal;
@@ -1029,6 +1029,8 @@ button, input, select, textarea {
 
 .quick-expense-org-select {
     min-height: 32px !important;
+    width: 70px !important;
+    max-width: 100%;
     margin-top: 8px;
     padding: 4px 24px 4px 6px !important;
     font-size: 11px !important;

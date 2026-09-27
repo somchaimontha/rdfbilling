@@ -6,8 +6,10 @@ const vm = require('node:vm');
 
 const appPath = path.join(__dirname, '..', 'app.js');
 const htmlPath = path.join(__dirname, '..', 'index.html');
+const backendExpensePath = path.join(__dirname, '..', 'backend', 'ExpenseService.gs');
 const source = fs.readFileSync(appPath, 'utf8');
 const html = fs.readFileSync(htmlPath, 'utf8');
+const backendExpenseSource = fs.readFileSync(backendExpensePath, 'utf8');
 
 const commonValues = {
     'inline-exp-project': 'PRJ-9',
@@ -19,7 +21,7 @@ const commonValues = {
 };
 
 const rowValues = {
-    organizationId: 'ORG-BS',
+    documentPrefix: 'BS',
     postingMonth: '2026-09',
     receiptNo: 'RC-2026-001',
     expenseDate: '2026-08-28',
@@ -64,7 +66,14 @@ function createHarness() {
     const context = {
         console: { log() {}, warn() {}, error() {} },
         document,
-        localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+        localStorage: {
+            getItem(key) {
+                return key === 'rdf_current_user'
+                    ? JSON.stringify({ id: 'ADMIN-1', role: 'admin', organizationId: 'ORG-ROOT' })
+                    : null;
+            },
+            setItem() {}, removeItem() {}
+        },
         sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
         location: { hostname: 'example.test', search: '', pathname: '/' },
         history: { replaceState() {} },
@@ -96,6 +105,7 @@ function createHarness() {
             validateQuickExpenseDraft,
             isQuickExpenseDraftEmpty,
             getQuickExpenseDocumentPreview,
+            getQuickExpenseBillingProfileOptions,
             setQuickRow: (rowId, attachments, multiItems) => {
                 quickExpenseRows = [rowId];
                 quickExpenseAttachmentsByRow[rowId] = attachments;
@@ -108,6 +118,7 @@ function createHarness() {
             getProjects: () => state.projects,
             getModalSource: () => expenseModalSource,
             getModalOrganizationId: () => expenseModalOrganizationId,
+            getModalDocumentPrefix: () => expenseModalDocumentPrefix,
             getExpenseRequestId: () => expenseCreateRequestId,
             getExpenseNoteMetadata: () => expenseModalNoteMetadata
         };
@@ -125,7 +136,7 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(html, /onsubmit="submitQuickExpenseBatch\(event\)"/);
     assert.match(html, /id="quick-expense-common-details"/);
     assert.match(html, /ข้อมูลสำคัญที่ใช้ร่วมกัน/);
-    assert.match(html, /id="inline-exp-organization"/);
+    assert.match(html, /id="inline-exp-billing-profile"/);
     assert.match(html, /บันทึกในนาม/);
     assert.match(html, /รอบบันทึก \/ โครงการ \/ หมวดหมู่ \/ แหล่งเงิน \/ ประเภท/);
     assert.match(html, /id="quick-expense-rows"/);
@@ -141,6 +152,7 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(source, /openQuickExpenseMultiItems/);
     assert.match(html, /onclick="openExpenseModalMultiItems\(\)"/);
     assert.match(source, /requestId: item\.draft\.requestId/);
+    assert.match(source, /documentPrefix: item\.draft\.documentPrefix/);
     assert.match(source, /idPrefix: 'ATT'/);
     assert.match(source, /retryQuickExpenseRowAttachments/);
     assert.match(source, /getQuickExpenseDocumentPreview/);
@@ -150,7 +162,7 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
 test('batch row validation requires all receipt fields and accepts a complete row', () => {
     const { api } = createHarness();
     const complete = {
-        organizationId: 'ORG-BS', postingMonth: '2026-09', receiptNo: 'RC-001', expenseDate: '2026-09-01', vendorName: 'ร้านค้า',
+        organizationId: 'ORG-ROOT', documentPrefix: 'BS', postingMonth: '2026-09', receiptNo: 'RC-001', expenseDate: '2026-09-01', vendorName: 'ร้านค้า',
         description: 'วัสดุ', quantity: 2, unit: 'ชิ้น', unitPrice: 50,
         note: '', attachments: [], multiItems: []
     };
@@ -179,7 +191,8 @@ test('opening a batch row in the full form preserves receipt data, common fields
 
     assert.equal(context.__modalOpened, true);
     assert.equal(api.getModalSource(), 'quick-row:quick-exp-1');
-    assert.equal(api.getModalOrganizationId(), rowValues.organizationId);
+    assert.equal(api.getModalOrganizationId(), 'ORG-ROOT');
+    assert.equal(api.getModalDocumentPrefix(), rowValues.documentPrefix);
     assert.equal(elements.get('bill-receipt-no').value, rowValues.receiptNo);
     assert.equal(elements.get('bill-date').value, rowValues.expenseDate);
     assert.equal(elements.get('bill-posting-month').value, rowValues.postingMonth);
@@ -204,16 +217,28 @@ test('opening a batch row in the full form preserves receipt data, common fields
     assert.equal(context.__previewExpenseId, null);
 });
 
-test('bill preview uses the selected organization short code without explanatory text', () => {
+test('bill preview offers all billing profiles and keeps row labels compact', () => {
     const { api } = createHarness();
     api.setOrganizations([
         { id: 'ORG-OF', name: 'office', shortName: 'OF', active: true },
         { id: 'ORG-BS', name: 'Boribhat Suksa', shortName: 'BS', active: true }
     ]);
 
-    assert.equal(api.getQuickExpenseDocumentPreview('2026-09', 'ORG-BS'), 'BSSEPTEMBER2026_001');
+    assert.equal(api.getQuickExpenseDocumentPreview('2026-09', 'BS'), 'BSSEPTEMBER2026_001');
+    const compactOptions = api.getQuickExpenseBillingProfileOptions('BS', true);
+    assert.match(compactOptions, />OF<\/option>/);
+    assert.match(compactOptions, />BS<\/option>/);
+    assert.match(compactOptions, />VC<\/option>/);
+    assert.match(compactOptions, />P<\/option>/);
+    assert.doesNotMatch(compactOptions, /Boribhat Suksa|Vocational College|โปรเจกต์อื่นๆ/);
     assert.doesNotMatch(source, /ตัวอย่าง \$\{escapeHTML\(getQuickExpenseDocumentPreview/);
     assert.doesNotMatch(source, /สร้างเลขจริงเมื่อบันทึก/);
+});
+
+test('backend uses an admin billing profile before the organization fallback', () => {
+    assert.match(backendExpenseSource, /let docPrefix = authCtx\.role === 'admin' \? requestedDocumentPrefix : ''/);
+    assert.match(backendExpenseSource, /if \(!docPrefix && resolvedOrgId\)/);
+    assert.match(backendExpenseSource, /documentPrefix: docPrefix/);
 });
 
 test('quick project creation selects the new project without reloading all database data', async () => {
