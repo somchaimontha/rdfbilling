@@ -5,12 +5,21 @@
 
 const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwxEEhfMfU8hjiR-iijOqcdPbRR-UOQOf4CMD34B0qVlhjgJYEpFXzGkopJ4inI5RyRnA/exec';
 const API_URL = ['127.0.0.1', 'localhost'].includes(window.location.hostname) ? '/api' : GAS_API_URL;
-// Keep background reads short and let the non-blocking status bar offer a
-// manual retry. Writes/uploads get more time and are protected by request IDs.
+// Keep background reads short.  Temporary Apps Script cold starts are retried
+// automatically; the non-blocking status bar still offers a manual fallback.
 const API_READ_REQUEST_TIMEOUT_MS = 12000;
+// Food records are assembled from both the food document and item sheets.
+// On a cold Apps Script execution that read can legitimately exceed the
+// lightweight background-read budget, so do not abort it at 12 seconds.
+const API_SLOW_READ_REQUEST_TIMEOUT_MS = 30000;
 const API_WRITE_REQUEST_TIMEOUT_MS = 45000;
-const API_READ_RETRY_ATTEMPTS = 1;
+const API_READ_RETRY_ATTEMPTS = 2;
 const API_RETRY_DELAY_MS = 700;
+const DATABASE_AUTO_RETRY_LIMIT = 2;
+const DATABASE_AUTO_RETRY_DELAY_MS = 2000;
+const SLOW_READ_API_ACTIONS = new Set([
+    'getFoodExpenses'
+]);
 const RETRYABLE_READ_API_ACTIONS = new Set([
     'getAttachmentDataUrl',
     'getAttachments',
@@ -60,12 +69,18 @@ function isRetryableReadAction(action) {
     return RETRYABLE_READ_API_ACTIONS.has(action);
 }
 
+function getReadRequestTimeoutMs(action) {
+    return SLOW_READ_API_ACTIONS.has(action)
+        ? API_SLOW_READ_REQUEST_TIMEOUT_MS
+        : API_READ_REQUEST_TIMEOUT_MS;
+}
+
 // API request router (CORS friendly via text/plain payload)
 async function apiCall(action, data = null, filters = null, pagination = null, options = {}) {
     const token = localStorage.getItem('rdf_session_token');
     const canRetry = isRetryableReadAction(action);
     const maxAttempts = canRetry ? API_READ_RETRY_ATTEMPTS : 1;
-    const requestTimeoutMs = canRetry ? API_READ_REQUEST_TIMEOUT_MS : API_WRITE_REQUEST_TIMEOUT_MS;
+    const requestTimeoutMs = canRetry ? getReadRequestTimeoutMs(action) : API_WRITE_REQUEST_TIMEOUT_MS;
     const requestBody = JSON.stringify({ action, token, data, filters, pagination });
     let lastError = null;
 
@@ -438,7 +453,7 @@ function showLoading(show) {
 
 function retryDatabaseLoad() {
     if (appLoadProgress && appLoadProgress.pending) return;
-    return initAppWithAPI({ retryFailed: true });
+    return initAppWithAPI({ retryFailed: true, automaticRetry: false });
 }
 
 // Handle login session expiration
@@ -1005,7 +1020,7 @@ function updateDatabaseLoadProgress(load) {
 }
 
 // โหลดฐานข้อมูลหลักแบบ real-time จาก Google Sheets
-async function initAppWithAPI({ retryFailed = false } = {}) {
+async function initAppWithAPI({ retryFailed = false, automaticRetry = false } = {}) {
     const loadGeneration = ++appLoadGeneration;
     const selectedMonth = state.selectedMonth;
     const selectedYear = state.selectedYear;
@@ -1017,11 +1032,13 @@ async function initAppWithAPI({ retryFailed = false } = {}) {
     if (previous) {
         previous.controller.abort();
         window.clearInterval(previous.timer);
+        window.clearTimeout(previous.retryTimer);
     }
     const load = {
         month: monthFilter, token, controller: new AbortController(), startedAt: Date.now(),
         results: { ...retained }, errors: {}, pending: true, failed: false, coreRendered: false,
-        tasks: [], timer: null, retrying: false
+        tasks: [], timer: null, retryTimer: null, retrying: false,
+        autoRetryCount: automaticRetry && previous ? previous.autoRetryCount + 1 : 0
     };
     appLoadProgress = load;
     const isCurrent = () => loadGeneration === appLoadGeneration && !load.controller.signal.aborted
@@ -1149,6 +1166,15 @@ async function initAppWithAPI({ retryFailed = false } = {}) {
             load.pending = false;
             load.failed = Object.keys(load.errors).length > 0;
             updateDatabaseLoadProgress(load);
+            const failedResourceKeys = Object.keys(load.errors)
+                .filter(key => key !== 'render' && !key.startsWith('render:'));
+            if (failedResourceKeys.length > 0 && load.autoRetryCount < DATABASE_AUTO_RETRY_LIMIT) {
+                load.retryTimer = window.setTimeout(() => {
+                    if (appLoadProgress === load && !load.controller.signal.aborted) {
+                        initAppWithAPI({ retryFailed: true, automaticRetry: true });
+                    }
+                }, DATABASE_AUTO_RETRY_DELAY_MS);
+            }
         }
     }
 }
@@ -3478,7 +3504,7 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
         (document.getElementById('bill-claim-type') || {}).value = exp.claimable ? 'claim' : 'no-claim';
         (document.getElementById('bill-note') || {}).value = parsedNote.text || '';
     } else {
-        (document.getElementById('bill-docno') || {}).value = 'ระบบสร้างอัตโนมัติ';
+        (document.getElementById('bill-docno') || {}).value = 'สร้างเมื่อบันทึก';
         (document.getElementById('bill-receipt-no') || {}).value = '';
         const gYear = state.selectedYear - 543;
         const mStr = String(state.selectedMonth).padStart(2, '0');

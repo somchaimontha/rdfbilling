@@ -55,7 +55,7 @@ function createHarness() {
     context.globalThis = context;
     vm.createContext(context);
     vm.runInContext(source + `\n;globalThis.__loadingTest = {
-        initAppWithAPI, retryDatabaseLoad,
+        initAppWithAPI, retryDatabaseLoad, apiCall,
         renderSignaturePreviews,
         getState: () => state,
         setMonth: (month, year) => { state.selectedMonth = month; state.selectedYear = year; },
@@ -178,6 +178,35 @@ test('retry keeps successful resources and requests only failed resources', asyn
     assert.equal(elements.get('database-load-status').hidden, true);
 });
 
+test('failed database resources retry automatically while retaining successful resources', async () => {
+    const { context, api } = createHarness();
+    const timers = [];
+    const calls = [];
+    let claimsAttempt = 0;
+    context.setTimeout = callback => {
+        timers.push(callback);
+        return timers.length;
+    };
+    context.clearTimeout = () => {};
+    context.__mockApiCall = async action => {
+        calls.push(action);
+        if (action === 'getClaims' && claimsAttempt++ === 0) throw new TypeError('temporary offline');
+        return successfulValue(action);
+    };
+    vm.runInContext(`apiCall = globalThis.__mockApiCall; renderAll = () => {}; renderTables = () => {};`, context);
+
+    await api.initAppWithAPI();
+    assert.equal(calls.filter(action => action === 'getClaims').length, 1);
+    assert.equal(timers.length, 1, 'a failed resource should schedule an automatic retry');
+
+    timers.shift()();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(calls.filter(action => action === 'getClaims').length, 2);
+    assert.equal(api.getState().claimsLoadStatus, 'ready');
+});
+
 test('a retained renderer failure does not abort retrying a failed network resource', async () => {
     const { context, api } = createHarness();
     const calls = [];
@@ -208,6 +237,27 @@ test('a retained renderer failure does not abort retrying a failed network resou
 test('missing optional signature preview markup does not break rendering', () => {
     const { api } = createHarness();
     assert.doesNotThrow(() => api.renderSignaturePreviews());
+});
+
+test('food reads retain a longer timeout without slowing other background reads', async () => {
+    const { context, api } = createHarness();
+    const timeouts = [];
+    context.setTimeout = (callback, ms) => {
+        timeouts.push(ms);
+        return timeouts.length;
+    };
+    context.clearTimeout = () => {};
+    context.fetch = async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify({ success: true, data: {} })
+    });
+
+    await api.apiCall('getFoodExpenses');
+    await api.apiCall('getExpenses');
+
+    assert.deepEqual(timeouts, [30000, 12000]);
 });
 
 test('a core rendering failure is recorded once after all data has loaded', async () => {
