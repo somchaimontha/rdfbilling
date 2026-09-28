@@ -7,7 +7,7 @@
     <meta name="description" content="ระบบบันทึกและบริหารรายจ่ายโครงการ มูลนิธิ Dr. Robert Dyckerhoff  วิทยาลัยการอาชีพแม่สะเรียง">
     <!-- SweetAlert2 -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=20260928-3">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- node-qrcode (MIT) ไม่มี browser UMD build — path build/qrcode.min.js เดิม 404 มาตลอด (QRCode จึง undefined)
          โหลดผ่าน ESM bundle ของ jsdelivr (CommonJS→ESM) แล้ว expose เป็น window.QRCode ให้โค้ดเดิมใช้ได้
@@ -469,7 +469,7 @@
                                 <tbody id="quick-expense-rows"></tbody>
                                 <tfoot>
                                     <tr>
-                                        <td colspan="9" class="quick-batch-grand-label">รวมรายการที่ยังไม่บันทึก</td>
+                                        <td colspan="9" class="quick-batch-grand-label">รวมรายการทั้งหมดในตาราง</td>
                                         <td id="quick-expense-grand-total" class="quick-batch-grand-total">0.00</td>
                                         <td colspan="2"></td>
                                     </tr>
@@ -2285,7 +2285,7 @@
 
 <!-- Application Scripts -->
 <script src="thai-baht.js"></script>
-<script src="app.js?v=20260926-1"></script>
+<script src="app.js?v=20260928-2"></script>
 <script>
     // Wire up Master Data modal buttons
     (document.getElementById('modal-master-close') || {}).addEventListener?.('click', closeMasterModal);

@@ -931,7 +931,7 @@ button, input, select, textarea {
 
 .quick-expense-batch-table {
     width: 100%;
-    min-width: 1780px;
+    min-width: 1552px;
     border-collapse: collapse;
     table-layout: fixed;
     font-size: 12px;
@@ -955,7 +955,9 @@ button, input, select, textarea {
     color: var(--text-primary);
     font-weight: 700;
     text-align: left;
-    white-space: nowrap;
+    white-space: normal;
+    line-height: 1.3;
+    vertical-align: middle;
 }
 
 .quick-expense-batch-table tfoot td {
@@ -975,27 +977,62 @@ button, input, select, textarea {
     resize: vertical;
 }
 
-.quick-expense-batch-table .quick-col-index { width: 54px; text-align: center; }
-.quick-expense-batch-table .quick-col-doc { width: 140px; }
+.quick-expense-batch-table .quick-col-index { width: 72px; text-align: center; }
+.quick-expense-batch-table .quick-col-doc { width: 108px; }
 .quick-expense-batch-table .quick-col-receipt { width: 150px; }
-.quick-expense-batch-table thead .quick-col-receipt {
-    white-space: normal;
-    line-height: 1.35;
-}
-.quick-expense-batch-table .quick-col-date { width: 132px; }
-.quick-expense-batch-table .quick-col-vendor { width: 180px; }
-.quick-expense-batch-table .quick-col-description { width: 230px; }
-.quick-expense-batch-table .quick-col-number { width: 92px; }
-.quick-expense-batch-table .quick-col-unit { width: 90px; }
-.quick-expense-batch-table .quick-col-total { width: 120px; }
-.quick-expense-batch-table .quick-col-extra { width: 230px; }
-.quick-expense-batch-table .quick-col-actions { width: 136px; text-align: center; }
+.quick-expense-batch-table .quick-col-date { width: 128px; }
+.quick-expense-batch-table .quick-col-vendor { width: 170px; }
+.quick-expense-batch-table .quick-col-description { width: 220px; }
+.quick-expense-batch-table .quick-col-number { width: 84px; }
+.quick-expense-batch-table .quick-col-unit { width: 82px; }
+.quick-expense-batch-table .quick-col-total { width: 108px; }
+.quick-expense-batch-table .quick-col-extra { width: 220px; }
+.quick-expense-batch-table .quick-col-actions { width: 126px; text-align: center; }
 
 .quick-expense-row-index {
     color: var(--text-secondary);
     font-weight: 700;
     text-align: center;
-    padding-top: 18px !important;
+}
+
+.quick-expense-row-order {
+    display: grid;
+    grid-template-columns: 20px minmax(16px, auto) 20px;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: 36px;
+}
+
+.quick-expense-order-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-sidebar);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.quick-expense-order-button:hover:not(:disabled) {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: var(--primary-light);
+}
+
+.quick-expense-order-button:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.quick-expense-order-button svg,
+.quick-expense-order-button [data-lucide] {
+    width: 12px;
+    height: 12px;
 }
 
 .quick-expense-doc-cell {
@@ -1027,13 +1064,117 @@ button, input, select, textarea {
     overflow-wrap: anywhere;
 }
 
-.quick-expense-org-select {
-    min-height: 32px !important;
-    width: 70px !important;
+.quick-expense-billing-select-wrap {
+    position: relative;
+    display: block;
+    width: 64px;
     max-width: 100%;
     margin-top: 8px;
-    padding: 4px 24px 4px 6px !important;
-    font-size: 11px !important;
+}
+
+.quick-expense-billing-menu {
+    position: relative;
+    width: 64px;
+    max-width: 100%;
+}
+
+.quick-expense-billing-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-sizing: border-box;
+    width: 64px;
+    max-width: 100%;
+    min-height: 32px;
+    padding: 4px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-sidebar);
+    cursor: pointer;
+    list-style: none;
+}
+
+.quick-expense-billing-trigger::-webkit-details-marker {
+    display: none;
+}
+
+.quick-expense-billing-trigger svg,
+.quick-expense-billing-trigger [data-lucide] {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 auto;
+    color: var(--text-secondary);
+    transition: transform 0.18s ease;
+}
+
+.quick-expense-billing-menu[open] .quick-expense-billing-trigger svg,
+.quick-expense-billing-menu[open] .quick-expense-billing-trigger [data-lucide] {
+    transform: rotate(180deg);
+}
+
+.quick-expense-billing-code {
+    color: var(--text-primary);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.quick-expense-billing-options {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 30;
+    display: grid;
+    box-sizing: border-box;
+    width: 96px;
+    max-width: calc(112px - 16px);
+    padding: 4px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-sidebar);
+    box-shadow: var(--shadow-md);
+}
+
+.quick-expense-billing-option {
+    display: block;
+    width: 100%;
+    padding: 6px;
+    border: 0;
+    border-radius: 6px;
+    color: var(--text-primary);
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.quick-expense-billing-option strong,
+.quick-expense-billing-option span {
+    display: block;
+}
+
+.quick-expense-billing-option strong {
+    font-size: 11px;
+    line-height: 1.2;
+}
+
+.quick-expense-billing-option span {
+    margin-top: 2px;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 1.25;
+}
+
+.quick-expense-billing-option:hover,
+.quick-expense-billing-option.is-selected {
+    background: var(--primary-light);
+    color: var(--primary-dark);
+}
+
+.quick-expense-billing-option.is-selected span {
+    color: inherit;
 }
 
 .quick-expense-doc-edit {
@@ -1062,8 +1203,58 @@ button, input, select, textarea {
 }
 
 .quick-expense-description-wrap {
+    position: relative;
     display: grid;
     gap: 6px;
+}
+
+.quick-expense-description-suggestions {
+    position: absolute;
+    top: 39px;
+    left: 0;
+    z-index: 30;
+    width: max(100%, 260px);
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--border-color);
+    border-radius: 9px;
+    background: var(--bg-sidebar);
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+}
+
+.quick-expense-description-suggestions[hidden] {
+    display: none !important;
+}
+
+.quick-expense-description-option {
+    display: grid;
+    width: 100%;
+    gap: 2px;
+    padding: 8px 9px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+}
+
+.quick-expense-description-option:hover,
+.quick-expense-description-option:focus-visible {
+    background: var(--primary-light);
+    outline: none;
+}
+
+.quick-expense-description-option span {
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.35;
+}
+
+.quick-expense-description-option small {
+    color: var(--text-muted);
+    font-size: 10px;
 }
 
 .quick-expense-subitems-button {
@@ -1137,6 +1328,15 @@ button, input, select, textarea {
     background: #1d4ed8;
 }
 
+.quick-expense-row-actions .quick-expense-add-row {
+    background: #059669;
+    border-color: #047857 !important;
+}
+
+.quick-expense-row-actions .quick-expense-add-row:hover {
+    background: #047857;
+}
+
 .quick-expense-row-actions .quick-expense-retry-attachments {
     background: #d97706;
     border-color: #b45309 !important;
@@ -1177,6 +1377,10 @@ button, input, select, textarea {
 
 .quick-expense-batch-row.is-saved td {
     background: color-mix(in srgb, #dcfce7 48%, var(--bg-sidebar));
+}
+
+.quick-expense-batch-row.is-local-draft:not(.is-saved) td {
+    background: color-mix(in srgb, #fef3c7 34%, var(--bg-sidebar));
 }
 
 .quick-expense-batch-row.has-error td {

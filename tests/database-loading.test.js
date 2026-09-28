@@ -55,7 +55,7 @@ function createHarness() {
     context.globalThis = context;
     vm.createContext(context);
     vm.runInContext(source + `\n;globalThis.__loadingTest = {
-        initAppWithAPI, retryDatabaseLoad, apiCall,
+        initAppWithAPI, retryDatabaseLoad, apiCall, fetchAllExpensesForMonth,
         renderSignaturePreviews,
         getState: () => state,
         setMonth: (month, year) => { state.selectedMonth = month; state.selectedYear = year; },
@@ -68,7 +68,7 @@ function successfulValue(action) {
     const values = {
         getRuntimeConfig: {},
         getMasterData: { projects: [], categories: [], vendors: [], fundSources: [], organizations: [] },
-        getExpenses: { expenses: [{ id: 'EXP001', amount: 10 }], pagination: { total: 1, limit: 200 } },
+        getExpenses: { expenses: [{ id: 'EXP001', amount: 10, postingMonth: '2026-09' }], pagination: { total: 1, limit: 200 } },
         getFoodExpenses: { foodExpenses: [], pagination: { total: 0, limit: 200 } },
         getClaims: { claims: [] },
         getFundReceipts: { fundReceipts: [] },
@@ -113,6 +113,30 @@ test('monthly records render before slow supplementary reads finish', async () =
     await loading;
     assert.equal(api.getState().carryOverAmount, 25);
     assert.equal(elements.get('database-load-status').hidden, true);
+});
+
+test('monthly loading reads all authorized rows and filters legacy sheet dates in the browser', async () => {
+    const { context, api } = createHarness();
+    context.__expenseCalls = [];
+    context.__mockApiCall = async (action, data, filters) => {
+        context.__expenseCalls.push(filters);
+        return {
+            expenses: [
+                { id: 'EXP-SEP', postingMonth: '2026-08-31T17:00:00.000Z', expenseDate: '2025-08-18T00:00:00.000Z' },
+                { id: 'EXP-AUG', expenseDate: '2026-08-18T00:00:00.000Z' }
+            ],
+            pagination: { total: 2, limit: 200 }
+        };
+    };
+    vm.runInContext('apiCall = globalThis.__mockApiCall;', context);
+
+    const rows = await api.fetchAllExpensesForMonth('2026-09');
+
+    assert.deepEqual(JSON.parse(JSON.stringify(rows)), [
+        { id: 'EXP-SEP', postingMonth: '2026-08-31T17:00:00.000Z', expenseDate: '2025-08-18T00:00:00.000Z' }
+    ]);
+    assert.equal(context.__expenseCalls.length, 1);
+    assert.equal(context.__expenseCalls[0], null);
 });
 
 test('initial database loading never runs more than three tasks concurrently', async () => {

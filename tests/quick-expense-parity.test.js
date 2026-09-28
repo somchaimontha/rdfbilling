@@ -44,17 +44,24 @@ const fullFieldIds = [
 
 function createHarness() {
     const elements = new Map();
+    const storage = new Map([
+        ['rdf_current_user', JSON.stringify({ id: 'ADMIN-1', role: 'admin', organizationId: 'ORG-ROOT' })]
+    ]);
     for (const [id, value] of Object.entries(commonValues)) elements.set(id, { value });
     for (const id of fullFieldIds) elements.set(id, { value: '' });
 
     const rowFields = new Map(Object.entries(rowValues).map(([field, value]) => [field, { value }]));
     const row = {
         dataset: { rowId: 'quick-exp-1', requestId: 'expense-test-request-1', saved: 'false' },
+        classList: { contains() { return false; }, add() {}, remove() {}, toggle() {} },
         querySelector(selector) {
             const field = selector.match(/^\[data-field="(.+)"\]$/)?.[1];
-            return field ? rowFields.get(field) || null : null;
+            if (field) return rowFields.get(field) || null;
+            if (selector === '[data-role="row-status"]') return elements.get('row-status');
+            return null;
         }
     };
+    elements.set('row-status', { textContent: '' });
     const document = {
         addEventListener() {},
         getElementById(id) { return elements.get(id) || null; },
@@ -69,12 +76,9 @@ function createHarness() {
         console: { log() {}, warn() {}, error() {} },
         document,
         localStorage: {
-            getItem(key) {
-                return key === 'rdf_current_user'
-                    ? JSON.stringify({ id: 'ADMIN-1', role: 'admin', organizationId: 'ORG-ROOT' })
-                    : null;
-            },
-            setItem() {}, removeItem() {}
+            getItem(key) { return storage.has(key) ? storage.get(key) : null; },
+            setItem(key, value) { storage.set(key, String(value)); },
+            removeItem(key) { storage.delete(key); }
         },
         sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
         location: { hostname: 'example.test', search: '', pathname: '/' },
@@ -108,6 +112,13 @@ function createHarness() {
             isQuickExpenseDraftEmpty,
             getQuickExpenseDocumentPreview,
             getQuickExpenseBillingProfileOptions,
+            getQuickExpenseDescriptionSuggestions,
+            getQuickExpenseSavedRowInitial,
+            getExpensePostingMonth,
+            buildVerifyUrl,
+            buildQuickExpenseRowHTML,
+            persistQuickExpenseLocalDraft,
+            loadQuickExpenseLocalDraft,
             setQuickRow: (rowId, attachments, multiItems) => {
                 quickExpenseRows = [rowId];
                 quickExpenseAttachmentsByRow[rowId] = attachments;
@@ -116,6 +127,7 @@ function createHarness() {
             getTempAttachments: () => tempBillAttachments,
             setProjects: value => { state.projects = value; },
             setVendors: value => { state.vendors = value; },
+            setExpenses: value => { state.expenses = value; },
             setOrganizations: value => { state.organizations = value; },
             getProjects: () => state.projects,
             getModalSource: () => expenseModalSource,
@@ -131,7 +143,7 @@ function createHarness() {
         appAlert = () => {};
         showLoading = () => {};
     `, context);
-    return { context, elements, api: context.__quickExpenseParity };
+    return { context, elements, storage, api: context.__quickExpenseParity };
 }
 
 test('quick monthly bill form is a repeatable receipt table with shared collapsible fields', () => {
@@ -148,6 +160,7 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(html, /เล่มที่ \/ เลขที่ใบเสร็จ/);
     assert.match(html, /ร้านค้า \/ ผู้ขาย/);
     assert.match(html, /รายละเอียดเพิ่มเติมและหลักฐาน/);
+    assert.match(html, /รวมรายการทั้งหมดในตาราง/);
     assert.match(html, /onclick="addQuickExpenseRow\(\)"/);
     assert.match(html, /id="bill-receipt-no"[^>]+required/);
     assert.match(source, /data-field="receiptNo"/);
@@ -157,6 +170,7 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(source, /documentPrefix: item\.draft\.documentPrefix/);
     assert.match(source, /idPrefix: 'ATT'/);
     assert.match(source, /retryQuickExpenseRowAttachments/);
+    assert.match(source, /const total = visibleRows\.reduce/);
     assert.match(source, /getQuickExpenseDocumentPreview/);
     assert.match(source, /editQuickExpenseDocumentNo/);
 });
@@ -233,8 +247,116 @@ test('bill preview offers all billing profiles and keeps row labels compact', ()
     assert.match(compactOptions, />VC<\/option>/);
     assert.match(compactOptions, />P<\/option>/);
     assert.doesNotMatch(compactOptions, /Boribhat Suksa|Vocational College|โปรเจกต์อื่นๆ/);
+    const rowHtml = api.buildQuickExpenseRowHTML('quick-exp-preview', {
+        postingMonth: '2026-09', documentPrefix: 'OF', expenseDate: '2026-09-01'
+    });
+    assert.match(rowHtml, /data-role="billing-code">OF<\/span>/);
+    assert.match(rowHtml, /class="quick-expense-billing-menu"/);
+    assert.match(rowHtml, /class="quick-expense-billing-options" role="listbox"/);
+    assert.doesNotMatch(rowHtml, /quick-expense-org-select/);
+    assert.match(rowHtml, /OF — office/);
+    assert.match(rowHtml, /BS — Boribhat Suksa/);
+    assert.match(rowHtml, /VC — Vocational College/);
+    assert.match(rowHtml, /P — โปรเจกต์อื่นๆ/);
+    assert.match(rowHtml, /title="เปิดรายการแบบป๊อปอัป"/);
+    assert.match(rowHtml, /quick-expense-add-row/);
+    assert.match(rowHtml, /quick-expense-remove-row/);
+    assert.match(rowHtml, /moveQuickExpenseRow\('quick-exp-preview', -1\)/);
+    assert.match(rowHtml, /moveQuickExpenseRow\('quick-exp-preview', 1\)/);
+    assert.match(rowHtml, /handleQuickExpenseDescriptionInput\('quick-exp-preview'\)/);
+    assert.match(rowHtml, /data-role="description-suggestions"/);
     assert.doesNotMatch(source, /ตัวอย่าง \$\{escapeHTML\(getQuickExpenseDocumentPreview/);
     assert.doesNotMatch(source, /สร้างเลขจริงเมื่อบันทึก/);
+});
+
+test('description suggestions find similar saved items and include their units', () => {
+    const { api } = createHarness();
+    api.setExpenses([
+        { id: 'EXP-1', description: 'ซื้ออุปกรณ์สำนักงาน', unit: 'กล่อง' },
+        { id: 'EXP-2', description: 'ค่าซ่อมอุปกรณ์คอมพิวเตอร์', unit: 'งาน' },
+        { id: 'EXP-3', description: 'ค่าเดินทาง', unit: 'ครั้ง' }
+    ]);
+
+    const matches = JSON.parse(JSON.stringify(api.getQuickExpenseDescriptionSuggestions('อุปกรณ์')));
+    assert.deepEqual(matches, [
+        { description: 'ซื้ออุปกรณ์สำนักงาน', unit: 'กล่อง' },
+        { description: 'ค่าซ่อมอุปกรณ์คอมพิวเตอร์', unit: 'งาน' }
+    ]);
+});
+
+test('unfinished bill rows are stored locally as recoverable drafts', () => {
+    const { elements, api } = createHarness();
+    api.setQuickRow('quick-exp-1', [], [{ desc: 'ปากกา', qty: 3, price: 125.5 }]);
+
+    api.persistQuickExpenseLocalDraft();
+    const saved = api.loadQuickExpenseLocalDraft();
+
+    assert.equal(saved.rows.length, 1);
+    assert.equal(saved.rows[0].receiptNo, rowValues.receiptNo);
+    assert.equal(saved.rows[0].documentPrefix, rowValues.documentPrefix);
+    assert.equal(saved.rows[0].description, rowValues.description);
+    assert.deepEqual(JSON.parse(JSON.stringify(saved.rows[0].multiItems)), [{ desc: 'ปากกา', qty: 3, price: 125.5 }]);
+    assert.equal(elements.get('row-status').textContent, 'ฉบับร่าง · บันทึกอัตโนมัติแล้ว');
+    assert.match(source, /ensureQuickExpenseTrailingRow\(row\.dataset\.rowId\)/);
+});
+
+test('saved cloud bills are restored into the quick table after reload', () => {
+    const { api } = createHarness();
+    api.setVendors([{ id: 'VENDOR-1', name: 'ร้านทดสอบ' }]);
+    api.setOrganizations([{ id: 'ORG-OF', name: 'office', shortName: 'OF', active: true }]);
+
+    const restored = api.getQuickExpenseSavedRowInitial({
+        id: 'EXP000001',
+        requestId: 'REQ-1',
+        documentNo: 'OFSEP26_1',
+        receiptNo: '001/2569',
+        expenseDate: '2026-09-27T00:00:00.000Z',
+        postingMonth: '2026-09',
+        organizationId: 'ORG-OF',
+        vendorId: 'VENDOR-1',
+        description: 'วัสดุสำนักงาน',
+        quantity: 2,
+        unit: 'กล่อง',
+        unitPrice: 150,
+        note: 'หมายเหตุ __multi_items__:[{"desc":"ปากกา","qty":2,"price":150}]'
+    });
+
+    assert.equal(restored.postingMonth, '2026-09');
+    assert.equal(restored.documentPrefix, 'OF');
+    assert.equal(restored.vendorName, 'ร้านทดสอบ');
+    assert.equal(restored.note, 'หมายเหตุ');
+    assert.deepEqual(JSON.parse(JSON.stringify(restored.multiItems)), [{ desc: 'ปากกา', qty: 2, price: 150 }]);
+    assert.match(source, /\.forEach\(addQuickExpenseSavedRow\)/);
+    assert.match(source, /syncQuickExpenseSavedRows\(\)/);
+});
+
+test('sheet date values retain the selected posting month', () => {
+    const { api } = createHarness();
+    assert.equal(api.getExpensePostingMonth({
+        postingMonth: '2026-09-01T00:00:00.000Z',
+        expenseDate: '2025-08-18T00:00:00.000Z'
+    }), '2026-09');
+    assert.equal(api.getExpensePostingMonth({
+        postingMonth: '2026-08-31T17:00:00.000Z',
+        expenseDate: '2025-08-18T00:00:00.000Z'
+    }), '2026-09');
+    assert.equal(api.getExpensePostingMonth({
+        expenseDate: '2026-09-23T00:00:00.000Z'
+    }), '2026-09');
+    assert.match(backendExpenseSource, /postingMonth instanceof Date|value instanceof Date/);
+    assert.match(source, /Filter in the browser until every deployed Apps Script version/);
+});
+
+test('report verification QR always points to the public site', () => {
+    const { api } = createHarness();
+    assert.equal(
+        api.buildVerifyUrl('export', 'ABC 123'),
+        'https://somchaimontha.github.io/rdfbilling/?v=ABC%20123'
+    );
+    assert.equal(
+        api.buildVerifyUrl('claim', 'CLAIM/1'),
+        'https://somchaimontha.github.io/rdfbilling/?verify_type=claim&verify_code=CLAIM%2F1'
+    );
 });
 
 test('backend uses an admin billing profile before the organization fallback', () => {

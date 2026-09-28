@@ -7,6 +7,7 @@ const root = path.join(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const backend = fs.readFileSync(path.join(root, 'backend', 'SignatureService.gs'), 'utf8');
+const verifyBackend = fs.readFileSync(path.join(root, 'backend', 'VerifyService.gs'), 'utf8');
 
 test('report signing UI supports blank, drawn, and uploaded signatures for all roles', () => {
     for (const role of ['prepared', 'checked', 'approved']) {
@@ -25,6 +26,9 @@ test('report attachment failures remain visible and attachment count is exportab
     assert.match(app, /หลักฐานแนบโหลดไม่สำเร็จ/);
     assert.match(app, /id: 'attachmentsCount'/);
     assert.match(html, /value="attachmentsCount"/);
+    assert.match(app, /attachmentCount: sections\.reduce/);
+    assert.match(app, /หลักฐานแนบ: \$\{Number\(header\.attachmentCount\) \|\| 0\} ไฟล์/);
+    assert.match(verifyBackend, /attachmentCount: Number\(attachmentCount\) \|\| 0/);
 });
 
 test('backend signature storage validates images and uses Drive metadata', () => {

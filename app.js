@@ -5,6 +5,7 @@
 
 const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwxEEhfMfU8hjiR-iijOqcdPbRR-UOQOf4CMD34B0qVlhjgJYEpFXzGkopJ4inI5RyRnA/exec';
 const API_URL = ['127.0.0.1', 'localhost'].includes(window.location.hostname) ? '/api' : GAS_API_URL;
+const PUBLIC_APP_URL = 'https://somchaimontha.github.io/rdfbilling/';
 // Keep background reads short.  Temporary Apps Script cold starts are retried
 // automatically; the non-blocking status bar still offers a manual fallback.
 const API_READ_REQUEST_TIMEOUT_MS = 12000;
@@ -253,17 +254,23 @@ async function fetchAllPagedRecords(fetchPage, getRecords, options = {}) {
 }
 
 async function fetchAllExpensesForMonth(month, options = {}) {
-    return fetchAllPagedRecords(
-        page => apiCall('getExpenses', null, { month }, { page, limit: API_LIST_PAGE_SIZE }, options),
+    // Filter in the browser until every deployed Apps Script version handles
+    // Google Sheets Date cells consistently. Server-side month filtering in an
+    // older deployment can otherwise return an empty list for valid records.
+    const allRecords = await fetchAllPagedRecords(
+        page => apiCall('getExpenses', null, null, { page, limit: API_LIST_PAGE_SIZE }, options),
         response => response.expenses || []
     );
+    return allRecords.filter(expense => getExpensePostingMonth(expense) === month);
 }
 
 async function fetchAllExpensesForYear(year) {
-    return fetchAllPagedRecords(
-        page => apiCall('getExpenses', null, { year: String(year) }, { page, limit: API_LIST_PAGE_SIZE }),
+    const allRecords = await fetchAllPagedRecords(
+        page => apiCall('getExpenses', null, null, { page, limit: API_LIST_PAGE_SIZE }),
         response => response.expenses || []
     );
+    const yearPrefix = `${String(year)}-`;
+    return allRecords.filter(expense => getExpensePostingMonth(expense).startsWith(yearPrefix));
 }
 
 async function fetchAllFoodExpensesForMonth(month, options = {}) {
@@ -423,12 +430,17 @@ async function ensureExportLibs(label) {
 
 // สร้าง QR code ตรวจสอบเอกสารย้อนกลับ — ทำงานฝั่ง client ล้วนๆ (ไลบรารี qrcode จาก CDN)
 // ข้อมูลไม่ออกจากเบราว์เซอร์เลยตอนสร้างรูป ต่างจากการเรียก API ภายนอกสร้าง QR image
-async function generateVerifyQR(type, code) {
-    if (typeof QRCode === 'undefined' || !code) return '';
-    const baseUrl = `${window.location.origin}${window.location.pathname}`;
-    const verifyUrl = type === 'export'
+function buildVerifyUrl(type, code) {
+    if (!type || !code) return '';
+    const baseUrl = PUBLIC_APP_URL.replace(/\/+$/, '/') || PUBLIC_APP_URL;
+    return type === 'export'
         ? `${baseUrl}?v=${encodeURIComponent(code)}`
         : `${baseUrl}?verify_type=${encodeURIComponent(type)}&verify_code=${encodeURIComponent(code)}`;
+}
+
+async function generateVerifyQR(type, code) {
+    if (typeof QRCode === 'undefined' || !code) return '';
+    const verifyUrl = buildVerifyUrl(type, code);
     try {
         return await QRCode.toDataURL(verifyUrl, { width: 160, margin: 1 });
     } catch (err) {
@@ -436,6 +448,7 @@ async function generateVerifyQR(type, code) {
         return '';
     }
 }
+window.buildVerifyUrl = buildVerifyUrl;
 window.generateVerifyQR = generateVerifyQR;
 
 // ไลบรารี QRCode โหลดแบบ ESM (async) — ถ้าโหลดเสร็จตอนมอดัล Export เปิดค้างอยู่พอดี ให้ render พรีวิวใหม่
@@ -624,10 +637,16 @@ let quickExpenseRows = [];
 let quickExpenseRowSequence = 0;
 let quickExpenseAttachmentsByRow = {};
 let quickExpenseMultiItemsByRow = {};
+const quickExpenseHiddenSavedIds = new Set();
 let currentQuickExpenseRowId = null;
 let quickFoodAttachments = [];
 let quickExpenseFileProcessingCount = 0;
 let quickFoodFileProcessing = false;
+let quickExpenseDraftSaveTimer = null;
+let isRestoringQuickExpenseDraft = false;
+
+const QUICK_EXPENSE_DRAFT_STORAGE_VERSION = 1;
+const QUICK_EXPENSE_DRAFT_STORAGE_PREFIX = 'rdf_quick_expense_draft';
 
 const QUICK_EXPENSE_BILLING_PROFILES = Object.freeze([
     { code: 'OF', name: 'office' },
@@ -849,6 +868,7 @@ function renderVerifyResult(result, type) {
                 <div class="vr-row"><span>เลขที่เอกสาร</span><strong>${escapeHTML(d.docNumber || '-')}</strong></div>
                 <div class="vr-row"><span>เดือนรายงาน</span><strong>${escapeHTML(d.month || '-')}</strong></div>
                 <div class="vr-row"><span>จำนวนรายการ</span><strong>${d.itemCount ?? '-'}</strong></div>
+                <div class="vr-row"><span>ไฟล์หลักฐาน</span><strong>${d.attachmentCount ?? 0} ไฟล์</strong></div>
                 <div class="vr-row"><span>ยอดรวม</span><strong>${(parseFloat(d.totalAmount) || 0).toLocaleString('th-TH', {minimumFractionDigits:2})} บาท</strong></div>`;
         }
     }
@@ -2267,10 +2287,21 @@ function isDateInSelectedMonth(dateStr) {
 
 function getExpensePostingMonth(expense) {
     if (!expense) return '';
-    const explicit = String(expense.postingMonth || '').trim();
-    if (/^\d{4}-\d{2}$/.test(explicit)) return explicit;
-    const fallback = String(expense.expenseDate || '').slice(0, 7);
-    return /^\d{4}-\d{2}$/.test(fallback) ? fallback : '';
+    const toBangkokMonthKey = value => {
+        const text = String(value || '').trim();
+        const plainMatch = text.match(/^(\d{4})-(\d{2})(?:$|-(?:\d{2})$)/);
+        if (plainMatch) return `${plainMatch[1]}-${plainMatch[2]}`;
+        if (/^\d{4}-\d{2}-\d{2}T/.test(text)) {
+            const date = new Date(text);
+            if (!Number.isNaN(date.getTime())) {
+                const bangkok = new Date(date.getTime() + (7 * 60 * 60 * 1000));
+                return `${bangkok.getUTCFullYear()}-${String(bangkok.getUTCMonth() + 1).padStart(2, '0')}`;
+            }
+        }
+        const isoMatch = text.match(/^(\d{4})-(\d{2})/);
+        return isoMatch ? `${isoMatch[1]}-${isoMatch[2]}` : '';
+    };
+    return toBangkokMonthKey(expense.postingMonth) || toBangkokMonthKey(expense.expenseDate);
 }
 
 function getFoodPostingMonth(item) {
@@ -2666,10 +2697,10 @@ function renderTables() {
         });
     }
 
-    // The quick-entry panels stay in the same monthly widgets as their lists.
-    // They use the selected month as the posting month and do not add a fake
-    // unsaved row to the saved-record table.
+    // Keep quick-entry rows aligned with the selected month. Saved cloud rows
+    // are restored into the quick table after reload; pending rows stay local.
     syncQuickExpenseEntryPeriod();
+    syncQuickExpenseSavedRows();
     renderFoodBillsTable();
     syncQuickFoodEntryPeriod();
     bindTableActionButtons();
@@ -4875,11 +4906,49 @@ function populateQuickExpenseBillingProfileContext(selectedCode = '') {
 
 function buildQuickExpenseRowBillingProfileControl(selectedCode, followsShared = true) {
     if (!isAdminUser()) return '';
-    return `<select class="form-select quick-expense-org-select" data-field="documentPrefix" data-follow-shared="${followsShared ? 'true' : 'false'}" aria-label="รหัสผู้ออกบิล" onchange="onQuickExpenseRowBillingProfileChange(this)">${getQuickExpenseBillingProfileOptions(selectedCode, true)}</select>`;
+    const billingCode = String(selectedCode || QUICK_EXPENSE_BILLING_PROFILES[0].code).toUpperCase();
+    const profileItems = QUICK_EXPENSE_BILLING_PROFILES
+        .map(profile => {
+            const selected = profile.code === billingCode;
+            const fullLabel = `${profile.code} — ${profile.name}`;
+            return `<button type="button" class="quick-expense-billing-option${selected ? ' is-selected' : ''}" role="option" aria-label="${escapeHTML(fullLabel)}" aria-selected="${selected ? 'true' : 'false'}" title="${escapeHTML(fullLabel)}" data-billing-code="${escapeHTML(profile.code)}" onclick="selectQuickExpenseRowBillingProfile(this, '${escapeHTML(profile.code)}')"><strong>${escapeHTML(profile.code)}</strong><span>${escapeHTML(profile.name)}</span></button>`;
+        })
+        .join('');
+    const selectedProfile = QUICK_EXPENSE_BILLING_PROFILES.find(profile => profile.code === billingCode);
+    const selectedName = selectedProfile ? selectedProfile.name : billingCode;
+    return `<div class="quick-expense-billing-select-wrap"><input type="hidden" data-field="documentPrefix" data-follow-shared="${followsShared ? 'true' : 'false'}" value="${escapeHTML(billingCode)}"><details class="quick-expense-billing-menu"><summary class="quick-expense-billing-trigger" aria-label="รหัสผู้ออกบิล ${escapeHTML(selectedName)}" title="${escapeHTML(selectedName)}"><span class="quick-expense-billing-code" data-role="billing-code">${escapeHTML(billingCode)}</span><i data-lucide="chevron-down"></i></summary><div class="quick-expense-billing-options" role="listbox">${profileItems}</div></details></div>`;
 }
 
-function onQuickExpenseRowBillingProfileChange(select) {
-    if (select && select.dataset) select.dataset.followShared = 'false';
+function syncQuickExpenseRowBillingCode(input) {
+    const wrapper = input && input.closest ? input.closest('.quick-expense-billing-select-wrap') : null;
+    const code = wrapper && wrapper.querySelector('[data-role="billing-code"]');
+    const billingCode = String((input && input.value) || '');
+    const selectedProfile = QUICK_EXPENSE_BILLING_PROFILES.find(profile => profile.code === billingCode);
+    if (code) code.textContent = billingCode;
+    const trigger = wrapper && wrapper.querySelector('.quick-expense-billing-trigger');
+    if (trigger) {
+        const selectedName = selectedProfile ? selectedProfile.name : billingCode;
+        trigger.setAttribute('aria-label', `รหัสผู้ออกบิล ${selectedName}`);
+        trigger.title = selectedName;
+    }
+    if (wrapper) {
+        wrapper.querySelectorAll('.quick-expense-billing-option').forEach(option => {
+            const selected = option.dataset.billingCode === billingCode;
+            option.classList.toggle('is-selected', selected);
+            option.setAttribute('aria-selected', selected ? 'true' : 'false');
+        });
+    }
+}
+
+function selectQuickExpenseRowBillingProfile(option, billingCode) {
+    const wrapper = option && option.closest ? option.closest('.quick-expense-billing-select-wrap') : null;
+    const input = wrapper && wrapper.querySelector('[data-field="documentPrefix"]');
+    if (!input) return;
+    input.value = String(billingCode || '').toUpperCase();
+    input.dataset.followShared = 'false';
+    syncQuickExpenseRowBillingCode(input);
+    const menu = wrapper.querySelector('.quick-expense-billing-menu');
+    if (menu) menu.open = false;
     refreshQuickExpenseDocumentPreviews();
 }
 
@@ -4887,13 +4956,127 @@ function onQuickExpenseBillingProfileChange(billingCode) {
     quickExpenseRows.forEach(rowId => {
         const row = getQuickExpenseRowElement(rowId);
         if (!row || row.dataset.saved === 'true') return;
-        const select = row.querySelector('[data-field="documentPrefix"]');
-        if (select && select.dataset.followShared !== 'false') select.value = billingCode;
+        const input = row.querySelector('[data-field="documentPrefix"]');
+        if (input && input.dataset.followShared !== 'false') {
+            input.value = billingCode;
+            syncQuickExpenseRowBillingCode(input);
+        }
     });
     refreshQuickExpenseDocumentPreviews();
 }
 window.onQuickExpenseBillingProfileChange = onQuickExpenseBillingProfileChange;
-window.onQuickExpenseRowBillingProfileChange = onQuickExpenseRowBillingProfileChange;
+window.selectQuickExpenseRowBillingProfile = selectQuickExpenseRowBillingProfile;
+
+function getQuickExpenseDraftStorageKey() {
+    const currentUser = getCurrentUser() || {};
+    const owner = currentUser.id || currentUser.username || currentUser.organizationId || 'anonymous';
+    return `${QUICK_EXPENSE_DRAFT_STORAGE_PREFIX}:${encodeURIComponent(String(owner))}`;
+}
+
+function loadQuickExpenseLocalDraft() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(getQuickExpenseDraftStorageKey()) || 'null');
+        return saved && saved.version === QUICK_EXPENSE_DRAFT_STORAGE_VERSION ? saved : null;
+    } catch (error) {
+        console.warn('อ่านรายการใบเสร็จที่บันทึกอัตโนมัติไม่สำเร็จ:', error);
+        return null;
+    }
+}
+
+function clearQuickExpenseLocalDraft() {
+    try {
+        localStorage.removeItem(getQuickExpenseDraftStorageKey());
+    } catch (error) {
+        console.warn('ล้างรายการใบเสร็จที่บันทึกอัตโนมัติไม่สำเร็จ:', error);
+    }
+}
+
+function collectQuickExpenseLocalDraft() {
+    const value = id => String((document.getElementById(id) || {}).value || '').trim();
+    const rows = quickExpenseRows
+        .map(rowId => ({ row: getQuickExpenseRowElement(rowId), draft: getQuickExpenseRowDraft(rowId) }))
+        .filter(item => item.row && item.row.dataset.saved !== 'true' && !isQuickExpenseDraftEmpty(item.draft))
+        .map(item => {
+            const { attachments, amount, rowId, ...draft } = item.draft;
+            return draft;
+        });
+    return {
+        version: QUICK_EXPENSE_DRAFT_STORAGE_VERSION,
+        savedAt: new Date().toISOString(),
+        shared: {
+            documentPrefix: value('inline-exp-billing-profile'),
+            projectId: value('inline-exp-project'),
+            categoryId: value('inline-exp-category'),
+            categoryName: value('inline-exp-category-input'),
+            fundSourceId: value('inline-exp-fund'),
+            fundSourceName: value('inline-exp-fund-input'),
+            claimable: value('inline-exp-claimable'),
+            postingMonth: value('inline-exp-posting-month')
+        },
+        rows
+    };
+}
+
+function persistQuickExpenseLocalDraft() {
+    if (isRestoringQuickExpenseDraft) return;
+    try {
+        const draft = collectQuickExpenseLocalDraft();
+        if (!draft.rows.length) {
+            clearQuickExpenseLocalDraft();
+            return;
+        }
+        localStorage.setItem(getQuickExpenseDraftStorageKey(), JSON.stringify(draft));
+        quickExpenseRows.forEach(rowId => {
+            const row = getQuickExpenseRowElement(rowId);
+            if (!row || row.dataset.saved === 'true' || row.classList.contains('is-saving') || row.classList.contains('has-error')) return;
+            const rowDraft = getQuickExpenseRowDraft(rowId);
+            if (isQuickExpenseDraftEmpty(rowDraft)) return;
+            row.classList.add('is-local-draft');
+            const status = row.querySelector('[data-role="row-status"]');
+            if (status) status.textContent = 'ฉบับร่าง · บันทึกอัตโนมัติแล้ว';
+        });
+    } catch (error) {
+        console.warn('บันทึกรายการใบเสร็จอัตโนมัติไม่สำเร็จ:', error);
+    }
+}
+
+function scheduleQuickExpenseDraftSave() {
+    if (isRestoringQuickExpenseDraft) return;
+    if (quickExpenseDraftSaveTimer) window.clearTimeout(quickExpenseDraftSaveTimer);
+    quickExpenseDraftSaveTimer = window.setTimeout(() => {
+        quickExpenseDraftSaveTimer = null;
+        persistQuickExpenseLocalDraft();
+    }, 250);
+}
+
+function ensureQuickExpenseTrailingRow(sourceRowId) {
+    const pendingRows = quickExpenseRows.filter(rowId => {
+        const row = getQuickExpenseRowElement(rowId);
+        return row && row.dataset.saved !== 'true';
+    });
+    if (!pendingRows.length || pendingRows[pendingRows.length - 1] !== sourceRowId) return;
+    const draft = getQuickExpenseRowDraft(sourceRowId);
+    if (isQuickExpenseDraftEmpty(draft)) return;
+    addQuickExpenseRow({}, { focus: false, persist: false });
+}
+
+function bindQuickExpenseDraftAutosave() {
+    const form = document.getElementById('quick-expense-form');
+    if (!form || form.dataset.autosaveBound === 'true') return;
+    form.dataset.autosaveBound = 'true';
+    const handleDraftChange = event => {
+        const target = event.target;
+        const row = target && target.closest ? target.closest('.quick-expense-batch-row') : null;
+        const autoAddFields = ['receiptNo', 'vendorName', 'description', 'unitPrice', 'note'];
+        if (row && target.dataset && autoAddFields.includes(target.dataset.field)) {
+            ensureQuickExpenseTrailingRow(row.dataset.rowId);
+        }
+        scheduleQuickExpenseDraftSave();
+    };
+    form.addEventListener('input', handleDraftChange);
+    form.addEventListener('change', handleDraftChange);
+    window.addEventListener('pagehide', persistQuickExpenseLocalDraft);
+}
 
 function syncQuickExpenseEntryPeriod(force = false) {
     const postingMonth = document.getElementById('inline-exp-posting-month');
@@ -4947,6 +5130,71 @@ function populateQuickExpenseVendorOptions() {
         .map(item => `<option value="${escapeHTML(item.name)}"></option>`)
         .join('');
 }
+
+function getQuickExpenseDescriptionSuggestions(query, limit = 8) {
+    const normalizedQuery = normalizeMasterName(query);
+    if (!normalizedQuery) return [];
+    const queryParts = normalizedQuery.split(' ').filter(Boolean);
+    const unique = new Map();
+    (state.expenses || []).forEach((expense, index) => {
+        const description = String(expense.description || '').trim();
+        const normalizedDescription = normalizeMasterName(description);
+        if (!description || !normalizedDescription) return;
+        const containsQuery = normalizedDescription.includes(normalizedQuery);
+        const containsAllParts = queryParts.length > 1 && queryParts.every(part => normalizedDescription.includes(part));
+        if (!containsQuery && !containsAllParts) return;
+        const unit = String(expense.unit || 'รายการ').trim() || 'รายการ';
+        const key = `${normalizedDescription}|${normalizeMasterName(unit)}`;
+        const score = normalizedDescription === normalizedQuery ? 0 : (normalizedDescription.startsWith(normalizedQuery) ? 1 : 2);
+        const existing = unique.get(key);
+        if (!existing || score < existing.score) unique.set(key, { description, unit, score, index });
+    });
+    return Array.from(unique.values())
+        .sort((a, b) => a.score - b.score || a.index - b.index || a.description.localeCompare(b.description, 'th'))
+        .slice(0, limit)
+        .map(({ description, unit }) => ({ description, unit }));
+}
+
+function hideQuickExpenseDescriptionSuggestions(rowId) {
+    const row = getQuickExpenseRowElement(rowId);
+    const list = row && row.querySelector('[data-role="description-suggestions"]');
+    if (list) {
+        list.hidden = true;
+        list.innerHTML = '';
+    }
+}
+
+function handleQuickExpenseDescriptionInput(rowId) {
+    const row = getQuickExpenseRowElement(rowId);
+    const input = getQuickExpenseRowField(rowId, 'description');
+    const list = row && row.querySelector('[data-role="description-suggestions"]');
+    if (!input || !list) return;
+    const suggestions = getQuickExpenseDescriptionSuggestions(input.value);
+    if (!suggestions.length) {
+        hideQuickExpenseDescriptionSuggestions(rowId);
+        return;
+    }
+    list.innerHTML = suggestions.map(item => `
+        <button type="button" class="quick-expense-description-option" data-description="${escapeHTML(item.description)}" data-unit="${escapeHTML(item.unit)}" onclick="selectQuickExpenseDescriptionSuggestion('${rowId}', this)">
+            <span>${escapeHTML(item.description)}</span>
+            <small>หน่วย: ${escapeHTML(item.unit)}</small>
+        </button>
+    `).join('');
+    list.hidden = false;
+}
+
+function selectQuickExpenseDescriptionSuggestion(rowId, option) {
+    const descriptionInput = getQuickExpenseRowField(rowId, 'description');
+    const unitInput = getQuickExpenseRowField(rowId, 'unit');
+    if (descriptionInput) descriptionInput.value = String((option && option.dataset.description) || '');
+    if (unitInput) unitInput.value = String((option && option.dataset.unit) || 'รายการ');
+    hideQuickExpenseDescriptionSuggestions(rowId);
+    ensureQuickExpenseTrailingRow(rowId);
+    scheduleQuickExpenseDraftSave();
+}
+window.handleQuickExpenseDescriptionInput = handleQuickExpenseDescriptionInput;
+window.hideQuickExpenseDescriptionSuggestions = hideQuickExpenseDescriptionSuggestions;
+window.selectQuickExpenseDescriptionSuggestion = selectQuickExpenseDescriptionSuggestion;
 
 function getQuickExpenseRowElement(rowId) {
     return document.querySelector(`.quick-expense-batch-row[data-row-id="${rowId}"]`);
@@ -5007,7 +5255,13 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
     const billingProfileControl = buildQuickExpenseRowBillingProfileControl(documentPrefix, !initial.documentPrefix);
     return `
         <tr class="quick-expense-batch-row" data-row-id="${rowId}" data-request-id="${escapeHTML(requestId)}" data-saved="false">
-            <td class="quick-expense-row-index">1</td>
+            <td class="quick-expense-row-index">
+                <div class="quick-expense-row-order">
+                    <button type="button" class="quick-expense-order-button" data-order="up" onclick="moveQuickExpenseRow('${rowId}', -1)" title="เลื่อนขึ้น" aria-label="เลื่อนรายการขึ้น"><i data-lucide="chevron-up"></i></button>
+                    <strong data-role="row-number">1</strong>
+                    <button type="button" class="quick-expense-order-button" data-order="down" onclick="moveQuickExpenseRow('${rowId}', 1)" title="เลื่อนลง" aria-label="เลื่อนรายการลง"><i data-lucide="chevron-down"></i></button>
+                </div>
+            </td>
             <td class="quick-expense-doc-cell" data-role="document-number">
                 <strong class="quick-expense-doc-preview">${escapeHTML(getQuickExpenseDocumentPreview(postingMonth, documentPrefix))}</strong>
                 ${billingProfileControl}
@@ -5017,7 +5271,8 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
             <td><input type="text" class="form-input" data-field="vendorName" list="quick-expense-vendor-options" value="${escapeHTML(vendorName)}" placeholder="พิมพ์หรือเลือกผู้ขาย"></td>
             <td>
                 <div class="quick-expense-description-wrap">
-                    <input type="text" class="form-input" data-field="description" value="${escapeHTML(description)}" placeholder="รายละเอียดรายการ">
+                    <input type="text" class="form-input" data-field="description" value="${escapeHTML(description)}" placeholder="รายละเอียดรายการ" autocomplete="off" aria-autocomplete="list" aria-controls="${rowId}-description-suggestions" oninput="handleQuickExpenseDescriptionInput('${rowId}')" onfocus="handleQuickExpenseDescriptionInput('${rowId}')" onblur="window.setTimeout(() => hideQuickExpenseDescriptionSuggestions('${rowId}'), 180)">
+                    <div class="quick-expense-description-suggestions" id="${rowId}-description-suggestions" data-role="description-suggestions" role="listbox" hidden></div>
                     <button type="button" class="btn btn-outline quick-expense-subitems-button" onclick="openQuickExpenseMultiItems('${rowId}')">
                         <i data-lucide="list-plus"></i> เพิ่มรายการย่อย
                     </button>
@@ -5040,7 +5295,8 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
             </td>
             <td>
                 <div class="quick-expense-row-actions">
-                    <button type="button" class="btn btn-icon quick-expense-open-full" onclick="openExpenseModalFromQuickExpenseRow('${rowId}')" title="เปิดในฟอร์มเต็ม"><i data-lucide="maximize-2"></i></button>
+                    <button type="button" class="btn btn-icon quick-expense-open-full" onclick="openExpenseModalFromQuickExpenseRow('${rowId}')" title="เปิดรายการแบบป๊อปอัป" aria-label="เปิดรายการแบบป๊อปอัป"><i data-lucide="square-pen"></i></button>
+                    <button type="button" class="btn btn-icon quick-expense-add-row" onclick="addQuickExpenseRow()" title="เพิ่มใบเสร็จใหม่" aria-label="เพิ่มใบเสร็จใหม่"><i data-lucide="plus"></i></button>
                     <button type="button" class="btn btn-icon quick-expense-retry-attachments" data-row-retry-attachments onclick="retryQuickExpenseRowAttachments('${rowId}')" title="ลองอัปโหลดหลักฐานอีกครั้ง" hidden disabled><i data-lucide="refresh-cw"></i></button>
                     <button type="button" class="btn btn-icon quick-expense-remove-row" data-row-remove onclick="removeQuickExpenseRow('${rowId}')" title="ลบแถว"><i data-lucide="trash-2"></i></button>
                 </div>
@@ -5061,9 +5317,11 @@ function refreshQuickExpenseDocumentPreviews() {
     });
 }
 
-function addQuickExpenseRow(initial = {}) {
+function addQuickExpenseRow(initial = {}, options = {}) {
     const tbody = document.getElementById('quick-expense-rows');
     if (!tbody) return '';
+    const shouldFocus = options.focus !== false;
+    const shouldPersist = options.persist !== false;
     const rowId = `quick-exp-${++quickExpenseRowSequence}`;
     quickExpenseRows.push(rowId);
     quickExpenseAttachmentsByRow[rowId] = [];
@@ -5072,6 +5330,13 @@ function addQuickExpenseRow(initial = {}) {
     updateQuickExpenseRowTotal(rowId);
     renumberQuickExpenseRows();
     initializeLucide();
+    if (shouldFocus) {
+        window.setTimeout(() => {
+            const receiptInput = getQuickExpenseRowField(rowId, 'receiptNo');
+            if (receiptInput && typeof receiptInput.focus === 'function') receiptInput.focus();
+        }, 0);
+    }
+    if (shouldPersist) scheduleQuickExpenseDraftSave();
     return rowId;
 }
 
@@ -5079,11 +5344,39 @@ function renumberQuickExpenseRows() {
     quickExpenseRows = quickExpenseRows.filter(rowId => !!getQuickExpenseRowElement(rowId));
     quickExpenseRows.forEach((rowId, index) => {
         const row = getQuickExpenseRowElement(rowId);
-        const cell = row && row.querySelector('.quick-expense-row-index');
-        if (cell) cell.textContent = String(index + 1);
+        const number = row && row.querySelector('[data-role="row-number"]');
+        if (number) number.textContent = String(index + 1);
+        const upButton = row && row.querySelector('[data-order="up"]');
+        const downButton = row && row.querySelector('[data-order="down"]');
+        const saved = row && row.dataset.saved === 'true';
+        const previousRow = index > 0 ? getQuickExpenseRowElement(quickExpenseRows[index - 1]) : null;
+        const nextRow = index < quickExpenseRows.length - 1 ? getQuickExpenseRowElement(quickExpenseRows[index + 1]) : null;
+        if (upButton) upButton.disabled = saved || index === 0 || (previousRow && previousRow.dataset.saved === 'true');
+        if (downButton) downButton.disabled = saved || index === quickExpenseRows.length - 1 || (nextRow && nextRow.dataset.saved === 'true');
     });
     updateQuickExpenseBatchSummary();
 }
+
+function moveQuickExpenseRow(rowId, direction) {
+    const currentIndex = quickExpenseRows.indexOf(rowId);
+    const targetIndex = currentIndex + Number(direction || 0);
+    const row = getQuickExpenseRowElement(rowId);
+    if (!row || row.dataset.saved === 'true' || currentIndex < 0 || targetIndex < 0 || targetIndex >= quickExpenseRows.length) return;
+    const targetRow = getQuickExpenseRowElement(quickExpenseRows[targetIndex]);
+    if (!targetRow || targetRow.dataset.saved === 'true') return;
+    const [movedRowId] = quickExpenseRows.splice(currentIndex, 1);
+    quickExpenseRows.splice(targetIndex, 0, movedRowId);
+    const tbody = document.getElementById('quick-expense-rows');
+    if (tbody) {
+        quickExpenseRows.forEach(id => {
+            const item = getQuickExpenseRowElement(id);
+            if (item) tbody.appendChild(item);
+        });
+    }
+    renumberQuickExpenseRows();
+    scheduleQuickExpenseDraftSave();
+}
+window.moveQuickExpenseRow = moveQuickExpenseRow;
 
 function updateQuickExpenseRowTotal(rowId) {
     const row = getQuickExpenseRowElement(rowId);
@@ -5095,11 +5388,12 @@ function updateQuickExpenseRowTotal(rowId) {
 }
 
 function updateQuickExpenseBatchSummary() {
-    const pendingRows = quickExpenseRows
+    const visibleRows = quickExpenseRows
         .map(getQuickExpenseRowElement)
-        .filter(row => row && row.dataset.saved !== 'true')
+        .filter(Boolean)
         .filter(row => !isQuickExpenseDraftEmpty(getQuickExpenseRowDraft(row.dataset.rowId)));
-    const total = pendingRows.reduce((sum, row) => sum + getQuickExpenseRowDraft(row.dataset.rowId).amount, 0);
+    const pendingRows = visibleRows.filter(row => row.dataset.saved !== 'true');
+    const total = visibleRows.reduce((sum, row) => sum + getQuickExpenseRowDraft(row.dataset.rowId).amount, 0);
     const summary = document.getElementById('quick-expense-row-summary');
     const totalElement = document.getElementById('quick-expense-grand-total');
     if (summary) summary.textContent = `${pendingRows.length} รายการรอบันทึก`;
@@ -5124,12 +5418,16 @@ function removeQuickExpenseRow(rowId) {
         return item && item.dataset.saved !== 'true';
     })) addQuickExpenseRow();
     renumberQuickExpenseRows();
+    scheduleQuickExpenseDraftSave();
 }
 
 function clearSavedQuickExpenseRows() {
     quickExpenseRows.slice().forEach(rowId => {
         const row = getQuickExpenseRowElement(rowId);
-        if (row && row.dataset.saved === 'true') removeQuickExpenseRow(rowId);
+        if (row && row.dataset.saved === 'true') {
+            if (row.dataset.expenseId) quickExpenseHiddenSavedIds.add(row.dataset.expenseId);
+            removeQuickExpenseRow(rowId);
+        }
     });
     renumberQuickExpenseRows();
 }
@@ -5148,7 +5446,7 @@ function markQuickExpenseRowSaved(rowId, documentNo, attachmentErrorCount = 0, e
     if (!row) return;
     row.dataset.saved = 'true';
     if (expenseId) row.dataset.expenseId = expenseId;
-    row.classList.remove('is-saving', 'has-error');
+    row.classList.remove('is-saving', 'has-error', 'is-local-draft');
     row.classList.add('is-saved');
     const docCell = row.querySelector('[data-role="document-number"]');
     if (docCell) docCell.innerHTML = `<button type="button" class="quick-expense-doc-edit" data-role="document-edit" onclick="editQuickExpenseDocumentNo('${rowId}')" title="คลิกเพื่อแก้ไขเลขบิล"><strong>${escapeHTML(documentNo || 'บันทึกแล้ว')}</strong><small>คลิกเพื่อแก้ไข</small></button>`;
@@ -5168,6 +5466,7 @@ function markQuickExpenseRowSaved(rowId, documentNo, attachmentErrorCount = 0, e
     const status = row.querySelector('[data-role="row-status"]');
     if (status) status.textContent = attachmentErrorCount ? `บันทึกแล้ว · แนบไฟล์ไม่สำเร็จ ${attachmentErrorCount} ไฟล์` : 'บันทึกแล้ว';
     updateQuickExpenseBatchSummary();
+    scheduleQuickExpenseDraftSave();
 }
 
 async function editQuickExpenseDocumentNo(rowId) {
@@ -5193,24 +5492,139 @@ async function editQuickExpenseDocumentNo(rowId) {
 }
 window.editQuickExpenseDocumentNo = editQuickExpenseDocumentNo;
 
-function resetQuickExpenseEntry() {
+function getQuickExpenseSavedRowInitial(expense) {
+    const parsedNote = parseNoteData(expense.note || '');
+    const vendorName = expense.vendorName || (expense.vendorId ? getVendorName(expense.vendorId) : '');
+    return {
+        requestId: expense.requestId || '',
+        postingMonth: getExpensePostingMonth(expense),
+        documentPrefix: expense.documentPrefix || getOrganizationShortName(expense.organizationId),
+        receiptNo: expense.receiptNo || '',
+        expenseDate: String(expense.expenseDate || '').slice(0, 10),
+        vendorName: vendorName === '-' ? '' : vendorName,
+        description: expense.description || '',
+        quantity: Number(expense.quantity) || 1,
+        unit: expense.unit || 'รายการ',
+        unitPrice: Number(expense.unitPrice) || 0,
+        note: parsedNote.text || '',
+        multiItems: Array.isArray(parsedNote.multiItems) ? parsedNote.multiItems : []
+    };
+}
+
+function addQuickExpenseSavedRow(expense) {
+    if (!expense || !expense.id) return '';
+    const rowId = addQuickExpenseRow(getQuickExpenseSavedRowInitial(expense), { focus: false, persist: false });
+    const row = getQuickExpenseRowElement(rowId);
+    if (row) row.dataset.postingMonth = getExpensePostingMonth(expense);
+    markQuickExpenseRowSaved(rowId, expense.documentNo || 'บันทึกแล้ว', 0, expense.id);
+    return rowId;
+}
+
+function syncQuickExpenseSavedRows() {
+    if (quickExpenseRows.length === 0) return;
+    const savedExpenses = (state.expenses || []).filter(expense =>
+        isExpenseInSelectedMonth(expense) && !quickExpenseHiddenSavedIds.has(String(expense.id || ''))
+    );
+    const expectedIds = new Set(savedExpenses.map(expense => String(expense.id || '')));
+
+    quickExpenseRows.slice().forEach(rowId => {
+        const row = getQuickExpenseRowElement(rowId);
+        if (!row || row.dataset.saved !== 'true' || expectedIds.has(String(row.dataset.expenseId || ''))) return;
+        row.remove();
+        releaseQuickExpenseRowFiles(rowId);
+        delete quickExpenseAttachmentsByRow[rowId];
+        delete quickExpenseMultiItemsByRow[rowId];
+        quickExpenseRows = quickExpenseRows.filter(id => id !== rowId);
+    });
+
+    const rowIdByExpenseId = new Map();
+    quickExpenseRows.forEach(rowId => {
+        const row = getQuickExpenseRowElement(rowId);
+        if (row && row.dataset.saved === 'true' && row.dataset.expenseId) {
+            rowIdByExpenseId.set(String(row.dataset.expenseId), rowId);
+        }
+    });
+    const savedRowIds = savedExpenses.map(expense => {
+        const expenseId = String(expense.id);
+        const existingRowId = rowIdByExpenseId.get(expenseId);
+        return existingRowId || addQuickExpenseSavedRow(expense);
+    }).filter(Boolean);
+    const pendingRowIds = quickExpenseRows.filter(rowId => {
+        const row = getQuickExpenseRowElement(rowId);
+        return row && row.dataset.saved !== 'true';
+    });
+    quickExpenseRows = [...savedRowIds, ...pendingRowIds];
+    const tbody = document.getElementById('quick-expense-rows');
+    if (tbody) {
+        quickExpenseRows.forEach(rowId => {
+            const row = getQuickExpenseRowElement(rowId);
+            if (row) tbody.appendChild(row);
+        });
+    }
+    renumberQuickExpenseRows();
+}
+
+function initializeQuickExpenseEntry(options = {}) {
     const form = document.getElementById('quick-expense-form');
     if (!form) return;
-    quickExpenseRows.forEach(releaseQuickExpenseRowFiles);
-    form.reset();
-    quickExpenseRows = [];
-    quickExpenseAttachmentsByRow = {};
-    quickExpenseMultiItemsByRow = {};
-    quickExpenseFileProcessingCount = 0;
-    const tbody = document.getElementById('quick-expense-rows');
-    if (tbody) tbody.innerHTML = '';
-    populateQuickExpenseBillingProfileContext();
-    populateQuickExpenseProjectOptions();
-    populateQuickExpenseVendorOptions();
-    syncQuickExpenseEntryPeriod(true);
-    setupExpenseMasterInput('category', '', 'inline-exp');
-    setupExpenseMasterInput('fundSource', '', 'inline-exp');
-    addQuickExpenseRow();
+    isRestoringQuickExpenseDraft = true;
+    try {
+        quickExpenseRows.forEach(releaseQuickExpenseRowFiles);
+        form.reset();
+        quickExpenseRows = [];
+        quickExpenseAttachmentsByRow = {};
+        quickExpenseMultiItemsByRow = {};
+        quickExpenseFileProcessingCount = 0;
+        const tbody = document.getElementById('quick-expense-rows');
+        if (tbody) tbody.innerHTML = '';
+
+        const savedDraft = options.ignoreSaved ? null : loadQuickExpenseLocalDraft();
+        const shared = (savedDraft && savedDraft.shared) || {};
+        populateQuickExpenseBillingProfileContext(shared.documentPrefix || '');
+        populateQuickExpenseProjectOptions(shared.projectId || '');
+        populateQuickExpenseVendorOptions();
+        syncQuickExpenseEntryPeriod(true);
+        setupExpenseMasterInput('category', shared.categoryId || '', 'inline-exp');
+        setupExpenseMasterInput('fundSource', shared.fundSourceId || '', 'inline-exp');
+
+        const setValue = (id, value) => {
+            const element = document.getElementById(id);
+            if (element && value !== undefined && value !== null && value !== '') element.value = value;
+        };
+        setValue('inline-exp-category-input', shared.categoryName);
+        setValue('inline-exp-fund-input', shared.fundSourceName);
+        setValue('inline-exp-claimable', shared.claimable);
+        setValue('inline-exp-posting-month', shared.postingMonth);
+
+        (state.expenses || [])
+            .filter(expense => isExpenseInSelectedMonth(expense) && !quickExpenseHiddenSavedIds.has(String(expense.id || '')))
+            .forEach(addQuickExpenseSavedRow);
+        const rows = savedDraft && Array.isArray(savedDraft.rows) ? savedDraft.rows : [];
+        rows.forEach(row => addQuickExpenseRow(row, { focus: false, persist: false }));
+        addQuickExpenseRow({}, { focus: false, persist: false });
+        if (rows.length) {
+            rows.forEach((row, index) => {
+                const rowId = quickExpenseRows[index];
+                const element = getQuickExpenseRowElement(rowId);
+                if (element) element.classList.add('is-local-draft');
+                const status = element && element.querySelector('[data-role="row-status"]');
+                if (status) status.textContent = 'ฉบับร่าง · กู้คืนอัตโนมัติแล้ว';
+            });
+        }
+        renumberQuickExpenseRows();
+        bindQuickExpenseDraftAutosave();
+    } finally {
+        isRestoringQuickExpenseDraft = false;
+    }
+}
+
+function resetQuickExpenseEntry() {
+    if (quickExpenseDraftSaveTimer) {
+        window.clearTimeout(quickExpenseDraftSaveTimer);
+        quickExpenseDraftSaveTimer = null;
+    }
+    clearQuickExpenseLocalDraft();
+    initializeQuickExpenseEntry({ ignoreSaved: true });
 }
 
 function resetQuickFoodEntry() {
@@ -5232,7 +5646,7 @@ function toggleQuickExpenseEntry(force) {
     const open = typeof force === 'boolean' ? force : panel.hidden;
     panel.hidden = !open;
     if (open) {
-        if (quickExpenseRows.length === 0) resetQuickExpenseEntry();
+        if (quickExpenseRows.length === 0) initializeQuickExpenseEntry();
         panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
     initializeLucide();
@@ -6267,6 +6681,8 @@ function saveMultiItems() {
         }
         quickExpenseMultiItemsByRow[currentQuickExpenseRowId] = validItems;
         updateQuickExpenseRowTotal(currentQuickExpenseRowId);
+        ensureQuickExpenseTrailingRow(currentQuickExpenseRowId);
+        scheduleQuickExpenseDraftSave();
         closeMultiItemsModal();
         return;
     }
@@ -7464,6 +7880,7 @@ function getExportVerifyCacheKey(payload) {
         payload.month || '',
         payload.orgId || '',
         Number(payload.itemCount) || 0,
+        Number(payload.attachmentCount) || 0,
         Number(payload.totalAmount) || 0,
     ].join('|');
 }
@@ -8249,7 +8666,12 @@ async function buildAttachmentItems(rows, section, showImg, showPdf) {
 
     return prepared
         .filter(item => item.images.length > 0 || item.fileRefs.length > 0)
-        .map(item => ({ detail: item.detail, images: item.images, fileRefs: item.fileRefs }));
+        .map(item => ({
+            detail: item.detail,
+            images: item.images,
+            fileRefs: item.fileRefs,
+            fileCount: item.images.length + item.fileRefs.length,
+        }));
 }
 
 // ==========================================================================
@@ -8307,6 +8729,7 @@ async function buildReportModel() {
             ? await ensureAttachmentsLoaded(rows, spec.key)
             : [];
         const attachmentItems = await buildAttachmentItems(rows, spec.key, showImg, showPdf);
+        const attachmentCount = attachmentItems.reduce((sum, item) => sum + (Number(item.fileCount) || 0), 0);
         sections.push({
             key: spec.key,
             label: spec.label + (spec.key === 'bills' && monthLabel ? ' ประจำเดือน ' + monthLabel : ''),
@@ -8316,6 +8739,7 @@ async function buildReportModel() {
             detailed: reportOptions.detailed,
             attachmentOnly: reportOptions.attachmentOnly,
             attachmentItems,
+            attachmentCount,
             attachmentWarnings: attachmentLoadErrors,
         });
     }
@@ -8325,11 +8749,12 @@ async function buildReportModel() {
     if (showQr && docNum) {
         try {
             const itemCount = sections.reduce((s, sec) => s + sec.rows.length, 0);
+            const attachmentCount = sections.reduce((s, sec) => s + (Number(sec.attachmentCount) || 0), 0);
             const totalAmount = sections.reduce((s, sec) => s + sec.rows.reduce((s2, r) => s2 + (parseFloat(r.amount ?? r.foodAmount) || 0), 0), 0);
             const orgFilterSel = document.getElementById('export-org-filter');
             const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
             const orgId = (orgFilterSel && getCurrentUserRole() === 'admin' && orgFilterSel.value) ? orgFilterSel.value : (currentUser.organizationId || '');
-            const res = await getCachedExportVerifyCode({ docNumber: docNum, month: reportMonth, orgId, itemCount, totalAmount });
+            const res = await getCachedExportVerifyCode({ docNumber: docNum, month: reportMonth, orgId, itemCount, attachmentCount, totalAmount });
             verifyCode = res.code || '';
             qrDataUrl = await generateVerifyQR('export', res.code);
         } catch (err) {
@@ -8339,7 +8764,10 @@ async function buildReportModel() {
     }
 
     return {
-        header: { orgName, title, subHeading, docNum, monthLabel, logoSrc, qrDataUrl, verifyCode },
+        header: {
+            orgName, title, subHeading, docNum, monthLabel, logoSrc, qrDataUrl, verifyCode,
+            attachmentCount: sections.reduce((sum, section) => sum + (Number(section.attachmentCount) || 0), 0),
+        },
         signature: inclSig ? { preparer, reviewer, approver, preparerImage, reviewerImage, approverImage } : null,
         sections,
         reportOptions,
@@ -9873,6 +10301,9 @@ function buildPdfDocDefinition(model) {
     if (header.verifyCode) {
         rightStack.push({ text: 'รหัสตรวจสอบ: ' + header.verifyCode, fontSize: 6.5, color: '#6b7280', alignment: 'right', margin: [0, 2, 0, 0] });
     }
+    if (header.qrDataUrl) {
+        rightStack.push({ text: `หลักฐานแนบ: ${Number(header.attachmentCount) || 0} ไฟล์`, fontSize: 6.5, color: '#6b7280', alignment: 'right', margin: [0, 1, 0, 0] });
+    }
     if (rightStack.length) headerCols.push({ width: 'auto', stack: rightStack });
 
     content.push({ columns: headerCols, columnGap: 10 });
@@ -9891,7 +10322,7 @@ function buildPdfDocDefinition(model) {
                 { text: section.label, fontSize: 8.5 },
                 { text: String(section.rows.length), fontSize: 8.5, alignment: 'right' },
                 { text: formatNumber(total), fontSize: 8.5, alignment: 'right' },
-                { text: String(section.attachmentItems.length), fontSize: 8.5, alignment: 'right' },
+                { text: String(Number(section.attachmentCount) || 0), fontSize: 8.5, alignment: 'right' },
             ]);
         });
         content.push({ text: 'สรุปสำหรับตรวจสอบบัญชี', fontSize: 11, bold: true, color: '#1a1a2e', margin: [0, 0, 0, 6] });
