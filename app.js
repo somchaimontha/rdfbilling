@@ -833,7 +833,7 @@ function renderVerifyResult(result, type) {
                 <h2 style="margin:12px 0 4px;color:#ef4444;">ไม่สามารถตรวจสอบเอกสารได้</h2>
                 <p style="color:#6b7280;font-size:14px;">${escapeHTML(msg)}</p>
             </div>`;
-        if (window.lucide) lucide.createIcons();
+        initializeLucide();
         return;
     }
 
@@ -885,7 +885,7 @@ function renderVerifyResult(result, type) {
             <button type="button" class="btn btn-primary" onclick="continueExportVerifyLogin(${JSON.stringify(d.verifyCode || d.docNumber || '').replace(/"/g, '&quot;')})">เข้าสู่ระบบเพื่อดูรายละเอียด</button>
         </div>` : ''}
         <p style="color:#9ca3af;font-size:11px;text-align:center;margin-top:20px;">RDF Expense System — วิทยาลัยการอาชีพแม่สะเรียง</p>`;
-    if (window.lucide) lucide.createIcons();
+    initializeLucide();
 }
 
 function continueExportVerifyLogin(code) {
@@ -1342,10 +1342,61 @@ function saveState() {
     localStorage.setItem('rdf_expense_ui_settings', JSON.stringify(uiSettings));
 }
 
+const LUCIDE_TEXT_FALLBACKS = Object.freeze({
+    'alert-triangle': '!', 'bar-chart-3': '▥', briefcase: '▣', calculator: '▦',
+    calendar: '▣', 'calendar-days': '▣', camera: '◉', check: '✓', 'check-circle-2': '✓',
+    'chevron-down': '⌄', 'chevron-up': '⌃', cloud: '☁', coins: '◎', database: '▤',
+    download: '⇩', edit: '✎', 'edit-2': '✎', eraser: '⌫', 'external-link': '↗', eye: '◉',
+    'file-badge': '▧', 'file-check': '✓', 'file-down': '⇩', 'file-spreadsheet': '▦',
+    'file-text': '▤', 'file-x': '×', 'folder-open': '▱', 'folder-plus': '+',
+    'graduation-cap': '◇', image: '▧', info: 'i', 'layout-dashboard': '▦',
+    'list-checks': '☷', 'list-plus': '+', loader: '◌', lock: '▣', 'log-in': '→',
+    'log-out': '←', 'maximize-2': '↗', menu: '☰', moon: '◐', package: '◇',
+    paperclip: '⌕', pencil: '✎', 'pen-line': '✎', plug: '⌁', plus: '+',
+    'plus-circle': '+', printer: '▣', receipt: '▤', 'refresh-cw': '↻',
+    'rotate-ccw': '↶', save: '▣', school: '◇', settings: '⚙', shield: '◇',
+    'shield-check': '✓', sliders: '☷', 'sliders-horizontal': '☷', smartphone: '▯',
+    'square-pen': '✎', store: '▱', sun: '☀', 'table-2': '▦', tag: '◇',
+    'trash-2': '×', upload: '⇧', 'upload-cloud': '⇧', user: '●',
+    'user-check': '✓', 'user-circle': '●', 'user-plus': '+', users: '●',
+    'user-x': '×', utensils: '⋈', wallet: '▣', x: '×', 'x-circle': '×', zap: 'ϟ'
+});
+let lucideRetryTimer = null;
+let lucideRetryCount = 0;
+
+function renderLucideTextFallbacks() {
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+    document.querySelectorAll('i[data-lucide]').forEach(icon => {
+        const name = icon.getAttribute('data-lucide');
+        icon.textContent = LUCIDE_TEXT_FALLBACKS[name] || '◆';
+        if (icon.classList) icon.classList.add('lucide-text-fallback');
+    });
+}
+
 function initializeLucide() {
     const iconApi = (typeof window !== 'undefined' && window.lucide) || (typeof lucide !== 'undefined' && lucide);
-    if (!iconApi || typeof iconApi.createIcons !== 'function') return;
-    iconApi.createIcons();
+    if (!iconApi || typeof iconApi.createIcons !== 'function') {
+        renderLucideTextFallbacks();
+        if (typeof window !== 'undefined' && typeof window.setTimeout === 'function' && lucideRetryCount < 7) {
+            if (lucideRetryTimer) window.clearTimeout(lucideRetryTimer);
+            const delay = Math.min(3000, 150 * (2 ** lucideRetryCount++));
+            lucideRetryTimer = window.setTimeout(initializeLucide, delay);
+        }
+        return false;
+    }
+    try {
+        iconApi.createIcons();
+        lucideRetryCount = 0;
+        if (lucideRetryTimer && typeof window !== 'undefined') window.clearTimeout(lucideRetryTimer);
+        lucideRetryTimer = null;
+        if (typeof document !== 'undefined') {
+            document.querySelectorAll('.lucide-text-fallback').forEach(icon => icon.classList.remove('lucide-text-fallback'));
+        }
+    } catch (error) {
+        console.warn('[icons] render failed', error);
+        renderLucideTextFallbacks();
+        return false;
+    }
     // Rows are inserted after the first page render. A second pass keeps the
     // tool icons visible even when the CDN finishes loading a tick later.
     if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
@@ -1353,6 +1404,12 @@ function initializeLucide() {
             try { iconApi.createIcons(); } catch (error) { console.warn('[icons] refresh failed', error); }
         });
     }
+    return true;
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('lucide-ready', initializeLucide);
+    window.addEventListener('lucide-unavailable', renderLucideTextFallbacks);
 }
 
 // ==========================================================================
@@ -1939,7 +1996,7 @@ function updateFundReceiptWidget() {
     } else {
         body.innerHTML = `<div style="color:var(--text-muted); font-size:13px;">ยังไม่มีเอกสารรับเงินทุนของเดือนนี้</div>`;
     }
-    if (window.lucide) lucide.createIcons();
+    initializeLucide();
 }
 
 // สร้างเอกสารยืนยันการรับเงินทุน 1 หน้า (สรุป+QR) — ไม่ฝังไฟล์แนบต้นฉบับซ้ำ (ยังเป็นลิงก์แยกเหมือนเดิม)
@@ -2028,7 +2085,7 @@ function openFundReceiptModal(monthKey) {
     renderFundReceiptFilePreview(rec);
 
     document.getElementById('modal-fund-receipt').classList.add('active');
-    if (window.lucide) lucide.createIcons();
+    initializeLucide();
 }
 
 function closeFundReceiptModal() {
@@ -2157,7 +2214,7 @@ function renderFundReceiptsOverview() {
 
     tbody.innerHTML = rows;
     if (totalEl) totalEl.textContent = total.toLocaleString('th-TH', {minimumFractionDigits:2}) + ' บาท';
-    if (window.lucide) lucide.createIcons();
+    initializeLucide();
 }
 
 // ==========================================================================
@@ -3978,7 +4035,7 @@ function renderTempBillAttachmentsPreview(expId) {
         if(container) container.appendChild(div);
     });
     
-    lucide.createIcons();
+    initializeLucide();
 }
 
 // ==========================================================================
@@ -4682,7 +4739,6 @@ function renderCompactExpenseRow(exp, idx, tbody) {
 
     tr.innerHTML = `
         <td data-label="เลขบิล / ใบเสร็จ">
-            <button type="button" class="btn btn-icon btn-icon-edit" data-idx="${idx}" title="แก้ไขรายการ"><i data-lucide="pencil" style="width:14px;height:14px;"></i></button>
             <span class="record-primary">${escapeHTML(exp.documentNo || 'รอเลขบิล')}</span>
             <span class="record-secondary receipt-reference">เล่มที่/เลขที่ ${escapeHTML(exp.receiptNo || '-')}</span>
         </td>
@@ -4706,8 +4762,8 @@ function renderCompactExpenseRow(exp, idx, tbody) {
         </td>
         <td class="text-center" data-label="เครื่องมือ">
             <div class="record-tools">
-                <button type="button" class="btn btn-icon btn-icon-edit" data-idx="${idx}" title="แก้ไขรายการ"><i data-lucide="edit-2" style="width:14px;height:14px;"></i></button>
-                <button type="button" class="btn btn-icon btn-icon-delete" data-idx="${idx}" title="ลบรายการ"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
+                <button type="button" class="btn btn-icon btn-icon-edit" data-idx="${idx}" title="แก้ไขรายการ" aria-label="แก้ไขรายการ"><i data-lucide="square-pen"></i></button>
+                <button type="button" class="btn btn-icon btn-icon-delete" data-idx="${idx}" title="ลบรายการ" aria-label="ลบรายการ"><i data-lucide="trash-2"></i></button>
             </div>
         </td>
     `;
@@ -5421,17 +5477,6 @@ function removeQuickExpenseRow(rowId) {
     scheduleQuickExpenseDraftSave();
 }
 
-function clearSavedQuickExpenseRows() {
-    quickExpenseRows.slice().forEach(rowId => {
-        const row = getQuickExpenseRowElement(rowId);
-        if (row && row.dataset.saved === 'true') {
-            if (row.dataset.expenseId) quickExpenseHiddenSavedIds.add(row.dataset.expenseId);
-            removeQuickExpenseRow(rowId);
-        }
-    });
-    renumberQuickExpenseRows();
-}
-
 function setQuickExpenseRowStatus(rowId, message, status = '') {
     const row = getQuickExpenseRowElement(rowId);
     if (!row) return;
@@ -5618,7 +5663,19 @@ function initializeQuickExpenseEntry(options = {}) {
     }
 }
 
-function resetQuickExpenseEntry() {
+async function resetQuickExpenseEntry() {
+    const confirmed = await appConfirm(
+        'ต้องการล้างแถวทั้งหมดในตารางนี้หรือไม่? ฉบับร่างจะถูกล้าง แต่รายการที่บันทึกแล้วจะยังอยู่ในฐานข้อมูล',
+        'ยืนยันล้างตาราง'
+    );
+    if (!confirmed) return;
+
+    quickExpenseRows.forEach(rowId => {
+        const row = getQuickExpenseRowElement(rowId);
+        if (row && row.dataset.saved === 'true' && row.dataset.expenseId) {
+            quickExpenseHiddenSavedIds.add(row.dataset.expenseId);
+        }
+    });
     if (quickExpenseDraftSaveTimer) {
         window.clearTimeout(quickExpenseDraftSaveTimer);
         quickExpenseDraftSaveTimer = null;
@@ -7271,7 +7328,7 @@ function renderClaims() {
         `;
         tbody.appendChild(tr);
     });
-    if (window.lucide) window.lucide.createIcons();
+    initializeLucide();
 }
 
 // ---- Claim workflow: submit / approve / reject ----
@@ -9001,7 +9058,7 @@ function renderUserManagementRows() {
             </tr>
         `;
     }).join('');
-    if (window.lucide) lucide.createIcons();
+    initializeLucide();
 }
 
 // เติม dropdown เลือกสถานศึกษาในฟอร์มเพิ่ม/แก้ไขผู้ใช้ — ซ่อนไว้ถ้ามีองค์กรเดียว (ไม่มีอะไรให้เลือก)
@@ -9453,7 +9510,7 @@ function renderFoodBillsTable() {
                 </td>
             </tr>`;
     }).join('');
-    if (window.lucide) window.lucide.createIcons();
+    initializeLucide();
 }
 
 window.openFoodExpenseEditor = function(id) {
@@ -9650,7 +9707,7 @@ window.renderFoodEntryList = function() {
     }
 
     if (tbody) tbody.innerHTML = html;
-    if (window.lucide) window.lucide.createIcons();
+    initializeLucide();
 };
 
 window.calcFoodEntryTotal = function() {
@@ -9699,7 +9756,7 @@ window.renderFoodFileList = function() {
             <button type="button" class="btn-icon btn-icon-delete" style="padding:2px;" onclick="removeFoodFile(${idx})"><i data-lucide="x" style="width:14px;height:14px;"></i></button>
         </div>
     `).join('');
-    if (window.lucide) window.lucide.createIcons();
+    initializeLucide();
 };
 
 window.removeFoodFile = function(idx) {
@@ -9735,7 +9792,7 @@ window.editFoodExpense = function(id) {
     if (title) title.textContent = 'แก้ไขรายการค่าอาหาร';
     const submitBtn = document.getElementById('food-entry-submit-btn');
     if (submitBtn) submitBtn.innerHTML = '<i data-lucide="save"></i> บันทึกการแก้ไข';
-    if (window.lucide) window.lucide.createIcons();
+    initializeLucide();
 };
 
 window.submitFoodEntry = async function(e) {
@@ -10006,7 +10063,7 @@ function initBillsSubTabs() {
                     monthInput.value = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
                 }
                 if (typeof loadFoodEntryList === 'function') loadFoodEntryList();
-                if (typeof lucide !== 'undefined') lucide.createIcons();
+                initializeLucide();
             }
         });
     });
@@ -10034,7 +10091,7 @@ function resetFoodEntryEditor(postingMonth) {
     calcFoodEntryTotal();
     const dateInput = document.getElementById('food-entry-date');
     if (dateInput) dateInput.value = getFoodEntryDefaultDate(postingMonth || '');
-    if (window.lucide) window.lucide.createIcons();
+    initializeLucide();
 }
 
 window.openFoodEntryModal = function () {
@@ -10064,7 +10121,7 @@ window.openFoodEntryModal = function () {
     if (typeof loadFoodEntryList === 'function') loadFoodEntryList();
 
     overlay.classList.add('active');
-    if (typeof lucide !== 'undefined') lucide.createIcons();
+    initializeLucide();
 };
 
 window.closeFoodEntryModal = function () {
@@ -10202,7 +10259,7 @@ window.clearExportLogo = function() {
     if (preview) {
         delete preview.dataset.logoSrc;
         preview.innerHTML = '<i data-lucide="image" style="width:22px;height:22px;color:var(--text-muted);" id="export-logo-icon"></i>';
-        if (typeof lucide !== 'undefined') lucide.createIcons();
+        initializeLucide();
     }
     renderExportPreview();
 };
@@ -10746,7 +10803,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (modal) {
                 modal.style.display = 'flex';
                 modal.classList.add('active');
-                if (typeof lucide !== 'undefined') lucide.createIcons();
+                initializeLucide();
                 if (typeof renderExportPreview === 'function') setTimeout(renderExportPreview, 100);
             }
         }

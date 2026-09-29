@@ -6,10 +6,12 @@ const vm = require('node:vm');
 
 const appPath = path.join(__dirname, '..', 'app.js');
 const htmlPath = path.join(__dirname, '..', 'index.html');
+const stylePath = path.join(__dirname, '..', 'style.css');
 const backendExpensePath = path.join(__dirname, '..', 'backend', 'ExpenseService.gs');
 const backendSheetHelperPath = path.join(__dirname, '..', 'backend', 'SheetHelper.gs');
 const source = fs.readFileSync(appPath, 'utf8');
 const html = fs.readFileSync(htmlPath, 'utf8');
+const style = fs.readFileSync(stylePath, 'utf8');
 const backendExpenseSource = fs.readFileSync(backendExpensePath, 'utf8');
 const backendSheetHelperSource = fs.readFileSync(backendSheetHelperPath, 'utf8');
 
@@ -173,6 +175,35 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(source, /const total = visibleRows\.reduce/);
     assert.match(source, /getQuickExpenseDocumentPreview/);
     assert.match(source, /editQuickExpenseDocumentNo/);
+});
+
+test('monthly bill actions are unique, visible, and table clearing is confirmed', () => {
+    const compactStart = source.indexOf('function renderCompactExpenseRow');
+    const compactEnd = source.indexOf('function renderAttachmentRow', compactStart);
+    const compactRenderer = source.slice(compactStart, compactEnd);
+
+    assert.equal((compactRenderer.match(/btn-icon-edit/g) || []).length, 1);
+    assert.doesNotMatch(compactRenderer, /data-lucide="pencil"/);
+    assert.match(compactRenderer, /data-lucide="square-pen"/);
+    assert.doesNotMatch(html, /clearSavedQuickExpenseRows/);
+    assert.match(html, /quick-expense-clear-table/);
+    assert.match(source, /ยืนยันล้างตาราง/);
+    assert.match(style, /\.quick-expense-batch-container\s*\{[^}]*min-height:\s*360px/s);
+    assert.match(style, /\.compact-record-table \.record-tools \.btn-icon-edit/);
+    assert.match(style, /\.compact-record-table \.record-tools \.btn-icon-delete/);
+});
+
+test('icons use a backup CDN and remain visible while the icon library is unavailable', () => {
+    assert.match(html, /cdn\.jsdelivr\.net\/npm\/lucide@0\.468\.0/);
+    assert.match(html, /unpkg\.com\/lucide@0\.468\.0/);
+    assert.match(html, /lucide-unavailable/);
+    assert.match(source, /LUCIDE_TEXT_FALLBACKS/);
+    assert.match(source, /window\.addEventListener\('lucide-ready', initializeLucide\)/);
+    assert.match(source, /function addQuickExpenseRow[\s\S]*?initializeLucide\(\)/);
+    assert.match(style, /i\[data-lucide\]\.lucide-text-fallback/);
+    assert.match(style, /i\[data-lucide\]:empty::before/);
+    assert.match(style, /i\[data-lucide="square-pen"\]:empty::before/);
+    assert.match(style, /i\[data-lucide="trash-2"\]:empty::before/);
 });
 
 test('batch row validation requires all receipt fields and accepts a complete row', () => {

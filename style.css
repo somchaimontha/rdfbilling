@@ -103,6 +103,88 @@ button, input, select, textarea {
     font-family: inherit;
 }
 
+i[data-lucide].lucide-text-fallback {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    min-width: 1em;
+    min-height: 1em;
+    font-family: Arial, sans-serif;
+    font-size: 1em;
+    font-style: normal;
+    font-weight: 800;
+    line-height: 1;
+}
+
+/* Native icon safety net: visible immediately, even when every icon CDN is blocked. */
+i[data-lucide]:empty::before {
+    content: '◆';
+    display: inline-block;
+    font-family: Arial, sans-serif;
+    font-size: 1em;
+    font-style: normal;
+    font-weight: 800;
+    line-height: 1;
+    text-align: center;
+}
+
+i[data-lucide="plus"]:empty::before,
+i[data-lucide="plus-circle"]:empty::before,
+i[data-lucide="user-plus"]:empty::before,
+i[data-lucide="folder-plus"]:empty::before,
+i[data-lucide="list-plus"]:empty::before { content: '+'; }
+
+i[data-lucide="edit"]:empty::before,
+i[data-lucide="edit-2"]:empty::before,
+i[data-lucide="pencil"]:empty::before,
+i[data-lucide="pen-line"]:empty::before,
+i[data-lucide="square-pen"]:empty::before { content: '✎'; }
+
+i[data-lucide="trash-2"]:empty::before,
+i[data-lucide="x"]:empty::before,
+i[data-lucide="x-circle"]:empty::before,
+i[data-lucide="file-x"]:empty::before,
+i[data-lucide="user-x"]:empty::before { content: '×'; }
+
+i[data-lucide="check"]:empty::before,
+i[data-lucide="check-circle-2"]:empty::before,
+i[data-lucide="file-check"]:empty::before,
+i[data-lucide="shield-check"]:empty::before,
+i[data-lucide="user-check"]:empty::before { content: '✓'; }
+
+i[data-lucide="chevron-up"]:empty::before { content: '⌃'; }
+i[data-lucide="chevron-down"]:empty::before { content: '⌄'; }
+i[data-lucide="menu"]:empty::before { content: '☰'; }
+i[data-lucide="settings"]:empty::before { content: '⚙'; }
+i[data-lucide="refresh-cw"]:empty::before { content: '↻'; }
+i[data-lucide="rotate-ccw"]:empty::before { content: '↶'; }
+i[data-lucide="upload"]:empty::before,
+i[data-lucide="upload-cloud"]:empty::before { content: '⇧'; }
+i[data-lucide="download"]:empty::before,
+i[data-lucide="file-down"]:empty::before { content: '⇩'; }
+i[data-lucide="external-link"]:empty::before,
+i[data-lucide="maximize-2"]:empty::before { content: '↗'; }
+i[data-lucide="log-in"]:empty::before { content: '→'; }
+i[data-lucide="log-out"]:empty::before { content: '←'; }
+i[data-lucide="paperclip"]:empty::before { content: '⌕'; }
+i[data-lucide="info"]:empty::before { content: 'i'; }
+i[data-lucide="alert-triangle"]:empty::before { content: '!'; }
+i[data-lucide="loader"]:empty::before { content: '◌'; }
+i[data-lucide="sun"]:empty::before { content: '☀'; }
+i[data-lucide="moon"]:empty::before { content: '◐'; }
+i[data-lucide="zap"]:empty::before { content: 'ϟ'; }
+
+i[data-lucide="layout-dashboard"]:empty::before,
+i[data-lucide="table-2"]:empty::before,
+i[data-lucide="file-spreadsheet"]:empty::before,
+i[data-lucide="calculator"]:empty::before { content: '▦'; }
+
+i[data-lucide="receipt"]:empty::before,
+i[data-lucide="file-text"]:empty::before,
+i[data-lucide="database"]:empty::before,
+i[data-lucide="list-checks"]:empty::before { content: '▤'; }
+
 /* ==========================================================================
    Layout - App Grid
    ========================================================================== */
@@ -923,6 +1005,7 @@ button, input, select, textarea {
 
 .quick-expense-batch-container {
     max-width: 100%;
+    min-height: 360px;
     overflow-x: auto;
     border: 1px solid var(--border-color);
     border-radius: 10px;
@@ -1551,6 +1634,56 @@ button, input, select, textarea {
     justify-content: center;
     gap: 5px;
     flex-wrap: wrap;
+}
+
+.compact-record-table .record-tools .btn-icon {
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
+    border-style: solid;
+    color: #fff;
+    box-shadow: 0 2px 5px rgba(15, 23, 42, 0.14);
+}
+
+.compact-record-table .record-tools .btn-icon svg,
+.compact-record-table .record-tools .btn-icon [data-lucide] {
+    display: block;
+    width: 16px;
+    height: 16px;
+    stroke-width: 2.25;
+}
+
+.compact-record-table .record-tools .btn-icon-edit {
+    border-color: #1d4ed8;
+    background: #2563eb;
+}
+
+.compact-record-table .record-tools .btn-icon-edit:hover {
+    border-color: #1e40af;
+    background: #1d4ed8;
+    color: #fff;
+}
+
+.compact-record-table .record-tools .btn-icon-delete {
+    border-color: #b91c1c;
+    background: #dc2626;
+}
+
+.compact-record-table .record-tools .btn-icon-delete:hover {
+    border-color: #991b1b;
+    background: #b91c1c;
+    color: #fff;
+}
+
+.quick-expense-clear-table {
+    border-color: #d97706;
+    color: #b45309;
+}
+
+.quick-expense-clear-table:hover {
+    border-color: #b45309;
+    background: #fffbeb;
+    color: #92400e;
 }
 
 @media screen and (max-width: 1080px) {

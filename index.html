@@ -7,7 +7,7 @@
     <meta name="description" content="ระบบบันทึกและบริหารรายจ่ายโครงการ มูลนิธิ Dr. Robert Dyckerhoff  วิทยาลัยการอาชีพแม่สะเรียง">
     <!-- SweetAlert2 -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="stylesheet" href="style.css?v=20260928-3">
+    <link rel="stylesheet" href="style.css?v=20260929-3">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- node-qrcode (MIT) ไม่มี browser UMD build — path build/qrcode.min.js เดิม 404 มาตลอด (QRCode จึง undefined)
          โหลดผ่าน ESM bundle ของ jsdelivr (CommonJS→ESM) แล้ว expose เป็น window.QRCode ให้โค้ดเดิมใช้ได้
@@ -20,7 +20,34 @@
     <!-- pdfmake (~1MB) + sarabun-vfs (~489KB) + xlsx (~900KB) ใช้เฉพาะตอนส่งออกรายงาน
          ย้ายไป lazy-load ผ่าน ensureExportLibs() ใน app.js (โหลดครั้งแรกที่กดใช้ export) เพื่อไม่ให้บล็อกการโหลดหน้าแรก
          ไม่โหลด vfs_fonts.js (Roboto ~834KB) แล้ว — เราใช้ Sarabun ล้วน (พิสูจน์ว่า pdfmake ไม่ต้องใช้ Roboto) -->
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+      // Load icons from a pinned CDN build, then automatically try a second CDN.
+      // The application also supplies a small text fallback while both sources load.
+      (() => {
+        const sources = [
+          'https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js',
+          'https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js'
+        ];
+        let sourceIndex = 0;
+        const loadNext = () => {
+          if (window.lucide && typeof window.lucide.createIcons === 'function') {
+            window.dispatchEvent(new Event('lucide-ready'));
+            return;
+          }
+          if (sourceIndex >= sources.length) {
+            window.dispatchEvent(new Event('lucide-unavailable'));
+            return;
+          }
+          const script = document.createElement('script');
+          script.src = sources[sourceIndex++];
+          script.async = true;
+          script.onload = loadNext;
+          script.onerror = loadNext;
+          document.head.appendChild(script);
+        };
+        loadNext();
+      })();
+    </script>
     <style>
         /* Extra inline styles */
         .header-filters {
@@ -443,7 +470,6 @@
                                 <span id="quick-expense-row-summary">0 รายการ</span>
                             </div>
                             <div class="quick-batch-toolbar-actions">
-                                <button type="button" class="btn btn-outline btn-sm" onclick="clearSavedQuickExpenseRows()"><i data-lucide="eraser"></i> ล้างแถวที่บันทึกแล้ว</button>
                                 <button type="button" class="btn btn-primary btn-sm" onclick="addQuickExpenseRow()"><i data-lucide="plus"></i> เพิ่มใบเสร็จ</button>
                             </div>
                         </div>
@@ -479,7 +505,7 @@
                         <datalist id="quick-expense-vendor-options"></datalist>
 
                         <div class="quick-entry-actions">
-                            <button type="button" class="btn btn-outline" onclick="resetQuickExpenseEntry()"><i data-lucide="rotate-ccw"></i> ล้างข้อมูลทั้งหมด</button>
+                            <button type="button" class="btn btn-outline quick-expense-clear-table" onclick="resetQuickExpenseEntry()"><i data-lucide="eraser"></i> ล้างตาราง</button>
                             <button type="submit" id="quick-exp-save-btn" class="btn btn-primary"><i data-lucide="save"></i> บันทึกใบเสร็จที่รอทั้งหมด</button>
                         </div>
                     </form>
@@ -2285,7 +2311,7 @@
 
 <!-- Application Scripts -->
 <script src="thai-baht.js"></script>
-<script src="app.js?v=20260928-2"></script>
+<script src="app.js?v=20260929-2"></script>
 <script>
     // Wire up Master Data modal buttons
     (document.getElementById('modal-master-close') || {}).addEventListener?.('click', closeMasterModal);
