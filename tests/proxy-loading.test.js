@@ -92,7 +92,8 @@ test('timeout covers upstream response body and returns before browser deadline'
     });
     proxy.start();
     await settle();
-    assert.ok(proxy.timeoutMs < 30000);
+    assert.equal(proxy.timeoutMs, 40000);
+    assert.ok(proxy.timeoutMs < 45000);
     proxy.expire();
     await settle();
     assert.equal(upstreamSignal.aborted, true);

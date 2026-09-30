@@ -7,7 +7,7 @@
     <meta name="description" content="ระบบบันทึกและบริหารรายจ่ายโครงการ มูลนิธิ Dr. Robert Dyckerhoff  วิทยาลัยการอาชีพแม่สะเรียง">
     <!-- SweetAlert2 -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="stylesheet" href="style.css?v=20260929-3">
+    <link rel="stylesheet" href="style.css?v=20260930-25">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- node-qrcode (MIT) ไม่มี browser UMD build — path build/qrcode.min.js เดิม 404 มาตลอด (QRCode จึง undefined)
          โหลดผ่าน ESM bundle ของ jsdelivr (CommonJS→ESM) แล้ว expose เป็น window.QRCode ให้โค้ดเดิมใช้ได้
@@ -20,34 +20,6 @@
     <!-- pdfmake (~1MB) + sarabun-vfs (~489KB) + xlsx (~900KB) ใช้เฉพาะตอนส่งออกรายงาน
          ย้ายไป lazy-load ผ่าน ensureExportLibs() ใน app.js (โหลดครั้งแรกที่กดใช้ export) เพื่อไม่ให้บล็อกการโหลดหน้าแรก
          ไม่โหลด vfs_fonts.js (Roboto ~834KB) แล้ว — เราใช้ Sarabun ล้วน (พิสูจน์ว่า pdfmake ไม่ต้องใช้ Roboto) -->
-    <script>
-      // Load icons from a pinned CDN build, then automatically try a second CDN.
-      // The application also supplies a small text fallback while both sources load.
-      (() => {
-        const sources = [
-          'https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js',
-          'https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js'
-        ];
-        let sourceIndex = 0;
-        const loadNext = () => {
-          if (window.lucide && typeof window.lucide.createIcons === 'function') {
-            window.dispatchEvent(new Event('lucide-ready'));
-            return;
-          }
-          if (sourceIndex >= sources.length) {
-            window.dispatchEvent(new Event('lucide-unavailable'));
-            return;
-          }
-          const script = document.createElement('script');
-          script.src = sources[sourceIndex++];
-          script.async = true;
-          script.onload = loadNext;
-          script.onerror = loadNext;
-          document.head.appendChild(script);
-        };
-        loadNext();
-      })();
-    </script>
     <style>
         /* Extra inline styles */
         .header-filters {
@@ -398,7 +370,11 @@
                         <span id="bills-widget-month-badge" style="font-size:12px; color:var(--text-secondary); background:var(--bg-main); padding:3px 10px; border-radius:20px; border:1px solid var(--border-color);"></span>
                     </div>
                     <div class="entry-widget-actions">
-                        <button class="btn btn-primary btn-sm" type="button" onclick="toggleQuickExpenseEntry()" style="display:flex; align-items:center; gap:6px;">
+                        <button class="btn btn-outline btn-sm monthly-bills-records-toggle" id="monthly-bills-records-toggle" type="button" onclick="toggleMonthlyBillsRecords()" aria-controls="monthly-bills-records" aria-expanded="true" title="ซ่อนรายการบิลที่บันทึกแล้ว">
+                            <i data-lucide="chevron-up" style="width:16px; height:16px;"></i>
+                            <span data-role="label">ซ่อนรายการเดิม</span>
+                        </button>
+                        <button class="btn btn-primary btn-sm" type="button" onclick="toggleQuickExpenseEntry(undefined, 'EXP')" style="display:flex; align-items:center; gap:6px;">
                             <i data-lucide="table-2" style="width:16px; height:16px;"></i> เพิ่มในตาราง
                         </button>
                         <button class="btn btn-outline btn-sm" type="button" onclick="openExpenseModal()" style="display:flex; align-items:center; gap:6px;">
@@ -406,6 +382,7 @@
                         </button>
                     </div>
                 </div>
+                <div id="quick-expense-entry-host">
                 <section class="quick-entry-panel" id="quick-expense-entry" hidden aria-labelledby="quick-expense-title">
                     <div class="quick-entry-header">
                         <div>
@@ -470,8 +447,16 @@
                                 <span id="quick-expense-row-summary">0 รายการ</span>
                             </div>
                             <div class="quick-batch-toolbar-actions">
+                                <button type="button" class="btn btn-outline btn-sm" onclick="downloadQuickImportTemplate('BILLS')"><i data-lucide="download"></i> ดาวน์โหลดแม่แบบ</button>
+                                <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('quick-expense-import-file').click()"><i data-lucide="upload"></i> อัปโหลดไฟล์</button>
+                                <input type="file" id="quick-expense-import-file" accept=".csv,.xlsx,.xls" hidden onchange="handleQuickTableImport(event, 'BILLS')">
                                 <button type="button" class="btn btn-primary btn-sm" onclick="addQuickExpenseRow()"><i data-lucide="plus"></i> เพิ่มใบเสร็จ</button>
                             </div>
+                        </div>
+
+                        <div id="quick-expense-table-alert" class="quick-expense-table-alert" role="alert" aria-live="assertive" hidden>
+                            <i data-lucide="triangle-alert" aria-hidden="true"></i>
+                            <span id="quick-expense-table-alert-message"></span>
                         </div>
 
                         <div class="table-container quick-expense-batch-container">
@@ -510,8 +495,10 @@
                         </div>
                     </form>
                 </section>
-                <div class="table-container">
-                    <table class="data-table compact-record-table" id="full-bills-table">
+                </div>
+                <div class="monthly-bills-records" id="monthly-bills-records">
+                    <div class="table-container">
+                        <table class="data-table compact-record-table" id="full-bills-table">
                         <thead>
                             <tr>
                                 <th>เลขบิล / ใบเสร็จ</th>
@@ -523,7 +510,8 @@
                             </tr>
                         </thead>
                         <tbody></tbody>
-                    </table>
+                        </table>
+                    </div>
                 </div>
             </div>
 
@@ -553,55 +541,58 @@
                         <button type="button" class="btn btn-icon btn-sm" onclick="toggleQuickFoodEntry(false)" aria-label="ปิดฟอร์มเพิ่มค่าอาหาร"><i data-lucide="x"></i></button>
                     </div>
                     <form id="quick-food-form" onsubmit="submitQuickFoodEntry(event)">
-                        <div class="quick-entry-grid">
-                            <div class="form-group quick-span-3">
-                                <label class="form-label" for="quick-food-date">วันที่ซื้อ</label>
-                                <input type="date" id="quick-food-date" class="form-input" required>
+                        <div class="quick-food-shared-context">
+                            <div>
+                                <span class="quick-context-label">รอบบันทึกจากตัวกรองด้านบน</span>
+                                <strong id="quick-food-posting-month-label">-</strong>
+                                <input type="hidden" id="quick-food-posting-month">
                             </div>
-                            <div class="form-group quick-span-3">
-                                <label class="form-label" for="quick-food-posting-month">รอบบันทึก</label>
-                                <input type="month" id="quick-food-posting-month" class="form-input" readonly required>
-                            </div>
-                            <div class="form-group quick-span-3">
+                            <div class="form-group">
                                 <label class="form-label" for="quick-food-category">หมวดหมู่</label>
-                                <input type="text" id="quick-food-category" class="form-input" list="quick-food-category-list" placeholder="เช่น วัตถุดิบสด" required>
+                                <input type="text" id="quick-food-category" class="form-input" list="quick-food-category-list" value="อาหารประจำเดือน" required>
                                 <datalist id="quick-food-category-list"></datalist>
                             </div>
-                            <div class="form-group quick-span-3">
-                                <label class="form-label" for="quick-food-unit">หน่วย</label>
-                                <input type="text" id="quick-food-unit" class="form-input" value="กก." required>
+                        </div>
+                        <div class="quick-batch-toolbar quick-food-batch-toolbar">
+                            <div>
+                                <strong>รายการค่าอาหารที่รอบันทึก</strong>
+                                <span id="quick-food-row-summary">0 รายการรอบันทึก</span>
                             </div>
-                            <div class="form-group quick-span-6">
-                                <label class="form-label" for="quick-food-name">รายการ</label>
-                                <input type="text" id="quick-food-name" class="form-input" list="food-item-suggestions" placeholder="เช่น หมูสด ผัก ไข่ไก่" required>
-                            </div>
-                            <div class="form-group quick-span-2">
-                                <label class="form-label" for="quick-food-qty">จำนวน</label>
-                                <input type="number" id="quick-food-qty" class="form-input" min="0.01" step="any" value="1" required>
-                            </div>
-                            <div class="form-group quick-span-2">
-                                <label class="form-label" for="quick-food-price">ราคา/หน่วย</label>
-                                <input type="number" id="quick-food-price" class="form-input" min="0.01" step="any" value="" required>
-                            </div>
-                            <div class="form-group quick-span-2">
-                                <label class="form-label" for="quick-food-total">รวม</label>
-                                <input type="text" id="quick-food-total" class="form-input quick-total-input" value="0.00" readonly>
+                            <div class="quick-batch-toolbar-actions">
+                                <button type="button" class="btn btn-outline btn-sm" onclick="downloadQuickImportTemplate('FOOD')"><i data-lucide="download"></i> ดาวน์โหลดแม่แบบ</button>
+                                <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('quick-food-import-file').click()"><i data-lucide="upload"></i> อัปโหลดไฟล์</button>
+                                <input type="file" id="quick-food-import-file" accept=".csv,.xlsx,.xls" hidden onchange="handleQuickTableImport(event, 'FOOD')">
+                                <button type="button" class="btn btn-primary btn-sm" onclick="addQuickFoodRow()"><i data-lucide="plus"></i> เพิ่มรายการ</button>
                             </div>
                         </div>
-                        <details class="quick-entry-details">
-                            <summary>หลักฐานหรือหมายเหตุ (ถ้ามี)</summary>
-                            <div class="quick-entry-grid quick-entry-extra-grid">
-                                <div class="form-group quick-span-6">
-                                    <label class="form-label" for="quick-food-files">หลักฐาน</label>
-                                    <input type="file" id="quick-food-files" class="form-input" accept=".jpg,.jpeg,.png,.webp,.pdf,.xlsx,.docx,.csv" multiple onchange="handleQuickFoodFiles(event)">
-                                    <div id="quick-food-file-list" class="quick-file-list" aria-live="polite"></div>
-                                </div>
-                            </div>
-                        </details>
+                        <div class="quick-food-batch-container">
+                            <table class="quick-food-batch-table">
+                                <thead>
+                                    <tr>
+                                        <th class="quick-food-col-index">ลำดับ</th>
+                                        <th class="quick-food-col-date">วันที่ซื้อ</th>
+                                        <th class="quick-food-col-name">รายการ</th>
+                                        <th class="quick-food-col-number">จำนวน</th>
+                                        <th class="quick-food-col-number">ราคา/หน่วย</th>
+                                        <th class="quick-food-col-total">รวม</th>
+                                        <th class="quick-food-col-extra">หน่วย / หลักฐาน</th>
+                                        <th class="quick-food-col-actions">เครื่องมือ</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="quick-food-rows"></tbody>
+                                <tfoot>
+                                    <tr>
+                                        <td colspan="5" class="text-right">รวมรายการที่รอบันทึก</td>
+                                        <td id="quick-food-grand-total" class="text-right">0.00</td>
+                                        <td colspan="2"></td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
                         <div class="quick-entry-actions">
-                            <button type="button" class="btn btn-outline" onclick="resetQuickFoodEntry()"><i data-lucide="rotate-ccw"></i> ล้างข้อมูล</button>
+                            <button type="button" class="btn btn-outline quick-expense-clear-table" onclick="resetQuickFoodEntry()"><i data-lucide="eraser"></i> ล้างตาราง</button>
                             <button type="button" class="btn btn-outline quick-entry-full-form" onclick="openFoodEntryModal()"><i data-lucide="maximize-2"></i> ใช้ฟอร์มเต็ม</button>
-                            <button type="submit" id="quick-food-save-btn" class="btn btn-primary"><i data-lucide="save"></i> บันทึกรายการ</button>
+                            <button type="submit" id="quick-food-save-btn" class="btn btn-primary"><i data-lucide="save"></i> บันทึกค่าอาหารที่รอทั้งหมด</button>
                         </div>
                     </form>
                 </section>
@@ -642,33 +633,35 @@
             <div class="widget">
                 <div class="widget-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
                     <h3 class="widget-title" id="attach-widget-title" style="margin-bottom:0;">รายการบิลแนบ / ค่าสาธารณูปโภคประจำเดือน</h3>
-                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                        <button class="btn btn-secondary btn-sm" onclick="openAttachmentModal()" style="display:flex; align-items:center; gap:6px;">
-                            <i data-lucide="paperclip" style="width:16px; height:16px;"></i> กรอกบิลแนบผ่าน Popup
+                    <div class="entry-widget-actions">
+                        <button class="btn btn-outline btn-sm monthly-bills-records-toggle" id="attachment-bills-records-toggle" type="button" onclick="toggleAttachmentBillsRecords()" aria-controls="attachment-bills-records" aria-expanded="true" title="ซ่อนรายการบิลแนบที่บันทึกแล้ว">
+                            <i data-lucide="chevron-up"></i><span data-role="label">ซ่อนรายการเดิม</span>
+                        </button>
+                        <button class="btn btn-primary btn-sm" type="button" onclick="toggleQuickExpenseEntry(undefined, 'ATT')">
+                            <i data-lucide="table-2"></i> เพิ่มในตาราง
+                        </button>
+                        <button class="btn btn-outline btn-sm" type="button" onclick="openAttachmentModal()">
+                            <i data-lucide="maximize-2"></i> ฟอร์มเต็ม
                         </button>
                     </div>
                 </div>
+                <div id="quick-attachment-entry-host"></div>
+                <div class="monthly-bills-records" id="attachment-bills-records">
                 <div class="table-container">
-                    <table class="data-table" id="attached-bills-table">
+                    <table class="data-table compact-record-table" id="attached-bills-table">
                         <thead>
                             <tr>
-                                <th>เลขบิล</th>
-                                <th>วันที่บิล</th>
-                                <th>โครงการ</th>
-                                <th>หมวดหมู่</th>
-                                <th>แหล่งเงิน</th>
-                                <th>ร้านค้า/ผู้ขาย</th>
-                                <th>รายละเอียด</th>
-                                <th class="text-right">จำนวน</th>
-                                <th class="text-right">ราคา/หน่วย</th>
-                                <th class="text-right">รวม</th>
-                                <th>ประเภท</th>
-                                <th class="text-center">หลักฐาน</th>
-                                <th>เครื่องมือ</th>
+                                <th>เลขบิล / ใบเสร็จ</th>
+                                <th>วันที่ / รอบ</th>
+                                <th>รายละเอียดรายการ</th>
+                                <th class="text-right">จำนวนเงิน</th>
+                                <th>หลักฐาน / ประเภท</th>
+                                <th class="text-center">เครื่องมือ</th>
                             </tr>
                         </thead>
                         <tbody></tbody>
                     </table>
+                </div>
                 </div>
             </div>
 
@@ -1224,6 +1217,19 @@
                                 </div>
                             </div>
                             <div class="form-group">
+                                <label class="form-label">รูปแบบวันที่ทั้งระบบ</label>
+                                <div style="display:flex; gap:8px;">
+                                    <select id="setting-date-format" class="form-select" style="padding:10px;">
+                                        <option value="MMM_DD_YYYY">SEP 29 2026 — เดือน วัน ปี</option>
+                                        <option value="DD_MMM_YYYY">29 SEP 2026 — วัน เดือน ปี</option>
+                                        <option value="YYYY_MMM_DD">2026 SEP 29 — ปี เดือน วัน</option>
+                                        <option value="MMM_DD_BBBB">SEP 29 2569 — เดือน วัน ปี พ.ศ.</option>
+                                    </select>
+                                    <button class="btn btn-primary" onclick="saveSystemSetting('dateFormat', document.getElementById('setting-date-format').value)" style="white-space:nowrap;padding:0 16px;">บันทึก</button>
+                                </div>
+                                <p style="font-size:11px;color:var(--text-muted);margin:6px 0 0;">ชื่อเดือนใช้ตัวย่อภาษาอังกฤษ 3 ตัวทุกหน้าและรายงาน</p>
+                            </div>
+                            <div class="form-group">
                                 <label class="form-label">สกุลเงินหลัก</label>
                                 <div style="display:flex; gap:8px;">
                                     <select id="setting-default-currency" class="form-select" style="padding:10px;">
@@ -1489,11 +1495,13 @@
             </div>
             <button class="modal-close" id="modal-att-close"><i data-lucide="x"></i></button>
         </header>
-        <div class="modal-body" id="modal-att-body" style="min-height:180px;">
+        <div class="modal-body attachment-drop-zone" id="modal-att-body" data-attachment-drop-zone tabindex="0" style="min-height:180px;"
+            ondragover="setAttachmentDropZoneState(event, true)" ondragleave="setAttachmentDropZoneState(event, false)" ondrop="handleSavedAttachmentDrop(event)" onpaste="handleSavedAttachmentPaste(event)">
             <!-- Dynamic content -->
         </div>
         <footer class="modal-footer" style="align-items:center;">
             <span style="font-size:12px;color:var(--text-muted);flex:1;">รองรับ: รูปภาพ (JPG, PNG) และ PDF สูงสุด 4MB ต่อไฟล์</span>
+            <span class="attachment-drop-hint"><i data-lucide="clipboard-paste"></i> ลากไฟล์มาวาง หรือกด Ctrl+V</span>
             <label class="btn btn-secondary" for="att-file-input" style="cursor:pointer;">
                 <i data-lucide="upload"></i> เพิ่มหลักฐาน
             </label>
@@ -1604,12 +1612,14 @@
                     <label class="form-label" for="bill-note">หมายเหตุ (ถ้ามี)</label>
                     <input type="text" id="bill-note" class="form-input" placeholder="ระบุรายละเอียดเพิ่มเติม">
                 </div>
-                <div class="form-group" style="background:var(--bg-color); padding:12px; border-radius:6px; border:1px solid var(--border-color);">
+                <div class="form-group attachment-drop-zone" data-attachment-drop-zone tabindex="0" style="background:var(--bg-color); padding:12px; border-radius:6px; border:1px solid var(--border-color);"
+                    ondragover="setAttachmentDropZoneState(event, true)" ondragleave="setAttachmentDropZoneState(event, false)" ondrop="handleBillAttachmentDrop(event)" onpaste="handleBillAttachmentPaste(event)">
                     <label class="form-label">หลักฐานแนบ (สามารถเพิ่มได้หลายไฟล์)</label>
                     <div id="bill-attachments-preview" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;"></div>
                     <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('bill-attachment-input').click()" style="display:flex; align-items:center; gap:6px; margin-top:8px;">
                         <i data-lucide="upload-cloud" style="width:16px; height:16px;"></i> เพิ่มไฟล์หลักฐาน
                     </button>
+                    <span class="attachment-drop-hint"><i data-lucide="clipboard-paste"></i> ลากไฟล์มาวาง หรือกด Ctrl+V</span>
                     <input type="file" id="bill-attachment-input" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,.csv,.xlsx,.docx" style="display:none;" onchange="handleBillAttachmentSelect(event)">
                 </div>
             </div>
@@ -1645,6 +1655,32 @@
 <!-- ===================================================
      MODAL: Add / Edit Attachment (Utility Bill)
 ===================================================== -->
+<div class="modal-overlay" id="modal-quick-import">
+    <div class="modal-card modal-wide quick-import-modal-card">
+        <header class="modal-header">
+            <div>
+                <h3 class="modal-title" id="quick-import-title">ตรวจสอบข้อมูลก่อนนำเข้า</h3>
+                <p id="quick-import-subtitle" class="quick-import-subtitle"></p>
+            </div>
+            <button type="button" class="modal-close" onclick="closeQuickImportPreview()" aria-label="ปิด"><i data-lucide="x"></i></button>
+        </header>
+        <div class="modal-body quick-import-body">
+            <div class="quick-import-summary" id="quick-import-summary" role="status"></div>
+            <div class="table-container quick-import-preview-container">
+                <table class="data-table quick-import-preview-table" id="quick-import-preview-table">
+                    <thead></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div class="quick-import-errors" id="quick-import-errors" role="alert" hidden></div>
+        </div>
+        <footer class="modal-footer">
+            <button type="button" class="btn btn-secondary" onclick="closeQuickImportPreview()">ย้อนกลับ</button>
+            <button type="button" class="btn btn-primary" id="quick-import-confirm" onclick="confirmQuickTableImport()"><i data-lucide="check-circle"></i> ยืนยันเพิ่มลงตาราง</button>
+        </footer>
+    </div>
+</div>
+
 <div class="modal-overlay" id="modal-attachment">
     <div class="modal-card">
         <header class="modal-header">
@@ -2311,7 +2347,7 @@
 
 <!-- Application Scripts -->
 <script src="thai-baht.js"></script>
-<script src="app.js?v=20260929-2"></script>
+<script src="app.js?v=20260930-25"></script>
 <script>
     // Wire up Master Data modal buttons
     (document.getElementById('modal-master-close') || {}).addEventListener?.('click', closeMasterModal);
@@ -2493,7 +2529,11 @@
                     </div>
                     <div>
                         <label class="form-label">6. อัปโหลดสลิป/บิล (ถ้ามี)</label>
-                        <input type="file" id="food-entry-file" class="form-input" accept=".jpg,.jpeg,.png,.webp,.pdf,.csv,.xls,.xlsx" onchange="handleFoodFiles(event)">
+                        <div class="attachment-drop-zone" data-attachment-drop-zone tabindex="0"
+                            ondragover="setAttachmentDropZoneState(event, true)" ondragleave="setAttachmentDropZoneState(event, false)" ondrop="handleFoodFilesDrop(event)" onpaste="handleFoodFilesPaste(event)">
+                            <input type="file" id="food-entry-file" class="form-input" accept=".jpg,.jpeg,.png,.webp,.pdf,.csv,.xlsx,.docx" multiple onchange="handleFoodFiles(event)">
+                            <span class="attachment-drop-hint"><i data-lucide="clipboard-paste"></i> ลากไฟล์มาวาง หรือกด Ctrl+V</span>
+                        </div>
                         <div id="food-file-list" style="margin-top:6px; display:flex; flex-direction:column; gap:6px;"></div>
                     </div>
                 </div>

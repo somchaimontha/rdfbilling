@@ -5,9 +5,10 @@ const path = require('path');
 const PORT = Number(process.env.PORT || 8081);
 const ROOT = __dirname;
 const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwxEEhfMfU8hjiR-iijOqcdPbRR-UOQOf4CMD34B0qVlhjgJYEpFXzGkopJ4inI5RyRnA/exec';
-// Leave time for a JSON error to reach the browser before its 30s deadline.
+// Writes may take longer on an Apps Script cold start. Keep this below the
+// browser's 45s write deadline so a structured error can still be displayed.
 // The browser owns safe-read retries; retrying here multiplies upstream work.
-const API_PROXY_TIMEOUT_MS = 25000;
+const API_PROXY_TIMEOUT_MS = 40000;
 
 const MIME_TYPES = {
     '.html': 'text/html; charset=utf-8',

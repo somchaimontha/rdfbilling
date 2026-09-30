@@ -9,11 +9,19 @@ const htmlPath = path.join(__dirname, '..', 'index.html');
 const stylePath = path.join(__dirname, '..', 'style.css');
 const backendExpensePath = path.join(__dirname, '..', 'backend', 'ExpenseService.gs');
 const backendSheetHelperPath = path.join(__dirname, '..', 'backend', 'SheetHelper.gs');
+const backendSystemPath = path.join(__dirname, '..', 'backend', 'SystemService.gs');
+const backendCodePath = path.join(__dirname, '..', 'backend', 'Code.gs');
+const backendAttachmentPath = path.join(__dirname, '..', 'backend', 'AttachmentService.gs');
+const backendFoodPath = path.join(__dirname, '..', 'backend', 'FoodExpenseService.gs');
 const source = fs.readFileSync(appPath, 'utf8');
 const html = fs.readFileSync(htmlPath, 'utf8');
 const style = fs.readFileSync(stylePath, 'utf8');
 const backendExpenseSource = fs.readFileSync(backendExpensePath, 'utf8');
 const backendSheetHelperSource = fs.readFileSync(backendSheetHelperPath, 'utf8');
+const backendSystemSource = fs.readFileSync(backendSystemPath, 'utf8');
+const backendCodeSource = fs.readFileSync(backendCodePath, 'utf8');
+const backendAttachmentSource = fs.readFileSync(backendAttachmentPath, 'utf8');
+const backendFoodSource = fs.readFileSync(backendFoodPath, 'utf8');
 
 const commonValues = {
     'inline-exp-project': 'PRJ-9',
@@ -111,12 +119,20 @@ function createHarness() {
             openExpenseModalFromQuickExpenseRow,
             quickAddProject,
             validateQuickExpenseDraft,
+            validateQuickExpenseInlineEdit,
             isQuickExpenseDraftEmpty,
             getQuickExpenseDocumentPreview,
             getQuickExpenseBillingProfileOptions,
             getQuickExpenseDescriptionSuggestions,
             getQuickExpenseSavedRowInitial,
             getExpensePostingMonth,
+            formatSystemDate,
+            normalizeSystemDateFormat,
+            buildRoleAwareAlertPresentation,
+            inferAlertIcon,
+            getExpenseDeleteConfirmationMessage,
+            parseSimpleCsv,
+            mapQuickImportRows,
             buildVerifyUrl,
             buildQuickExpenseRowHTML,
             persistQuickExpenseLocalDraft,
@@ -131,6 +147,7 @@ function createHarness() {
             setVendors: value => { state.vendors = value; },
             setExpenses: value => { state.expenses = value; },
             setOrganizations: value => { state.organizations = value; },
+            setDateFormat: value => { state.dateFormat = value; },
             getProjects: () => state.projects,
             getModalSource: () => expenseModalSource,
             getModalOrganizationId: () => expenseModalOrganizationId,
@@ -156,7 +173,10 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(html, /บันทึกในนาม/);
     assert.match(html, /รอบบันทึก \/ โครงการ \/ หมวดหมู่ \/ แหล่งเงิน \/ ประเภท/);
     assert.match(html, /id="quick-expense-rows"/);
+    assert.match(html, /id="quick-expense-table-alert"[^>]+role="alert"/);
     assert.match(html, /id="bills-widget-month-badge"/);
+    assert.match(html, /id="monthly-bills-records-toggle"[^>]+aria-controls="monthly-bills-records"/);
+    assert.match(html, /id="monthly-bills-records"/);
     assert.match(html, /id="inline-exp-posting-month"/);
     assert.doesNotMatch(html, /<th class="quick-col-month">รอบบันทึก<\/th>/);
     assert.match(html, /เล่มที่ \/ เลขที่ใบเสร็จ/);
@@ -175,6 +195,102 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(source, /const total = visibleRows\.reduce/);
     assert.match(source, /getQuickExpenseDocumentPreview/);
     assert.match(source, /editQuickExpenseDocumentNo/);
+    assert.match(source, /function toggleMonthlyBillsRecords/);
+    assert.match(source, /if \(quickExpenseEntryMode === 'ATT'\) toggleAttachmentBillsRecords\(false\);\s*else toggleMonthlyBillsRecords\(false\)/);
+    assert.match(source, /if \(quickExpenseEntryMode === 'ATT'\) toggleAttachmentBillsRecords\(true\);\s*else toggleMonthlyBillsRecords\(true\)/);
+    assert.match(style, /\.monthly-bills-records\[hidden\]/);
+});
+
+test('receipt rows can be reordered across saved and pending entries', () => {
+    assert.match(source, /if \(upButton\) upButton\.disabled = index === 0/);
+    assert.match(source, /if \(downButton\) downButton\.disabled = index === quickExpenseRows\.length - 1/);
+    assert.doesNotMatch(source, /row\.dataset\.saved === 'true' \|\| currentIndex < 0/);
+    assert.doesNotMatch(source, /targetRow\.dataset\.saved === 'true'/);
+    assert.match(source, /tbody\.appendChild\(item\)/);
+    assert.match(source, /row\.classList\.add\('is-reordered'\)/);
+    assert.match(style, /@keyframes quick-expense-reordered/);
+});
+
+test('monthly food entry supports repeatable compact rows with shared defaults', () => {
+    assert.match(html, /id="quick-food-posting-month-label"/);
+    assert.match(html, /id="quick-food-category"[^>]+value="อาหารประจำเดือน"/);
+    assert.match(html, /id="quick-food-rows"/);
+    assert.match(html, /onclick="addQuickFoodRow\(\)"/);
+    assert.match(html, /บันทึกค่าอาหารที่รอทั้งหมด/);
+    assert.doesNotMatch(html, /id="quick-food-unit"/);
+    assert.match(source, /function addQuickFoodRow/);
+    assert.match(source, /function ensureQuickFoodTrailingRow/);
+    assert.match(source, /unit: value\('unit'\) \|\| 'รายการ'/);
+    assert.match(source, /if \(postingMonth\) postingMonth\.value = selectedMonth/);
+    assert.match(source, /note: category/);
+    assert.match(source, /for \(const item of drafts\)/);
+    assert.match(style, /\.quick-food-batch-container/);
+    assert.match(style, /\.quick-food-row-details/);
+});
+
+test('attachment bills share the repeatable monthly bill workflow', () => {
+    assert.match(html, /id="attachment-bills-records-toggle"/);
+    assert.match(html, /id="quick-attachment-entry-host"/);
+    assert.match(html, /toggleQuickExpenseEntry\(undefined, 'ATT'\)/);
+    assert.match(html, /id="attachment-bills-records"/);
+    assert.match(html, /class="data-table compact-record-table" id="attached-bills-table"/);
+    assert.match(source, /let quickExpenseEntryMode = 'EXP'/);
+    assert.match(source, /function getQuickExpenseDataSource/);
+    assert.match(source, /quickExpenseEntryMode === 'ATT' \? \(state\.attachments \|\| \[\]\)/);
+    assert.match(source, /idPrefix: quickExpenseEntryMode/);
+    assert.match(source, /function setQuickExpenseEntryMode/);
+    assert.match(source, /บันทึกบิลแนบที่รอทั้งหมด/);
+    assert.match(source, /function toggleAttachmentBillsRecords/);
+    assert.match(source, /compact-attachment-row/);
+    assert.match(style, /#attached-bills-table\.compact-record-table th:nth-child\(6\)/);
+});
+
+test('evidence attachments support drag and drop in every expense entry flow', () => {
+    assert.match(html, /id="modal-att-body" data-attachment-drop-zone/);
+    assert.match(html, /ondrop="handleSavedAttachmentDrop\(event\)"/);
+    assert.match(html, /ondrop="handleBillAttachmentDrop\(event\)"/);
+    assert.match(html, /ondrop="handleFoodFilesDrop\(event\)"/);
+    assert.match(html, /id="food-entry-file"[^>]+multiple/);
+    assert.match(source, /function setAttachmentDropZoneState/);
+    assert.match(source, /handleQuickExpenseRowDrop\('\$\{rowId\}', event\)/);
+    assert.match(source, /handleQuickFoodRowDrop\('\$\{rowId\}', event\)/);
+    assert.match(style, /\.attachment-drop-zone\.is-dragover/);
+    assert.match(style, /วางไฟล์หลักฐานที่นี่/);
+});
+
+test('evidence attachments accept clipboard files without blocking pasted text', () => {
+    assert.match(html, /onpaste="handleSavedAttachmentPaste\(event\)"/);
+    assert.match(html, /onpaste="handleBillAttachmentPaste\(event\)"/);
+    assert.match(html, /onpaste="handleFoodFilesPaste\(event\)"/);
+    assert.match(source, /function getPastedAttachmentFiles/);
+    assert.match(source, /if \(!files\.length\) return \[\]/);
+    assert.match(source, /event\.preventDefault\(\)/);
+    assert.match(source, /handleQuickExpenseRowPaste\('\$\{rowId\}', event\)/);
+    assert.match(source, /handleQuickFoodRowPaste\('\$\{rowId\}', event\)/);
+    assert.match(source, /clipboard-\$\{Date\.now\(\)\}-\$\{index \+ 1\}/);
+    assert.match(style, /\.attachment-drop-zone\.is-pasting/);
+});
+
+test('quick tables provide spreadsheet templates and validated import previews', () => {
+    const { api } = createHarness();
+    const raw = api.parseSimpleCsv('\uFEFFวันที่ซื้อ,รายการ,จำนวน,หน่วย,ราคา/หน่วย\n2026-09-01,ข้าวสาร,2,ถุง,150');
+    assert.equal(raw.length, 1);
+    const rows = api.mapQuickImportRows(raw, 'FOOD');
+    assert.equal(rows[0].errors.length, 0);
+    assert.equal(rows[0].row.name, 'ข้าวสาร');
+    assert.equal(rows[0].row.quantity, 2);
+    assert.equal(rows[0].row.unitPrice, 150);
+    assert.match(html, /id="quick-expense-import-file"[^>]+accept="\.csv,\.xlsx,\.xls"/);
+    assert.match(html, /id="quick-food-import-file"[^>]+accept="\.csv,\.xlsx,\.xls"/);
+    assert.match(html, /id="modal-quick-import"/);
+    assert.match(html, /id="quick-import-preview-table"/);
+    assert.match(html, /ยืนยันเพิ่มลงตาราง/);
+    assert.match(source, /async function downloadQuickImportTemplate/);
+    assert.match(source, /async function handleQuickTableImport/);
+    assert.match(source, /function renderQuickImportPreview/);
+    assert.match(source, /function confirmQuickTableImport/);
+    assert.match(source, /ไฟล์หนึ่งครั้งรองรับไม่เกิน 1,000 รายการ/);
+    assert.match(style, /\.quick-import-preview-table tbody tr\.has-error/);
 });
 
 test('monthly bill actions are unique, visible, and table clearing is confirmed', () => {
@@ -191,19 +307,67 @@ test('monthly bill actions are unique, visible, and table clearing is confirmed'
     assert.match(style, /\.quick-expense-batch-container\s*\{[^}]*min-height:\s*360px/s);
     assert.match(style, /\.compact-record-table \.record-tools \.btn-icon-edit/);
     assert.match(style, /\.compact-record-table \.record-tools \.btn-icon-delete/);
+    assert.match(style, /\.quick-expense-clear-table\s*\{[^}]*color:\s*#dc2626/s);
 });
 
-test('icons use a backup CDN and remain visible while the icon library is unavailable', () => {
-    assert.match(html, /cdn\.jsdelivr\.net\/npm\/lucide@0\.468\.0/);
-    assert.match(html, /unpkg\.com\/lucide@0\.468\.0/);
-    assert.match(html, /lucide-unavailable/);
-    assert.match(source, /LUCIDE_TEXT_FALLBACKS/);
-    assert.match(source, /window\.addEventListener\('lucide-ready', initializeLucide\)/);
+test('icons are rendered locally without loading an external icon library', () => {
+    assert.doesNotMatch(html, /cdn\.jsdelivr\.net\/npm\/lucide@/);
+    assert.doesNotMatch(html, /unpkg\.com\/lucide@/);
+    assert.match(source, /LOCAL_ICON_PATHS/);
+    assert.match(source, /LOCAL_ICON_ALIASES/);
+    assert.match(source, /document\.createElementNS\('http:\/\/www\.w3\.org\/2000\/svg', 'svg'\)/);
+    assert.match(source, /svg\.setAttribute\('stroke', 'currentColor'\)/);
     assert.match(source, /function addQuickExpenseRow[\s\S]*?initializeLucide\(\)/);
-    assert.match(style, /i\[data-lucide\]\.lucide-text-fallback/);
-    assert.match(style, /i\[data-lucide\]:empty::before/);
-    assert.match(style, /i\[data-lucide="square-pen"\]:empty::before/);
-    assert.match(style, /i\[data-lucide="trash-2"\]:empty::before/);
+    assert.match(style, /\.local-icon\s*\{/);
+});
+
+test('local icon renderer replaces action placeholders with visible SVG elements', () => {
+    const iconStart = source.indexOf('const LOCAL_ICON_PATHS');
+    const iconEnd = source.indexOf('// ID Generator', iconStart);
+    const iconRendererSource = source.slice(iconStart, iconEnd);
+    const createIcon = name => {
+        const attributes = [
+            { name: 'data-lucide', value: name },
+            { name: 'class', value: 'action-icon' }
+        ];
+        return {
+            attributes,
+            replacement: null,
+            getAttribute(attributeName) {
+                return attributes.find(attribute => attribute.name === attributeName)?.value || null;
+            },
+            replaceWith(replacement) { this.replacement = replacement; }
+        };
+    };
+    const icons = [createIcon('square-pen'), createIcon('trash-2'), createIcon('plus')];
+    const document = {
+        querySelectorAll(selector) {
+            assert.equal(selector, 'i[data-lucide]');
+            return icons;
+        },
+        createElementNS(namespace, tagName) {
+            assert.equal(namespace, 'http://www.w3.org/2000/svg');
+            assert.equal(tagName, 'svg');
+            return {
+                attributes: new Map(),
+                innerHTML: '',
+                setAttribute(name, value) { this.attributes.set(name, String(value)); }
+            };
+        }
+    };
+    const context = { document, console };
+    context.globalThis = context;
+    vm.createContext(context);
+    vm.runInContext(`${iconRendererSource}\nglobalThis.iconRenderResult = initializeLucide();`, context);
+
+    assert.equal(context.iconRenderResult, true);
+    icons.forEach(icon => {
+        assert.ok(icon.replacement);
+        assert.equal(icon.replacement.attributes.get('viewBox'), '0 0 24 24');
+        assert.equal(icon.replacement.attributes.get('stroke'), 'currentColor');
+        assert.match(icon.replacement.attributes.get('class'), /local-icon/);
+        assert.match(icon.replacement.innerHTML, /<(?:path|circle|rect|ellipse)/);
+    });
 });
 
 test('batch row validation requires all receipt fields and accepts a complete row', () => {
@@ -222,6 +386,10 @@ test('batch row validation requires all receipt fields and accepts a complete ro
         postingMonth: '2026-09', receiptNo: '', vendorName: '', description: '', unitPrice: 0,
         note: '', attachments: [], multiItems: []
     }), true);
+    assert.match(source, /showQuickExpenseTableValidation\([\s\S]*?กรุณากรอกข้อมูลใบเสร็จอย่างน้อย 1 รายการ/);
+    assert.match(source, /firstPendingRowId \? \[firstPendingRowId\] : \[\]/);
+    assert.match(style, /\.quick-expense-batch-container\.has-validation-warning/);
+    assert.match(style, /\.quick-expense-batch-row\.is-validation-error/);
 });
 
 test('opening a batch row in the full form preserves receipt data, common fields, and attachments', () => {
@@ -290,7 +458,7 @@ test('bill preview offers all billing profiles and keeps row labels compact', ()
     assert.match(rowHtml, /VC — Vocational College/);
     assert.match(rowHtml, /P — โปรเจกต์อื่นๆ/);
     assert.match(rowHtml, /title="เปิดรายการแบบป๊อปอัป"/);
-    assert.match(rowHtml, /quick-expense-add-row/);
+    assert.doesNotMatch(rowHtml, /quick-expense-add-row/);
     assert.match(rowHtml, /quick-expense-remove-row/);
     assert.match(rowHtml, /moveQuickExpenseRow\('quick-exp-preview', -1\)/);
     assert.match(rowHtml, /moveQuickExpenseRow\('quick-exp-preview', 1\)/);
@@ -298,6 +466,56 @@ test('bill preview offers all billing profiles and keeps row labels compact', ()
     assert.match(rowHtml, /data-role="description-suggestions"/);
     assert.doesNotMatch(source, /ตัวอย่าง \$\{escapeHTML\(getQuickExpenseDocumentPreview/);
     assert.doesNotMatch(source, /สร้างเลขจริงเมื่อบันทึก/);
+});
+
+test('quick-row tool buttons stay active and deleting a row requires confirmation', () => {
+    const { api } = createHarness();
+    const confirmation = api.getExpenseDeleteConfirmationMessage({
+        documentNo: 'OFSEP26_1',
+        receiptNo: '026/1299',
+        description: 'แก๊ส ปตท. หุงต้ม 15 kg.'
+    });
+    assert.match(confirmation, /เลขบิล: OFSEP26_1/);
+    assert.match(confirmation, /เล่มที่ \/ เลขที่ใบเสร็จ: 026\/1299/);
+    assert.match(confirmation, /แก๊ส ปตท\. หุงต้ม 15 kg\./);
+    assert.match(confirmation, /หายจากเมนู “แสดงรายการเดิม”/);
+    assert.match(source, /window\.addQuickExpenseRow = addQuickExpenseRow/);
+    assert.match(source, /window\.removeQuickExpenseRow = removeQuickExpenseRow/);
+    assert.match(source, /async function removeQuickExpenseRow/);
+    assert.match(source, /ยืนยันลบแถว/);
+    assert.match(source, /confirmButtonText: saved \? 'ลบออกจากระบบ' : 'ลบแถว'/);
+    assert.match(source, /cancelButtonText: 'ย้อนกลับ'/);
+    assert.match(source, /\.quick-expense-open-full, \[data-row-remove\]/);
+    assert.match(source, /sourceRow\.dataset\.saved === 'true'/);
+    assert.match(source, /openExpenseModal\(expenseIndex\)/);
+    assert.match(source, /async function deleteExpenseRecordAndSync/);
+    assert.match(source, /apiCall\('deleteExpense', \{ id: normalizedId \}\)/);
+    assert.match(source, /applyExpenseDeletionToClientState\(normalizedId\)/);
+    assert.match(source, /state\.expenses = \(state\.expenses \|\| \[\]\)\.filter/);
+    assert.match(source, /renderAll\(\)/);
+    assert.match(backendExpenseSource, /AttachmentService\.removeByExpenseId\(id, authCtx\)/);
+    assert.match(backendAttachmentSource, /removeByExpenseId\(expenseId, authCtx\)/);
+    assert.match(backendAttachmentSource, /setTrashed\(true\)/);
+});
+
+test('saved receipt rows support direct editing with automatic server updates', () => {
+    const { api } = createHarness();
+    const validDraft = {
+        receiptNo: '026/1299', expenseDate: '2026-09-01', vendorName: 'ร้านค้า',
+        description: 'วัสดุสำนักงาน', quantity: 2, unit: 'ชิ้น', unitPrice: 50
+    };
+    assert.equal(api.validateQuickExpenseInlineEdit(validDraft), '');
+    assert.match(api.validateQuickExpenseInlineEdit({ ...validDraft, description: '' }), /รายละเอียด/);
+    assert.match(source, /saveQuickExpenseInlineEdit/);
+    assert.match(source, /apiCall\('updateExpense', payload, null, null, \{/);
+    assert.match(source, /row\.dataset\.inlineSaveError = 'true'/);
+    assert.match(source, /failedInlineRowIds/);
+    assert.match(source, /ไม่มีรายการใหม่ที่รอบันทึก/);
+    assert.match(source, /กำลังลองบันทึกการแก้ไขอีกครั้ง/);
+    assert.match(source, /event\.type === 'change'/);
+    assert.match(source, /บันทึกแล้ว · คลิกช่องข้อมูลเพื่อแก้ไข/);
+    assert.match(source, /ระบบจะบันทึกเมื่อออกจากช่อง/);
+    assert.match(style, /\.quick-expense-batch-row\.is-saved \[data-field\]:not\(:disabled\)/);
 });
 
 test('description suggestions find similar saved items and include their units', () => {
@@ -376,6 +594,89 @@ test('sheet date values retain the selected posting month', () => {
     }), '2026-09');
     assert.match(backendExpenseSource, /postingMonth instanceof Date|value instanceof Date/);
     assert.match(source, /Filter in the browser until every deployed Apps Script version/);
+});
+
+test('bill dates use configurable unambiguous English month abbreviations', () => {
+    const { api } = createHarness();
+
+    api.setDateFormat('MMM_DD_YYYY');
+    assert.equal(api.formatSystemDate('2026-09-29'), 'SEP 29 2026');
+    api.setDateFormat('DD_MMM_YYYY');
+    assert.equal(api.formatSystemDate('2026-09-29'), '29 SEP 2026');
+    api.setDateFormat('YYYY_MMM_DD');
+    assert.equal(api.formatSystemDate('2026-09-29'), '2026 SEP 29');
+    api.setDateFormat('MMM_DD_BBBB');
+    assert.equal(api.formatSystemDate('2026-09-29'), 'SEP 29 2569');
+
+    assert.equal(api.normalizeSystemDateFormat('invalid'), 'MMM_DD_YYYY');
+    assert.match(html, /id="setting-date-format"/);
+    assert.match(html, /SEP 29 2026/);
+    assert.match(style, /\.system-date-control/);
+    assert.match(source, /input\[type="date"\]/);
+    assert.doesNotMatch(source, /toLocaleDateString/);
+    assert.match(backendSystemSource, /dateFormat: this\.getConfigValue\('date_format', 'MMM_DD_YYYY'\)/);
+    assert.match(backendSystemSource, /const allowedFormats = \['MMM_DD_YYYY', 'DD_MMM_YYYY', 'YYYY_MMM_DD', 'MMM_DD_BBBB'\]/);
+});
+
+test('alerts show full diagnostics to admin and concise guidance to other users', () => {
+    const { api, storage } = createHarness();
+    const message = 'Apps Script ขัดข้องชั่วคราว (HTTP 504)';
+    assert.equal(api.inferAlertIcon('บันทึกข้อมูลล้มเหลว'), 'error');
+    assert.equal(api.inferAlertIcon('กรุณากรอกข้อมูลให้ครบ'), 'warning');
+    assert.equal(api.inferAlertIcon('บันทึกเรียบร้อยแล้ว'), 'success');
+
+    const adminAlert = api.buildRoleAwareAlertPresentation(message, 'error');
+    assert.equal(adminAlert.isAdmin, true);
+    assert.match(adminAlert.html, /รายละเอียดสำหรับผู้ดูแลระบบสูงสุด/);
+    assert.match(adminAlert.html, /รายละเอียดทางเทคนิค/);
+    assert.match(adminAlert.html, /Apps Script &gt; Executions/);
+    assert.match(adminAlert.html, /วิธีตรวจสอบและแก้ไข/);
+
+    storage.set('rdf_current_user', JSON.stringify({ id: 'STAFF-1', role: 'staff', organizationId: 'ORG-1' }));
+    const staffAlert = api.buildRoleAwareAlertPresentation(message, 'error');
+    assert.equal(staffAlert.isAdmin, false);
+    assert.match(staffAlert.html, /สิ่งที่ควรทำ/);
+    assert.doesNotMatch(staffAlert.html, /รายละเอียดทางเทคนิค|Stack trace|Apps Script &gt; Executions/);
+
+    assert.match(backendCodeSource, /const isAdmin = authCtx && authCtx\.role === 'admin'/);
+    assert.match(backendCodeSource, /isAdmin \? adminMessage : publicMessage/);
+    assert.match(backendCodeSource, /if \(meta\) payload\.error\.details = meta/);
+});
+
+test('Drive authorization failures provide an explicit recovery path', () => {
+    const rootManifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'appsscript.json'), 'utf8'));
+    const backendManifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'backend', 'appsscript.json'), 'utf8'));
+    for (const manifest of [rootManifest, backendManifest]) {
+        assert.ok(manifest.oauthScopes.includes('https://www.googleapis.com/auth/drive'));
+        assert.ok(manifest.oauthScopes.includes('https://www.googleapis.com/auth/spreadsheets'));
+        assert.equal(manifest.webapp.executeAs, 'USER_DEPLOYING');
+    }
+    const backendSetupSource = fs.readFileSync(path.join(__dirname, '..', 'backend', 'Setup.gs'), 'utf8');
+    assert.match(backendSetupSource, /function authorizeRequiredServices/);
+    assert.match(backendSetupSource, /DriveApp\.getFolderById\(folderId\)/);
+    assert.match(backendCodeSource, /DRIVE_AUTH_REQUIRED/);
+    assert.match(source, /authorizeRequiredServices/);
+    assert.match(source, /146sp7FoRNOyTyclbJ4Q5qqw07e4ZnSSG/);
+});
+
+test('transient write failures retry safely and expose item-level status', () => {
+    assert.match(source, /const API_WRITE_RETRY_ATTEMPTS = 3/);
+    assert.match(source, /function canSafelyRetryWrite/);
+    assert.match(source, /const MUTATING_API_ACTIONS = new Set/);
+    assert.match(source, /return MUTATING_API_ACTIONS\.has\(action\)/);
+    assert.match(source, /requestId: statusRequestId/);
+    assert.match(source, /status: attempt > 1 \? 'retrying' : 'sending'/);
+    assert.match(source, /reportApiRequestStatus\(options, \{ action, isWrite, requestId: statusRequestId, status: 'success'/);
+    assert.match(source, /กำลังส่งซ้ำ \$\{detail\.attempt\}\/\$\{detail\.maxAttempts\}/);
+    assert.match(source, /ยังไม่บันทึกเลขบิล · ระบบลองส่งซ้ำแล้ว/);
+    assert.match(style, /\.api-write-status-item\.is-success/);
+    assert.match(style, /@keyframes api-write-spin/);
+    assert.match(backendFoodSource, /ensureFoodExpenseRequestIdColumn_/);
+    assert.match(backendFoodSource, /replayFoodExpenseCreateRequest_/);
+    assert.match(backendFoodSource, /requestId/);
+    assert.match(backendCodeSource, /function runIdempotentMutation_/);
+    assert.match(backendCodeSource, /cache\.put\(cacheKey, content, 21600\)/);
+    assert.match(backendCodeSource, /runIdempotentMutation_\(requestId, action/);
 });
 
 test('report verification QR always points to the public site', () => {

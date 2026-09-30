@@ -66,7 +66,7 @@ function createHarness() {
 
 function successfulValue(action) {
     const values = {
-        getRuntimeConfig: {},
+        getRuntimeConfig: { dateFormat: 'MMM_DD_YYYY' },
         getMasterData: { projects: [], categories: [], vendors: [], fundSources: [], organizations: [] },
         getExpenses: { expenses: [{ id: 'EXP001', amount: 10, postingMonth: '2026-09' }], pagination: { total: 1, limit: 200 } },
         getFoodExpenses: { foodExpenses: [], pagination: { total: 0, limit: 200 } },
@@ -106,6 +106,7 @@ test('monthly records render before slow supplementary reads finish', async () =
     ]));
     assert.equal(context.__renders, 1);
     assert.equal(api.getState().expenses.length, 1);
+    assert.equal(api.getState().dateFormat, 'MMM_DD_YYYY');
     assert.equal(api.getState().carryOverAmount, 0, 'old/supplementary totals must not leak into the first render');
     assert.equal(elements.get('database-load-status').hidden, false);
 
