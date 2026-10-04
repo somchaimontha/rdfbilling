@@ -907,89 +907,124 @@ button, input, select, textarea {
     background-color: var(--bg-main);
 }
 
-/* Bills have many fields. Present each saved record as a labelled card before
-   the table ever needs a horizontal scrollbar (including normal laptops). */
+/* Keep saved records in familiar columns on narrow screens. Compact spacing
+   keeps rows short; very small screens can scroll the table horizontally. */
 @media screen and (max-width: 900px) {
     .table-container.responsive-record-container {
-        overflow: visible;
-        border: 0;
-        background: transparent;
+        overflow-x: auto;
+        border: 1px solid var(--border-color);
+        background: var(--bg-sidebar);
+    }
+
+    #full-bills-table.responsive-record-table,
+    #attached-bills-table.responsive-record-table,
+    #food-bills-table.responsive-record-table {
+        display: table;
+        width: 100%;
+        table-layout: fixed;
     }
 
     #full-bills-table.responsive-record-table,
     #attached-bills-table.responsive-record-table {
-        min-width: 0;
-        display: block;
+        min-width: 640px;
+    }
+
+    #food-bills-table.responsive-record-table {
+        min-width: 590px;
     }
 
     .responsive-record-table thead {
-        display: none;
+        display: table-header-group;
     }
 
     .responsive-record-table tbody {
-        display: block;
+        display: table-row-group;
     }
 
     .responsive-record-table tbody tr {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 0;
-        margin-bottom: 14px;
-        overflow: visible;
-        border: 1px solid var(--border-color);
-        border-radius: 12px;
-        background: var(--bg-sidebar);
+        display: table-row;
+        margin: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
     }
 
+    .responsive-record-table th,
     .responsive-record-table tbody td {
-        display: grid;
-        grid-template-columns: minmax(92px, 40%) minmax(0, 1fr);
-        align-items: center;
-        gap: 8px;
-        min-width: 0;
-        padding: 10px 12px;
+        display: table-cell;
+        padding: 10px 8px;
         border-bottom: 1px solid var(--border-color);
-        text-align: left;
+        font-size: 12px;
+        line-height: 1.35;
+        white-space: normal;
         overflow-wrap: anywhere;
     }
 
     .responsive-record-table tbody td::before {
-        content: attr(data-label);
-        color: var(--text-secondary);
-        font-size: 12px;
-        font-weight: 600;
+        content: none;
     }
 
-    .responsive-record-table tbody td.text-right,
+    .responsive-record-table tbody td.text-right {
+        text-align: right;
+    }
+
     .responsive-record-table tbody td.text-center {
-        text-align: left;
-    }
-
-    .responsive-record-table tbody td .action-buttons {
-        justify-content: flex-start !important;
-    }
-
-    .responsive-record-table tbody td .form-input,
-    .responsive-record-table tbody td .form-select {
-        min-height: 38px;
-        font-size: 14px !important;
+        text-align: center;
     }
 
     .responsive-record-table tbody tr .empty-state {
-        display: block;
-        grid-column: 1 / -1;
+        display: table-cell;
         padding: 24px 12px;
         text-align: center;
     }
 
-    .responsive-record-table tbody tr .empty-state::before {
-        content: none;
+    .responsive-record-table .record-primary {
+        font-size: 12.5px;
+        line-height: 1.3;
     }
-}
 
-@media screen and (max-width: 700px) {
-    .responsive-record-table tbody tr {
-        grid-template-columns: 1fr;
+    .responsive-record-table .record-secondary {
+        margin-top: 3px;
+        font-size: 10.5px;
+        line-height: 1.3;
+    }
+
+    .responsive-record-table td:nth-child(3) .record-primary {
+        display: -webkit-box;
+        overflow: hidden;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+    }
+
+    .responsive-record-table .record-meta {
+        gap: 3px;
+        margin-top: 5px;
+    }
+
+    .responsive-record-table .record-meta .badge,
+    .responsive-record-table .badge-project,
+    .responsive-record-table .badge-cat,
+    .responsive-record-table .badge-fund {
+        padding: 3px 6px;
+        font-size: 10px;
+    }
+
+    .responsive-record-table .record-amount {
+        font-size: 13px;
+    }
+
+    .responsive-record-table .record-tools {
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        flex-wrap: nowrap;
+    }
+
+    .responsive-record-table .record-tools .btn-icon {
+        width: 32px;
+        min-width: 32px;
+        height: 32px;
     }
 }
 
@@ -2411,33 +2446,6 @@ button, input, select, textarea {
     }
 }
 
-@media screen and (max-width: 900px) {
-    .table-container.responsive-record-container {
-        overflow: visible;
-        border: 0;
-        background: transparent;
-    }
-
-    #full-bills-table.responsive-record-table,
-    #attached-bills-table.responsive-record-table,
-    #food-bills-table.responsive-record-table {
-        min-width: 0;
-        display: block;
-    }
-
-    .compact-record-table tbody tr {
-        grid-template-columns: 1fr;
-    }
-
-    .compact-record-table tbody td {
-        grid-template-columns: minmax(105px, 36%) minmax(0, 1fr);
-    }
-
-    .compact-record-table .record-tools {
-        justify-content: flex-start;
-    }
-}
-
 @media screen and (max-width: 640px) {
     .quick-entry-panel {
         margin-left: -2px;
@@ -2498,9 +2506,6 @@ button, input, select, textarea {
         width: 100%;
     }
 
-    .compact-record-table tbody td {
-        grid-template-columns: minmax(96px, 38%) minmax(0, 1fr);
-    }
 }
 
 /* Table Badges */

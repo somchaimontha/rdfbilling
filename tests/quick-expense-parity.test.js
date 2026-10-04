@@ -247,6 +247,16 @@ test('monthly food records collapse responsively and expose semantic row actions
     assert.match(style, /\.btn-action-view/);
 });
 
+test('saved bill and food records stay in compact columns on narrow screens', () => {
+    assert.match(style, /Keep saved records in familiar columns on narrow screens/);
+    assert.match(style, /#food-bills-table\.responsive-record-table[\s\S]*min-width: 590px/);
+    assert.match(style, /\.responsive-record-table thead[\s\S]*display: table-header-group/);
+    assert.match(style, /\.responsive-record-table tbody tr[\s\S]*display: table-row/);
+    assert.match(style, /\.responsive-record-table tbody td::before[\s\S]*content: none/);
+    assert.match(style, /\.responsive-record-table \.record-tools[\s\S]*flex-direction: column/);
+    assert.doesNotMatch(style, /Present each saved record as a labelled card/);
+});
+
 test('food editor uses a responsive wide modal and preserves every history field', () => {
     assert.match(html, /class="modal-card food-entry-modal-card"/);
     assert.match(html, /class="data-table food-entry-history-table"/);
