@@ -33,6 +33,16 @@
     --warning: #f59e0b;
     --warning-light: #fef3c7;
 
+    /* Semantic action colours: one meaning = one colour across buttons/icons. */
+    --action-create: var(--primary);
+    --action-create-hover: var(--primary-hover);
+    --action-view: #2563eb;
+    --action-view-hover: #1d4ed8;
+    --action-edit: #d97706;
+    --action-edit-hover: #b45309;
+    --action-delete: #dc2626;
+    --action-delete-hover: #b91c1c;
+
     --success-badge: #10b981;
     --success-badge-bg: #d1fae5;
     --neutral-badge: #6b7280;
@@ -153,6 +163,15 @@
     
     --warning: #fbbf24;
     --warning-light: rgba(251, 191, 36, 0.15);
+
+    --action-create: var(--primary);
+    --action-create-hover: var(--primary-hover);
+    --action-view: #60a5fa;
+    --action-view-hover: #3b82f6;
+    --action-edit: #fbbf24;
+    --action-edit-hover: #f59e0b;
+    --action-delete: #f87171;
+    --action-delete-hover: #ef4444;
 
     --success-badge: #34d399;
     --success-badge-bg: rgba(52, 211, 153, 0.15);
@@ -519,6 +538,25 @@ button, input, select, textarea {
 
 .btn:active {
     transform: translateY(1px);
+}
+
+/* Lucide icons inherit the button colour instead of introducing another colour. */
+.btn svg,
+.btn [data-lucide] {
+    color: currentColor;
+    stroke: currentColor;
+}
+
+.btn-action-view {
+    border: 1px solid var(--action-view);
+    background: var(--action-view);
+    color: #fff;
+}
+
+.btn-action-view:hover {
+    border-color: var(--action-view-hover);
+    background: var(--action-view-hover);
+    color: #fff;
 }
 
 .btn-primary {
@@ -2216,11 +2254,42 @@ button, input, select, textarea {
 #attached-bills-table.compact-record-table th:nth-child(5) { width: 16%; }
 #attached-bills-table.compact-record-table th:nth-child(6) { width: 12%; }
 
-#food-bills-table.compact-record-table th:nth-child(1) { width: 18%; }
-#food-bills-table.compact-record-table th:nth-child(2) { width: 32%; }
-#food-bills-table.compact-record-table th:nth-child(3) { width: 18%; }
-#food-bills-table.compact-record-table th:nth-child(4) { width: 16%; }
-#food-bills-table.compact-record-table th:nth-child(5) { width: 16%; }
+#food-bills-table.compact-record-table th:nth-child(1) { width: 7%; }
+#food-bills-table.compact-record-table th:nth-child(2) { width: 17%; }
+#food-bills-table.compact-record-table th:nth-child(3) { width: 30%; }
+#food-bills-table.compact-record-table th:nth-child(4) { width: 17%; }
+#food-bills-table.compact-record-table th:nth-child(5) { width: 15%; }
+#food-bills-table.compact-record-table th:nth-child(6) { width: 14%; }
+
+.food-row-number {
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+}
+
+.food-table-disclosure {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border-top: 1px solid var(--border-color);
+    background: var(--surface-solid);
+}
+
+.food-table-disclosure[hidden] {
+    display: none !important;
+}
+
+.food-table-count {
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.food-table-disclosure .btn svg {
+    width: 16px;
+    height: 16px;
+}
 
 .compact-record-table .record-primary {
     color: var(--text-primary);
@@ -2294,24 +2363,24 @@ button, input, select, textarea {
 }
 
 .compact-record-table .record-tools .btn-icon-edit {
-    border-color: #1d4ed8;
-    background: #2563eb;
+    border-color: var(--action-edit-hover);
+    background: var(--action-edit);
 }
 
 .compact-record-table .record-tools .btn-icon-edit:hover {
-    border-color: #1e40af;
-    background: #1d4ed8;
+    border-color: var(--action-edit-hover);
+    background: var(--action-edit-hover);
     color: #fff;
 }
 
 .compact-record-table .record-tools .btn-icon-delete {
-    border-color: #b91c1c;
-    background: #dc2626;
+    border-color: var(--action-delete-hover);
+    background: var(--action-delete);
 }
 
 .compact-record-table .record-tools .btn-icon-delete:hover {
-    border-color: #991b1b;
-    background: #b91c1c;
+    border-color: var(--action-delete-hover);
+    background: var(--action-delete-hover);
     color: #fff;
 }
 
@@ -2417,6 +2486,16 @@ button, input, select, textarea {
     .entry-widget-actions .btn {
         flex: 1 1 0;
         justify-content: center;
+    }
+
+    .food-table-disclosure {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .food-table-disclosure .btn {
+        justify-content: center;
+        width: 100%;
     }
 
     .compact-record-table tbody td {
@@ -2766,6 +2845,129 @@ button, input, select, textarea {
     margin-bottom: 14px;
 }
 
+/* Food editor uses the available viewport instead of inheriting the narrow
+   generic dialog width. Header/footer stay pinned; only the body scrolls. */
+#modal-food-entry .food-entry-modal-card {
+    width: min(1080px, calc(100vw - 48px));
+    max-width: 1080px;
+    max-height: calc(100vh - 48px);
+    max-height: calc(100dvh - 48px);
+}
+
+#modal-food-entry .modal-body {
+    flex: 1 1 auto;
+    max-height: none;
+    overscroll-behavior: contain;
+}
+
+.food-modal-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 0 0 auto;
+}
+
+.food-entry-submit-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-color);
+}
+
+.food-entry-history {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-color);
+}
+
+#modal-food-entry .food-entry-history-table {
+    min-width: 0;
+    table-layout: fixed;
+    font-size: 13px;
+}
+
+.food-entry-col-date { width: 17%; }
+.food-entry-col-item { width: 35%; }
+.food-entry-col-category { width: 19%; }
+.food-entry-col-amount { width: 15%; }
+.food-entry-col-actions { width: 14%; }
+
+#modal-food-entry .food-entry-history-table th,
+#modal-food-entry .food-entry-history-table td {
+    padding: 12px 14px;
+}
+
+.food-entry-date-cell,
+.food-entry-amount-cell {
+    white-space: nowrap;
+}
+
+.food-entry-amount-cell {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.food-entry-item-content {
+    display: flex;
+    align-items: flex-start;
+    gap: 5px;
+    min-width: 0;
+}
+
+.food-entry-item-text {
+    display: -webkit-box;
+    min-width: 0;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.food-entry-attachment-icon {
+    width: 14px;
+    height: 14px;
+    margin-top: 2px;
+    color: var(--primary);
+    flex: 0 0 auto;
+}
+
+.food-entry-row-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+#modal-food-entry .food-entry-row-actions .btn-icon {
+    color: #fff;
+}
+
+#modal-food-entry .food-entry-row-actions .btn-icon-edit {
+    border-color: var(--action-edit-hover);
+    background: var(--action-edit);
+}
+
+#modal-food-entry .food-entry-row-actions .btn-icon-delete {
+    border-color: var(--action-delete-hover);
+    background: var(--action-delete);
+}
+
+#modal-food-entry .food-entry-row-actions .btn-icon-edit:hover {
+    border-color: var(--action-edit-hover);
+    background: var(--action-edit-hover);
+    color: #fff;
+}
+
+#modal-food-entry .food-entry-row-actions .btn-icon-delete:hover {
+    border-color: var(--action-delete-hover);
+    background: var(--action-delete-hover);
+    color: #fff;
+}
+
 .form-help {
     display: block;
     margin-top: 5px;
@@ -2781,6 +2983,97 @@ button, input, select, textarea {
     .form-grid-food-detail {
         grid-template-columns: minmax(0, 1fr);
         gap: 10px;
+    }
+
+    #modal-food-entry .modal-header {
+        align-items: flex-start;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    .food-modal-header-actions {
+        justify-content: space-between;
+        width: 100%;
+    }
+
+    #food-modal-month {
+        flex: 1 1 auto;
+        width: auto !important;
+        min-width: 0;
+    }
+
+    .food-entry-submit-row {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .food-entry-submit-row .btn {
+        justify-content: center;
+        width: 100%;
+    }
+
+    #modal-food-entry .food-entry-history .table-container {
+        overflow: visible;
+        border: 0;
+        background: transparent;
+    }
+
+    #modal-food-entry .food-entry-history-table,
+    #modal-food-entry .food-entry-history-table tbody {
+        display: block;
+        width: 100%;
+        min-width: 0;
+    }
+
+    #modal-food-entry .food-entry-history-table thead,
+    #modal-food-entry .food-entry-history-table colgroup {
+        display: none;
+    }
+
+    #modal-food-entry .food-entry-history-table tbody tr {
+        display: block;
+        margin-bottom: 12px;
+        overflow: hidden;
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        background: var(--bg-sidebar);
+    }
+
+    #modal-food-entry .food-entry-history-table tbody td {
+        display: grid;
+        grid-template-columns: minmax(92px, 34%) minmax(0, 1fr);
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border-color);
+        text-align: left;
+        white-space: normal;
+    }
+
+    #modal-food-entry .food-entry-history-table tbody td:last-child {
+        border-bottom: 0;
+    }
+
+    #modal-food-entry .food-entry-history-table tbody td::before {
+        content: attr(data-label);
+        color: var(--text-secondary);
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    #modal-food-entry .food-entry-history-table tbody td.empty-state {
+        display: block;
+        padding: 20px 12px;
+        text-align: center;
+    }
+
+    #modal-food-entry .food-entry-history-table tbody td.empty-state::before {
+        content: none;
+    }
+
+    #modal-food-entry .food-entry-row-actions {
+        justify-content: flex-start;
     }
 }
 

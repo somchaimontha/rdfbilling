@@ -234,6 +234,30 @@ test('monthly food entry supports repeatable compact rows with shared defaults',
     assert.match(style, /\.quick-food-row-details/);
 });
 
+test('monthly food records collapse responsively and expose semantic row actions', () => {
+    assert.match(html, /id="food-table-disclosure" hidden/);
+    assert.match(html, /id="food-table-toggle"[\s\S]*toggleFoodBillsTable\(\)/);
+    assert.match(html, /<th class="text-center">ลำดับ<\/th>/);
+    assert.match(source, /return Number\(window\.innerWidth \|\| 1024\) <= 900 \? 5 : 6/);
+    assert.match(source, /rows\.slice\(0, collapsedLimit\)/);
+    assert.match(source, /class="text-center food-row-number" data-label="ลำดับ">\$\{index \+ 1\}/);
+    assert.match(source, /btn-icon-edit/);
+    assert.match(source, /btn-icon-delete/);
+    assert.match(style, /\.btn svg,[\s\S]*stroke: currentColor/);
+    assert.match(style, /\.btn-action-view/);
+});
+
+test('food editor uses a responsive wide modal and preserves every history field', () => {
+    assert.match(html, /class="modal-card food-entry-modal-card"/);
+    assert.match(html, /class="data-table food-entry-history-table"/);
+    assert.match(source, /class="food-entry-item-text"[^>]+>\$\{escapeHTML\(item\.name\)\}/);
+    assert.match(source, /data-label="ยอดเงิน"/);
+    assert.match(source, /data-label="จัดการ"/);
+    assert.match(style, /#modal-food-entry \.food-entry-modal-card[\s\S]*width: min\(1080px, calc\(100vw - 48px\)\)/);
+    assert.match(style, /\.food-entry-item-text[\s\S]*-webkit-line-clamp: 2/);
+    assert.match(style, /#modal-food-entry \.food-entry-history-table tbody td::before/);
+});
+
 test('attachment bills share the repeatable monthly bill workflow', () => {
     assert.match(html, /id="attachment-bills-records-toggle"/);
     assert.match(html, /id="quick-attachment-entry-host"/);

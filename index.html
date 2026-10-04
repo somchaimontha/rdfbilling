@@ -638,6 +638,7 @@
                     <table class="data-table compact-record-table" id="food-bills-table">
                         <thead>
                             <tr>
+                                <th class="text-center">ลำดับ</th>
                                 <th>วันที่ / รอบ</th>
                                 <th>รายการ</th>
                                 <th>จำนวน</th>
@@ -648,6 +649,13 @@
                         <tbody></tbody>
                     </table>
                     <datalist id="food-item-suggestions"></datalist>
+                </div>
+                <div class="food-table-disclosure" id="food-table-disclosure" hidden>
+                    <span class="food-table-count" id="food-table-count" aria-live="polite"></span>
+                    <button class="btn btn-sm btn-action-view" id="food-table-toggle" type="button" onclick="toggleFoodBillsTable()" aria-controls="food-bills-table" aria-expanded="false">
+                        <i data-lucide="chevron-down"></i>
+                        <span data-role="label">ดูรายการทั้งหมด</span>
+                    </button>
                 </div>
             </div>
 
@@ -2546,18 +2554,18 @@
      MODAL: Food Entry (Add/Edit food record)
 ===================================================== -->
 <div class="modal-overlay" id="modal-food-entry">
-    <div class="modal-card" style="max-width:620px;">
+    <div class="modal-card food-entry-modal-card">
         <header class="modal-header">
             <div>
                 <h3 class="modal-title" id="food-entry-modal-title">🍽️ บันทึกค่าอาหาร</h3>
                 <div style="font-size:12px; color:var(--text-muted); margin-top:4px;" id="food-modal-month-label">เดือนปัจจุบัน</div>
             </div>
-            <div style="display:flex; align-items:center; gap:10px;">
+            <div class="food-modal-header-actions">
                 <input type="month" id="food-modal-month" class="form-input" style="font-size:13px; padding:6px 10px; width:160px;" onchange="onFoodModalMonthChange()">
                 <button class="modal-close" id="modal-food-entry-close"><i data-lucide="x"></i></button>
             </div>
         </header>
-        <div class="modal-body" style="max-height:70vh; overflow-y:auto;">
+        <div class="modal-body">
             <form id="food-entry-form" onsubmit="submitFoodEntry(event)">
                 <input type="hidden" id="food-entry-edit-id">
                 <div class="form-grid form-grid-food-main">
@@ -2612,17 +2620,24 @@
                         <div id="food-file-list" style="margin-top:6px; display:flex; flex-direction:column; gap:6px;"></div>
                     </div>
                 </div>
-                <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border-color); padding-top:14px;">
+                <div class="food-entry-submit-row">
                     <div style="font-size:16px; font-weight:600;">รวม: <span id="food-entry-total-display" style="color:var(--primary); font-size:18px;">0.00 บาท</span></div>
                     <button type="submit" class="btn btn-primary" id="food-entry-submit-btn"><i data-lucide="save"></i> บันทึกรายการ</button>
                 </div>
             </form>
 
             <!-- Recent entries in selected month -->
-            <div style="margin-top:20px; border-top:1px solid var(--border-color); padding-top:16px;">
+            <div class="food-entry-history">
                 <h4 style="font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:12px;">รายการในรอบบันทึกที่เลือก</h4>
                 <div class="table-container" style="border-radius:10px;">
-                    <table class="data-table" style="font-size:13px;">
+                    <table class="data-table food-entry-history-table">
+                        <colgroup>
+                            <col class="food-entry-col-date">
+                            <col class="food-entry-col-item">
+                            <col class="food-entry-col-category">
+                            <col class="food-entry-col-amount">
+                            <col class="food-entry-col-actions">
+                        </colgroup>
                         <thead>
                             <tr>
                                 <th>วันที่ซื้อ</th>

@@ -11775,6 +11775,24 @@ window.handleGoogleLogin = handleGoogleLogin;
 // ==========================================
 
 let foodFiles = [];
+let foodBillsTableExpanded = false;
+let foodBillsCollapsedLimit = getFoodBillsCollapsedLimit();
+
+function getFoodBillsCollapsedLimit() {
+    return Number(window.innerWidth || 1024) <= 900 ? 5 : 6;
+}
+
+window.toggleFoodBillsTable = function() {
+    foodBillsTableExpanded = !foodBillsTableExpanded;
+    renderFoodBillsTable();
+};
+
+window.addEventListener('resize', () => {
+    const nextLimit = getFoodBillsCollapsedLimit();
+    if (nextLimit === foodBillsCollapsedLimit) return;
+    foodBillsCollapsedLimit = nextLimit;
+    if (!foodBillsTableExpanded) renderFoodBillsTable();
+});
 
 async function loadFoodExpensesForMonth(month) {
     if (!/^\d{4}-\d{2}$/.test(String(month || ''))) {
@@ -11831,17 +11849,43 @@ function renderFoodBillsTable() {
     const title = document.getElementById('food-bills-widget-title');
     if (title) title.textContent = 'ค่าอาหารประจำเดือน';
 
+    const disclosure = document.getElementById('food-table-disclosure');
+    const countLabel = document.getElementById('food-table-count');
+    const toggleButton = document.getElementById('food-table-toggle');
+    const collapsedLimit = getFoodBillsCollapsedLimit();
+    foodBillsCollapsedLimit = collapsedLimit;
+
     if (rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">ไม่พบรายการค่าอาหารในรอบบันทึกนี้</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">ไม่พบรายการค่าอาหารในรอบบันทึกนี้</td></tr>';
+        if (disclosure) disclosure.hidden = true;
         return;
     }
 
+    const hasHiddenRows = rows.length > collapsedLimit;
+    const visibleRows = foodBillsTableExpanded || !hasHiddenRows
+        ? rows
+        : rows.slice(0, collapsedLimit);
+
+    if (disclosure) disclosure.hidden = !hasHiddenRows;
+    if (countLabel) {
+        countLabel.textContent = foodBillsTableExpanded
+            ? `กำลังแสดงทั้งหมด ${rows.length} รายการ`
+            : `กำลังแสดง ${visibleRows.length} จาก ${rows.length} รายการ`;
+    }
+    if (toggleButton) {
+        toggleButton.setAttribute('aria-expanded', String(foodBillsTableExpanded));
+        toggleButton.innerHTML = foodBillsTableExpanded
+            ? '<i data-lucide="chevron-up"></i><span data-role="label">ย่อรายการ</span>'
+            : `<i data-lucide="chevron-down"></i><span data-role="label">ดูทั้งหมด ${rows.length} รายการ</span>`;
+    }
+
     const canDelete = ['admin', 'manager'].includes(getCurrentUserRole());
-    tbody.innerHTML = rows.map((item, index) => {
+    tbody.innerHTML = visibleRows.map((item, index) => {
         const amount = parseFloat(item.totalAmount) || 0;
         const hasFiles = Boolean(item.files);
         return `
             <tr>
+                <td class="text-center food-row-number" data-label="ลำดับ">${index + 1}</td>
                 <td data-label="วันที่ / รอบ">
                     <span class="record-primary">${escapeHTML(formatThaiDate(item.date) || '-')}</span>
                     <span class="record-secondary">รอบ ${escapeHTML(formatPostingMonth(getFoodPostingMonth(item)))}</span>
@@ -11858,8 +11902,8 @@ function renderFoodBillsTable() {
                 <td data-label="หลักฐาน / เครื่องมือ">
                     <div class="record-tools">
                         <span class="badge" title="${hasFiles ? 'มีไฟล์แนบ' : 'ไม่มีไฟล์แนบ'}">${hasFiles ? '<i data-lucide="paperclip" style="width:14px;height:14px;"></i> มีหลักฐาน' : 'ไม่มีหลักฐาน'}</span>
-                        <button type="button" class="btn btn-icon btn-sm" onclick="openFoodExpenseEditor('${escapeHTML(item.id)}')" title="แก้ไขรายการ" style="color:var(--primary);"><i data-lucide="pencil"></i></button>
-                        ${canDelete ? `<button type="button" class="btn btn-icon btn-sm text-danger" onclick="deleteFoodExpense('${escapeHTML(item.id)}')" title="ลบรายการ"><i data-lucide="trash-2"></i></button>` : ''}
+                        <button type="button" class="btn btn-icon btn-sm btn-icon-edit" onclick="openFoodExpenseEditor('${escapeHTML(item.id)}')" title="แก้ไขรายการ" aria-label="แก้ไขรายการ"><i data-lucide="pencil"></i></button>
+                        ${canDelete ? `<button type="button" class="btn btn-icon btn-sm btn-icon-delete" onclick="deleteFoodExpense('${escapeHTML(item.id)}')" title="ลบรายการ" aria-label="ลบรายการ"><i data-lucide="trash-2"></i></button>` : ''}
                     </div>
                 </td>
             </tr>`;
@@ -12035,7 +12079,7 @@ window.renderFoodEntryList = function() {
 
     let html = '';
     if (data.length === 0) {
-        html = '<tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:20px;">ไม่มีข้อมูลที่บันทึกไว้</td></tr>';
+        html = '<tr><td colspan="5" class="empty-state">ไม่มีข้อมูลที่บันทึกไว้</td></tr>';
     } else {
         data.forEach(item => {
             const amount = parseFloat(item.totalAmount) || 0;
@@ -12043,17 +12087,24 @@ window.renderFoodEntryList = function() {
             const hasFiles = item.files && item.files.length > 0;
             html += `
                 <tr>
-                    <td>${formatThaiDate(item.date)}</td>
-                    <td>${escapeHTML(item.name)} ${hasFiles ? '<i data-lucide="paperclip" style="color:var(--primary); width:13px; vertical-align:middle;"></i>' : ''}</td>
-                    <td><span class="badge">${escapeHTML(item.category)}</span></td>
-                    <td class="text-right" style="font-weight:600;">${amount.toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
-                    <td class="text-center">
-                        <button type="button" class="btn btn-icon btn-sm" onclick="editFoodExpense('${item.id}')" title="แก้ไขรายการ" style="color:var(--primary);">
+                    <td data-label="วันที่ซื้อ" class="food-entry-date-cell">${formatThaiDate(item.date)}</td>
+                    <td data-label="รายการ">
+                        <div class="food-entry-item-content">
+                            <span class="food-entry-item-text" title="${escapeHTML(item.name)}">${escapeHTML(item.name)}</span>
+                            ${hasFiles ? '<i data-lucide="paperclip" class="food-entry-attachment-icon"></i>' : ''}
+                        </div>
+                    </td>
+                    <td data-label="หมวดหมู่"><span class="badge">${escapeHTML(item.category)}</span></td>
+                    <td data-label="ยอดเงิน" class="text-right food-entry-amount-cell">${amount.toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
+                    <td data-label="จัดการ" class="text-center">
+                        <div class="food-entry-row-actions">
+                        <button type="button" class="btn btn-icon btn-sm btn-icon-edit" onclick="editFoodExpense('${item.id}')" title="แก้ไขรายการ" aria-label="แก้ไขรายการ">
                             <i data-lucide="pencil"></i>
                         </button>
-                        <button type="button" class="btn btn-icon btn-sm text-danger" onclick="deleteFoodExpense('${item.id}')" title="ลบรายการ">
+                        <button type="button" class="btn btn-icon btn-sm btn-icon-delete" onclick="deleteFoodExpense('${item.id}')" title="ลบรายการ" aria-label="ลบรายการ">
                             <i data-lucide="trash-2"></i>
                         </button>
+                        </div>
                     </td>
                 </tr>
             `;
