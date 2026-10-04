@@ -133,6 +133,8 @@ function createHarness() {
             getExpenseDeleteConfirmationMessage,
             parseSimpleCsv,
             mapQuickImportRows,
+            normalizeImportedDate,
+            sortQuickImportRowsByDate,
             buildVerifyUrl,
             buildQuickExpenseRowHTML,
             persistQuickExpenseLocalDraft,
@@ -215,6 +217,8 @@ test('monthly food entry supports repeatable compact rows with shared defaults',
     assert.match(html, /id="quick-food-posting-month-label"/);
     assert.match(html, /id="quick-food-category"[^>]+value="อาหารประจำเดือน"/);
     assert.match(html, /id="quick-food-rows"/);
+    assert.match(html, /id="quick-food-save-progress"[^>]+hidden/);
+    assert.match(html, /id="quick-food-save-progress-count">0\/0/);
     assert.match(html, /onclick="addQuickFoodRow\(\)"/);
     assert.match(html, /บันทึกค่าอาหารที่รอทั้งหมด/);
     assert.doesNotMatch(html, /id="quick-food-unit"/);
@@ -224,7 +228,9 @@ test('monthly food entry supports repeatable compact rows with shared defaults',
     assert.match(source, /if \(postingMonth\) postingMonth\.value = selectedMonth/);
     assert.match(source, /note: category/);
     assert.match(source, /for \(const item of drafts\)/);
+    assert.match(source, /setBatchUploadProgress\('quick-food-save', processedCount, drafts\.length/);
     assert.match(style, /\.quick-food-batch-container/);
+    assert.match(style, /\.batch-upload-progress-track/);
     assert.match(style, /\.quick-food-row-details/);
 });
 
@@ -271,6 +277,24 @@ test('evidence attachments accept clipboard files without blocking pasted text',
     assert.match(style, /\.attachment-drop-zone\.is-pasting/);
 });
 
+test('saved evidence modal previews the bill, supports camera capture, and hydrates Drive images', () => {
+    assert.match(html, /id="att-record-summary-body"/);
+    assert.match(html, /เลขบิล \/ ใบเสร็จ/);
+    assert.match(html, /วันที่ \/ รอบ/);
+    assert.match(html, /รายละเอียดรายการ/);
+    assert.match(html, /id="att-camera-input"[^>]+accept="image\/\*"[^>]+capture="environment"/);
+    assert.match(html, /id="att-enhance-image"[^>]+checked/);
+    assert.match(html, /id="att-upload-queue"/);
+    assert.match(source, /function renderExpenseAttachmentRecordSummary/);
+    assert.match(source, /function stageExpenseAttachmentFiles/);
+    assert.match(source, /ภาพจะยังไม่ถูกส่งจนกว่าจะกดยืนยัน/);
+    assert.match(source, /function enhanceReceiptImage/);
+    assert.match(source, /getAttachmentImageDataUrl\(attachment\)/);
+    assert.match(source, /function hydrateExpenseAttachmentPreviewImages/);
+    assert.match(style, /\.attachment-record-summary-table/);
+    assert.match(style, /\.attachment-upload-queue-preview/);
+});
+
 test('quick tables provide spreadsheet templates and validated import previews', () => {
     const { api } = createHarness();
     const raw = api.parseSimpleCsv('\uFEFFวันที่ซื้อ,รายการ,จำนวน,หน่วย,ราคา/หน่วย\n2026-09-01,ข้าวสาร,2,ถุง,150');
@@ -280,15 +304,41 @@ test('quick tables provide spreadsheet templates and validated import previews',
     assert.equal(rows[0].row.name, 'ข้าวสาร');
     assert.equal(rows[0].row.quantity, 2);
     assert.equal(rows[0].row.unitPrice, 150);
+    const header = 'รอบบันทึก,หมวดหมู่,วันที่ซื้อ,รายการ,จำนวน,หน่วย,ราคา/หน่วย';
+    const repeatedHeaderRows = api.parseSimpleCsv(`${header}\n${header}\n2026-09,อาหารประจำเดือน,2026-09-10,เต้าหู้,2,ถุง,35`);
+    const filteredRows = api.mapQuickImportRows(repeatedHeaderRows, 'FOOD');
+    assert.equal(filteredRows.length, 1);
+    assert.equal(filteredRows[0].sourceRow, 3);
+    assert.equal(filteredRows[0].row.name, 'เต้าหู้');
+    const datedRows = api.mapQuickImportRows(api.parseSimpleCsv(
+        'รอบบันทึก,หมวดหมู่,วันที่ซื้อ (เดือน-วัน-ปี),รายการ,จำนวน,หน่วย,ราคา/หน่วย\n' +
+        '2026-09,อาหารประจำเดือน,09-11-2026,รายการวันที่สอง,1,ถุง,20\n' +
+        '2026-09,อาหารประจำเดือน,09-10-2026,รายการแรก,1,ถุง,10\n' +
+        '2026-09,อาหารประจำเดือน,09-10-2026,รายการถัดมา,1,ถุง,15'
+    ), 'FOOD');
+    const sortedRows = api.sortQuickImportRowsByDate(datedRows);
+    assert.deepEqual(Array.from(sortedRows, item => item.row.name), ['รายการแรก', 'รายการถัดมา', 'รายการวันที่สอง']);
+    assert.equal(api.normalizeImportedDate('09-10-2026'), '2026-09-10');
     assert.match(html, /id="quick-expense-import-file"[^>]+accept="\.csv,\.xlsx,\.xls"/);
     assert.match(html, /id="quick-food-import-file"[^>]+accept="\.csv,\.xlsx,\.xls"/);
     assert.match(html, /id="modal-quick-import"/);
     assert.match(html, /id="quick-import-preview-table"/);
-    assert.match(html, /ยืนยันเพิ่มลงตาราง/);
+    assert.match(html, /id="quick-import-progress"[^>]+hidden/);
+    assert.match(html, /id="quick-import-progress-count">0\/0/);
+    assert.match(html, /id="quick-import-confirm"[^>]*>[\s\S]*?data-lucide="circle-check"[\s\S]*?ยืนยันเพิ่มลงตาราง/);
     assert.match(source, /async function downloadQuickImportTemplate/);
     assert.match(source, /async function handleQuickTableImport/);
     assert.match(source, /function renderQuickImportPreview/);
     assert.match(source, /function confirmQuickTableImport/);
+    assert.match(source, /function isQuickImportHeaderRow/);
+    assert.match(source, /function sortQuickImportRowsByDate/);
+    assert.match(source, /วันที่ซื้อ \(เดือน-วัน-ปี\)/);
+    assert.match(source, /dateCell\.z = 'mm-dd-yyyy'/);
+    assert.match(source, /async function confirmQuickTableImport/);
+    assert.match(source, /setBatchUploadProgress\('quick-import', completed, total/);
+    assert.match(source, /function removeEmptyQuickFoodRowsBeforeImport/);
+    const confirmImportSection = source.slice(source.indexOf('function confirmQuickTableImport()'), source.indexOf('window.confirmQuickTableImport'));
+    assert.match(confirmImportSection, /removeEmptyQuickFoodRowsBeforeImport\(\);[\s\S]*for \(let index = 0; index < preview\.rows\.length; index\+\+\)/);
     assert.match(source, /ไฟล์หนึ่งครั้งรองรับไม่เกิน 1,000 รายการ/);
     assert.match(style, /\.quick-import-preview-table tbody tr\.has-error/);
 });
@@ -315,6 +365,7 @@ test('icons are rendered locally without loading an external icon library', () =
     assert.doesNotMatch(html, /unpkg\.com\/lucide@/);
     assert.match(source, /LOCAL_ICON_PATHS/);
     assert.match(source, /LOCAL_ICON_ALIASES/);
+    assert.match(source, /'circle-check': '<circle[^']+<path/);
     assert.match(source, /document\.createElementNS\('http:\/\/www\.w3\.org\/2000\/svg', 'svg'\)/);
     assert.match(source, /svg\.setAttribute\('stroke', 'currentColor'\)/);
     assert.match(source, /function addQuickExpenseRow[\s\S]*?initializeLucide\(\)/);
@@ -616,6 +667,33 @@ test('bill dates use configurable unambiguous English month abbreviations', () =
     assert.doesNotMatch(source, /toLocaleDateString/);
     assert.match(backendSystemSource, /dateFormat: this\.getConfigValue\('date_format', 'MMM_DD_YYYY'\)/);
     assert.match(backendSystemSource, /const allowedFormats = \['MMM_DD_YYYY', 'DD_MMM_YYYY', 'YYYY_MMM_DD', 'MMM_DD_BBBB'\]/);
+});
+
+test('month selectors start at the current Bangkok month while remaining user-selectable', () => {
+    const loadStateSection = source.slice(source.indexOf('function loadState()'), source.indexOf('function saveState()'));
+    const saveStateSection = source.slice(source.indexOf('function saveState()'), source.indexOf('// ==========================================================================', source.indexOf('function saveState()')));
+    assert.match(source, /function getCurrentBangkokPeriod/);
+    assert.match(source, /timeZone: 'Asia\/Bangkok'/);
+    assert.match(loadStateSection, /state\.selectedMonth = defaults\.selectedMonth/);
+    assert.match(loadStateSection, /state\.selectedYear = defaults\.selectedYear/);
+    assert.doesNotMatch(loadStateSection, /parsed\.selectedMonth|parsed\.selectedYear/);
+    assert.doesNotMatch(saveStateSection, /selectedMonth: state\.selectedMonth|selectedYear: state\.selectedYear/);
+    assert.match(source, /function syncSharedMonthSelectors/);
+    assert.match(source, /foodOverviewMonth\.value = postingMonth/);
+    assert.match(source, /monthInput\.value = getSelectedPostingMonth\(\)/);
+});
+
+test('dashboard displays all twelve monthly totals for the selected year', () => {
+    assert.match(html, /id="dashboard-year-summary-table"/);
+    assert.match(html, /id="dashboard-year-summary-body"/);
+    assert.match(html, /id="dashboard-year-total"/);
+    assert.match(source, /function cacheAuthorizedExpenseRecords/);
+    assert.match(source, /function renderDashboardAnnualSummary/);
+    assert.match(source, /Array\.from\(\{ length: 12 \}/);
+    assert.match(source, /function selectDashboardMonth/);
+    assert.match(source, /renderSection\('dashboard-year-summary', renderDashboardAnnualSummary\)/);
+    assert.match(style, /\.dashboard-year-summary-table/);
+    assert.match(style, /\.dashboard-year-month-button/);
 });
 
 test('alerts show full diagnostics to admin and concise guidance to other users', () => {

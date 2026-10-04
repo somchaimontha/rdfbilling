@@ -7,7 +7,7 @@
     <meta name="description" content="ระบบบันทึกและบริหารรายจ่ายโครงการ มูลนิธิ Dr. Robert Dyckerhoff  วิทยาลัยการอาชีพแม่สะเรียง">
     <!-- SweetAlert2 -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="stylesheet" href="style.css?v=20260930-25">
+    <link rel="stylesheet" href="style.css?v=20261004-03">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- node-qrcode (MIT) ไม่มี browser UMD build — path build/qrcode.min.js เดิม 404 มาตลอด (QRCode จึง undefined)
          โหลดผ่าน ESM bundle ของ jsdelivr (CommonJS→ESM) แล้ว expose เป็น window.QRCode ให้โค้ดเดิมใช้ได้
@@ -306,6 +306,35 @@
                     </div>
                 </div>
             </div>
+            <!-- Annual month-by-month overview -->
+            <div class="widget dashboard-year-summary-widget">
+                <div class="widget-header dashboard-year-summary-header">
+                    <div>
+                        <h3 class="widget-title" id="dashboard-year-summary-title">สรุปรายจ่ายรายเดือนประจำปี</h3>
+                        <span class="dashboard-year-summary-hint">คลิกชื่อเดือนเพื่อเปลี่ยนเดือนที่กำลังแสดง</span>
+                    </div>
+                    <div class="dashboard-year-summary-total">
+                        <span>รวมทั้งปี</span>
+                        <strong id="dashboard-year-total">฿0.00</strong>
+                    </div>
+                </div>
+                <div class="table-container dashboard-year-summary-container">
+                    <table class="data-table dashboard-year-summary-table" id="dashboard-year-summary-table">
+                        <thead>
+                            <tr>
+                                <th>เดือน</th>
+                                <th class="text-right">จำนวนบิล</th>
+                                <th class="text-right">ยอดเบิกมูลนิธิ</th>
+                                <th class="text-right">ยอดไม่เบิก</th>
+                                <th class="text-right">รวมทั้งหมด</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dashboard-year-summary-body">
+                            <tr><td colspan="5" class="empty-state">กำลังโหลดข้อมูลรายปี...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
             <!-- Recent Bills table -->
             <div class="widget">
                 <div class="widget-header">
@@ -588,6 +617,15 @@
                                     </tr>
                                 </tfoot>
                             </table>
+                        </div>
+                        <div class="batch-upload-progress" id="quick-food-save-progress" hidden aria-live="polite">
+                            <div class="batch-upload-progress-header">
+                                <strong id="quick-food-save-progress-label">กำลังอัปโหลดรายการค่าอาหาร</strong>
+                                <span id="quick-food-save-progress-count">0/0</span>
+                            </div>
+                            <div class="batch-upload-progress-track" id="quick-food-save-progress-track" role="progressbar" aria-label="ความคืบหน้าการอัปโหลดรายการค่าอาหาร" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+                                <span id="quick-food-save-progress-bar"></span>
+                            </div>
                         </div>
                         <div class="quick-entry-actions">
                             <button type="button" class="btn btn-outline quick-expense-clear-table" onclick="resetQuickFoodEntry()"><i data-lucide="eraser"></i> ล้างตาราง</button>
@@ -1495,18 +1533,46 @@
             </div>
             <button class="modal-close" id="modal-att-close"><i data-lucide="x"></i></button>
         </header>
+        <div class="attachment-record-summary" id="att-record-summary" aria-live="polite">
+            <table class="attachment-record-summary-table">
+                <thead>
+                    <tr>
+                        <th scope="col">เลขบิล / ใบเสร็จ</th>
+                        <th scope="col">วันที่ / รอบ</th>
+                        <th scope="col">รายละเอียดรายการ</th>
+                        <th scope="col" class="text-right">จำนวนเงิน</th>
+                    </tr>
+                </thead>
+                <tbody id="att-record-summary-body">
+                    <tr><td colspan="4">กำลังโหลดข้อมูลรายการ...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <section class="attachment-upload-queue" id="att-upload-queue" hidden aria-live="polite"></section>
         <div class="modal-body attachment-drop-zone" id="modal-att-body" data-attachment-drop-zone tabindex="0" style="min-height:180px;"
             ondragover="setAttachmentDropZoneState(event, true)" ondragleave="setAttachmentDropZoneState(event, false)" ondrop="handleSavedAttachmentDrop(event)" onpaste="handleSavedAttachmentPaste(event)">
             <!-- Dynamic content -->
         </div>
-        <footer class="modal-footer" style="align-items:center;">
-            <span style="font-size:12px;color:var(--text-muted);flex:1;">รองรับ: รูปภาพ (JPG, PNG) และ PDF สูงสุด 4MB ต่อไฟล์</span>
-            <span class="attachment-drop-hint"><i data-lucide="clipboard-paste"></i> ลากไฟล์มาวาง หรือกด Ctrl+V</span>
-            <label class="btn btn-secondary" for="att-file-input" style="cursor:pointer;">
-                <i data-lucide="upload"></i> เพิ่มหลักฐาน
-            </label>
-            <input type="file" id="att-file-input" accept=".jpg,.jpeg,.png,.webp,.pdf,.csv,.xls,.xlsx" multiple style="display:none;">
-            <button class="btn btn-secondary" id="modal-att-close-btn">ปิด</button>
+        <footer class="modal-footer attachment-modal-footer">
+            <div class="attachment-upload-options">
+                <span>รองรับ: JPG, PNG, WEBP, PDF, XLSX, DOCX และ CSV</span>
+                <label class="attachment-enhance-option" title="ปรับแสง ลดเงา และเพิ่มความคมชัดของภาพเอกสารก่อนอัปโหลด">
+                    <input type="checkbox" id="att-enhance-image" checked>
+                    <span>ปรับภาพเอกสารอัตโนมัติ</span>
+                </label>
+                <span class="attachment-drop-hint"><i data-lucide="clipboard-paste"></i> ลากไฟล์มาวาง หรือกด Ctrl+V</span>
+            </div>
+            <div class="attachment-upload-actions">
+                <label class="btn btn-secondary" for="att-camera-input" style="cursor:pointer;">
+                    <i data-lucide="camera"></i> ถ่ายภาพ
+                </label>
+                <input type="file" id="att-camera-input" accept="image/*" capture="environment" style="display:none;">
+                <label class="btn btn-secondary" for="att-file-input" style="cursor:pointer;">
+                    <i data-lucide="upload"></i> เลือกไฟล์
+                </label>
+                <input type="file" id="att-file-input" accept=".jpg,.jpeg,.png,.webp,.pdf,.csv,.xls,.xlsx,.docx" multiple style="display:none;">
+                <button class="btn btn-secondary" id="modal-att-close-btn">ปิด</button>
+            </div>
         </footer>
     </div>
 </div>
@@ -1673,10 +1739,19 @@
                 </table>
             </div>
             <div class="quick-import-errors" id="quick-import-errors" role="alert" hidden></div>
+            <div class="batch-upload-progress" id="quick-import-progress" hidden aria-live="polite">
+                <div class="batch-upload-progress-header">
+                    <strong id="quick-import-progress-label">กำลังเพิ่มรายการจากไฟล์ลงตาราง</strong>
+                    <span id="quick-import-progress-count">0/0</span>
+                </div>
+                <div class="batch-upload-progress-track" id="quick-import-progress-track" role="progressbar" aria-label="ความคืบหน้าการนำเข้าข้อมูล" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+                    <span id="quick-import-progress-bar"></span>
+                </div>
+            </div>
         </div>
         <footer class="modal-footer">
             <button type="button" class="btn btn-secondary" onclick="closeQuickImportPreview()">ย้อนกลับ</button>
-            <button type="button" class="btn btn-primary" id="quick-import-confirm" onclick="confirmQuickTableImport()"><i data-lucide="check-circle"></i> ยืนยันเพิ่มลงตาราง</button>
+            <button type="button" class="btn btn-primary" id="quick-import-confirm" onclick="confirmQuickTableImport()"><i data-lucide="circle-check"></i> ยืนยันเพิ่มลงตาราง</button>
         </footer>
     </div>
 </div>
@@ -2347,7 +2422,7 @@
 
 <!-- Application Scripts -->
 <script src="thai-baht.js"></script>
-<script src="app.js?v=20260930-25"></script>
+<script src="app.js?v=20261004-03"></script>
 <script>
     // Wire up Master Data modal buttons
     (document.getElementById('modal-master-close') || {}).addEventListener?.('click', closeMasterModal);

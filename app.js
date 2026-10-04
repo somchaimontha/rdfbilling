@@ -341,6 +341,23 @@ const ATTACHMENT_LOAD_CONCURRENCY = 3;
 const REPORT_EMBEDDED_IMAGE_MAX_WIDTH = 1280;
 const REPORT_EMBEDDED_IMAGE_MAX_HEIGHT = 1680;
 const REPORT_EMBEDDED_IMAGE_QUALITY = 0.82;
+let authorizedExpenseRecordCache = { token: '', loaded: false, records: [] };
+
+function cacheAuthorizedExpenseRecords(records) {
+    authorizedExpenseRecordCache = {
+        token: localStorage.getItem('rdf_session_token') || '',
+        loaded: true,
+        records: Array.isArray(records) ? records : []
+    };
+    return authorizedExpenseRecordCache.records;
+}
+
+function getCachedAuthorizedExpenseRecords() {
+    const token = localStorage.getItem('rdf_session_token') || '';
+    return authorizedExpenseRecordCache.loaded && authorizedExpenseRecordCache.token === token
+        ? authorizedExpenseRecordCache.records
+        : null;
+}
 
 async function mapWithConcurrency(items, limit, worker) {
     const queue = Array.isArray(items) ? items : [];
@@ -405,14 +422,16 @@ async function fetchAllExpensesForMonth(month, options = {}) {
         page => apiCall('getExpenses', null, null, { page, limit: API_LIST_PAGE_SIZE }, options),
         response => response.expenses || []
     );
+    cacheAuthorizedExpenseRecords(allRecords);
     return allRecords.filter(expense => getExpensePostingMonth(expense) === month);
 }
 
 async function fetchAllExpensesForYear(year) {
-    const allRecords = await fetchAllPagedRecords(
+    const cachedRecords = getCachedAuthorizedExpenseRecords();
+    const allRecords = cachedRecords || cacheAuthorizedExpenseRecords(await fetchAllPagedRecords(
         page => apiCall('getExpenses', null, null, { page, limit: API_LIST_PAGE_SIZE }),
         response => response.expenses || []
-    );
+    ));
     const yearPrefix = `${String(year)}-`;
     return allRecords.filter(expense => getExpensePostingMonth(expense).startsWith(yearPrefix));
 }
@@ -999,10 +1018,25 @@ function setFormControlsBusy(form, busy) {
 // ==========================================================================
 // Default State (v4)
 // ==========================================================================
-function getDefaultState() {
+function getCurrentBangkokPeriod() {
     const now = new Date();
-    const currentMonth = now.getMonth() + 1; // 1-12
-    const currentYearBE = now.getFullYear() + 543; // BE Year
+    try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'Asia/Bangkok',
+            year: 'numeric',
+            month: 'numeric'
+        }).formatToParts(now);
+        const year = Number((parts.find(part => part.type === 'year') || {}).value);
+        const month = Number((parts.find(part => part.type === 'month') || {}).value);
+        if (year && month >= 1 && month <= 12) return { month, yearBE: year + 543 };
+    } catch (error) {}
+    return { month: now.getMonth() + 1, yearBE: now.getFullYear() + 543 };
+}
+
+function getDefaultState() {
+    const currentPeriod = getCurrentBangkokPeriod();
+    const currentMonth = currentPeriod.month;
+    const currentYearBE = currentPeriod.yearBE;
 
     return {
         // ---- Master Data ----
@@ -1615,8 +1649,10 @@ function loadState() {
             const parsed = JSON.parse(savedSettings);
             state.theme = parsed.theme || 'light';
             state.activeTab = parsed.activeTab || 'dashboard';
-            state.selectedMonth = parsed.selectedMonth || defaults.selectedMonth;
-            state.selectedYear = parsed.selectedYear || defaults.selectedYear;
+            // Month/year always start at the current Bangkok period after a
+            // new page load. User changes remain active for the current session.
+            state.selectedMonth = defaults.selectedMonth;
+            state.selectedYear = defaults.selectedYear;
             state.calculationMode = parsed.calculationMode || 'all';
             state.signatures = { ...defaults.signatures, ...(parsed.signatures || {}) };
             state.signatureLibrary = Array.isArray(parsed.signatureLibrary) ? parsed.signatureLibrary : [];
@@ -1652,8 +1688,6 @@ function saveState() {
     const uiSettings = {
         theme: state.theme,
         activeTab: state.activeTab,
-        selectedMonth: state.selectedMonth,
-        selectedYear: state.selectedYear,
         calculationMode: state.calculationMode,
         signatures: state.signatures,
         signatureLibrary: state.signatureLibrary || [],
@@ -1671,6 +1705,7 @@ const LOCAL_ICON_PATHS = Object.freeze({
     'plus-circle': '<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
     x: '<path d="m6 6 12 12M18 6 6 18"/>',
     check: '<path d="m5 12 4 4L19 6"/>',
+    'circle-check': '<circle cx="12" cy="12" r="9"/><path d="m8 12 2.7 2.7L16.5 9"/>',
     'chevron-up': '<path d="m6 15 6-6 6 6"/>',
     'chevron-down': '<path d="m6 9 6 6 6-6"/>',
     pencil: '<path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/>',
@@ -1729,7 +1764,8 @@ const LOCAL_ICON_ALIASES = Object.freeze({
     'file-spreadsheet': 'table', 'table-2': 'table', 'layout-dashboard': 'dashboard',
     'calendar-days': 'calendar', 'user-circle': 'user', 'user-plus': 'user',
     'user-check': 'user', 'user-x': 'user', 'folder-open': 'folder', 'folder-plus': 'folder',
-    'graduation-cap': 'graduation', 'shield-check': 'shield', 'check-circle-2': 'check',
+    'graduation-cap': 'graduation', 'shield-check': 'shield', 'check-circle': 'circle-check',
+    'check-circle-2': 'circle-check',
     'alert-triangle': 'alert', 'upload-cloud': 'upload', 'refresh-cw': 'refresh',
     'rotate-ccw': 'refresh', 'external-link': 'maximize', 'maximize-2': 'maximize',
     'sliders-horizontal': 'sliders', 'list-checks': 'receipt', 'list-plus': 'plus',
@@ -1821,8 +1857,15 @@ function setupDropdownDefaults() {
     (document.getElementById('select-month') || {}).value = state.selectedMonth;
     (document.getElementById('select-year') || {}).value = state.selectedYear;
     (document.getElementById('select-calc-mode') || {}).value = state.calculationMode;
+    syncSharedMonthSelectors();
 
     updateMonthStatusCheckboxUI();
+}
+
+function syncSharedMonthSelectors() {
+    const postingMonth = getSelectedPostingMonth();
+    const foodOverviewMonth = document.getElementById('food-overview-month');
+    if (foodOverviewMonth) foodOverviewMonth.value = postingMonth;
 }
 
 // ==========================================================================
@@ -1849,12 +1892,14 @@ function setupEventBindings() {
     // Month / Year / Calculation Mode
     (document.getElementById('select-month') || {}).addEventListener?.('change', async (e) => {
         state.selectedMonth = parseInt(e.target.value, 10);
+        syncSharedMonthSelectors();
         updateMonthStatusCheckboxUI();
         saveState();
         await initAppWithAPI();
     });
     (document.getElementById('select-year') || {}).addEventListener?.('change', async (e) => {
         state.selectedYear = parseInt(e.target.value, 10);
+        syncSharedMonthSelectors();
         updateMonthStatusCheckboxUI();
         saveState();
         await initAppWithAPI();
@@ -2640,7 +2685,7 @@ function switchTab(tabName) {
     if (tabName === 'claims-view') renderClaims();
     if (tabName === 'food-overview') {
         const monthInput = document.getElementById('food-overview-month');
-        if (monthInput && !monthInput.value) monthInput.value = getSelectedPostingMonth();
+        if (monthInput) monthInput.value = getSelectedPostingMonth();
         loadFoodOverview();
     }
     if (tabName === 'user-management') {
@@ -2983,6 +3028,7 @@ function renderAll() {
     renderSection('metrics', updateMetricsBar);
     renderSection('tables', renderTables);
     renderSection('charts', renderCharts);
+    renderSection('dashboard-year-summary', renderDashboardAnnualSummary);
     renderSection('spreadsheet', renderSpreadsheet);
     renderSection('project-filter', renderProjectFilterDropdown);
     renderSection('fund-receipt-widget', updateFundReceiptWidget);
@@ -3015,6 +3061,79 @@ function renderProjectFilterDropdown() {
 // ==========================================================================
 // TAB 1: Dashboard Charts
 // ==========================================================================
+function recordMatchesCalculationMode(record) {
+    if (state.calculationMode === 'claim') return Boolean(record.claimable);
+    if (state.calculationMode === 'no-claim') return !record.claimable;
+    return true;
+}
+
+function renderDashboardAnnualSummary() {
+    const tbody = document.getElementById('dashboard-year-summary-body');
+    if (!tbody) return;
+    const title = document.getElementById('dashboard-year-summary-title');
+    const totalElement = document.getElementById('dashboard-year-total');
+    const ceYear = Number(state.selectedYear) - 543;
+    const currentPeriod = getCurrentBangkokPeriod();
+    const cachedRecords = getCachedAuthorizedExpenseRecords();
+    const source = cachedRecords || [...(state.expenses || []), ...(state.attachments || [])];
+    const byMonth = Array.from({ length: 12 }, () => ({ count: 0, claimable: 0, nonClaimable: 0, total: 0 }));
+
+    source.forEach(record => {
+        if (!record || record.status === 'cancelled' || !recordMatchesCalculationMode(record)) return;
+        const monthKey = getExpensePostingMonth(record);
+        if (!monthKey.startsWith(`${ceYear}-`)) return;
+        const monthIndex = Number(monthKey.slice(5, 7)) - 1;
+        if (monthIndex < 0 || monthIndex > 11) return;
+        const amount = Number(record.amount || record.totalAmount || 0) || 0;
+        byMonth[monthIndex].count += 1;
+        byMonth[monthIndex].total += amount;
+        if (record.claimable) byMonth[monthIndex].claimable += amount;
+        else byMonth[monthIndex].nonClaimable += amount;
+    });
+
+    const annualTotal = byMonth.reduce((sum, month) => sum + month.total, 0);
+    const maxMonthTotal = Math.max(0, ...byMonth.map(month => month.total));
+    const modeLabel = state.calculationMode === 'claim'
+        ? 'เฉพาะยอดเบิกมูลนิธิ'
+        : state.calculationMode === 'no-claim' ? 'เฉพาะยอดไม่เบิก' : 'ข้อมูลทั้งหมด';
+    if (title) title.textContent = `สรุปรายจ่ายรายเดือน พ.ศ. ${state.selectedYear} — ${modeLabel}`;
+    if (totalElement) totalElement.textContent = `฿${annualTotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    tbody.innerHTML = byMonth.map((month, index) => {
+        const monthNumber = index + 1;
+        const share = maxMonthTotal > 0 ? Math.max(3, Math.round((month.total / maxMonthTotal) * 100)) : 0;
+        const isSelected = monthNumber === Number(state.selectedMonth);
+        const isCurrentCalendarMonth = state.selectedYear === currentPeriod.yearBE && monthNumber === currentPeriod.month;
+        return `<tr class="${isSelected ? 'is-selected-month' : ''} ${isCurrentCalendarMonth ? 'is-current-calendar-month' : ''}">
+            <td>
+                <button type="button" class="dashboard-year-month-button" onclick="selectDashboardMonth(${monthNumber})" ${isSelected ? 'aria-current="true"' : ''} title="แสดงข้อมูลเดือน${THAI_MONTH_NAMES[index]}">
+                    <span>${THAI_MONTH_NAMES[index]}</span>
+                    ${month.total > 0 ? `<span class="dashboard-year-month-bar" style="--month-share:${share}%" aria-hidden="true"></span>` : ''}
+                </button>
+            </td>
+            <td class="text-right">${month.count.toLocaleString('th-TH')}</td>
+            <td class="text-right">฿${month.claimable.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            <td class="text-right">฿${month.nonClaimable.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            <td class="text-right font-bold">฿${month.total.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+        </tr>`;
+    }).join('');
+}
+
+async function selectDashboardMonth(month) {
+    const normalizedMonth = Number(month);
+    if (!Number.isInteger(normalizedMonth) || normalizedMonth < 1 || normalizedMonth > 12) return;
+    state.selectedMonth = normalizedMonth;
+    const monthSelect = document.getElementById('select-month');
+    if (monthSelect) monthSelect.value = String(normalizedMonth);
+    syncSharedMonthSelectors();
+    updateMonthStatusCheckboxUI();
+    saveState();
+    await initAppWithAPI();
+    const filterBar = document.querySelector('main > .header-filters, .main-content > .header-filters');
+    if (filterBar) filterBar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+window.selectDashboardMonth = selectDashboardMonth;
+
 function renderCharts() {
     const isDark = state.theme === 'dark';
     const textColor = isDark ? '#e5e7eb' : '#374151';
@@ -3231,6 +3350,7 @@ function renderTables() {
     syncQuickFoodEntryPeriod();
     bindTableActionButtons();
     initializeLucide();
+    hydrateVisibleAttachmentThumbnails();
 }
 
 function bindTableActionButtons() {
@@ -4421,13 +4541,13 @@ function createAttachmentFileEvent(files) {
 async function handleSavedAttachmentDrop(event) {
     const files = getDroppedAttachmentFiles(event);
     if (!files.length || !currentExpAttId) return;
-    await handleAttachmentUpload(currentExpAttId, files);
+    stageExpenseAttachmentFiles(currentExpAttId, files);
 }
 
 async function handleSavedAttachmentPaste(event) {
     const files = getPastedAttachmentFiles(event);
     if (!files.length || !currentExpAttId) return;
-    await handleAttachmentUpload(currentExpAttId, files);
+    stageExpenseAttachmentFiles(currentExpAttId, files);
 }
 
 async function handleBillAttachmentDrop(event) {
@@ -4531,12 +4651,118 @@ function compressImage(file, maxSizeMB = 2) {
                 ctx.drawImage(img, 0, 0, width, height);
                 
                 canvas.toBlob(blob => {
-                    const newFile = new File([blob], file.name, { type: 'image/jpeg', lastModified: Date.now() });
+                    const jpegName = /\.jpe?g$/i.test(file.name)
+                        ? file.name
+                        : `${String(file.name || 'image').replace(/\.[^.]+$/, '') || 'image'}.jpg`;
+                    const newFile = new File([blob], jpegName, { type: 'image/jpeg', lastModified: Date.now() });
                     resolve({ file: newFile, compressed: true, originalSize: file.size });
                 }, 'image/jpeg', 0.7);
             };
         };
         reader.onerror = error => reject(error);
+    });
+}
+
+function getEnhancedReceiptFileName(fileName) {
+    const name = String(fileName || 'receipt').replace(/\.[^.]+$/, '') || 'receipt';
+    return `${name}-enhanced.jpg`;
+}
+
+// Receipt photos often have uneven lighting from the phone or a nearby hand.
+// This keeps processing local to the browser: normalize the blurred background,
+// add modest contrast, then apply a light four-neighbour sharpen. The original
+// Drive file is not touched because this runs before the new upload starts.
+function enhanceReceiptImage(file) {
+    return new Promise((resolve, reject) => {
+        if (!file || !String(file.type || '').startsWith('image/')) {
+            resolve(file);
+            return;
+        }
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('ไม่สามารถอ่านภาพเพื่อปรับความคมชัดได้'));
+        reader.onload = event => {
+            const image = new Image();
+            image.onerror = () => reject(new Error('ไม่สามารถประมวลผลภาพที่เลือกได้'));
+            image.onload = () => {
+                try {
+                    const maxDimension = 1800;
+                    const naturalWidth = image.naturalWidth || image.width;
+                    const naturalHeight = image.naturalHeight || image.height;
+                    const scale = Math.min(1, maxDimension / Math.max(naturalWidth, naturalHeight));
+                    const width = Math.max(1, Math.round(naturalWidth * scale));
+                    const height = Math.max(1, Math.round(naturalHeight * scale));
+                    const canvas = document.createElement('canvas');
+                    const shadowCanvas = document.createElement('canvas');
+                    canvas.width = shadowCanvas.width = width;
+                    canvas.height = shadowCanvas.height = height;
+                    const context = canvas.getContext('2d', { willReadFrequently: true });
+                    const shadowContext = shadowCanvas.getContext('2d', { willReadFrequently: true });
+                    if (!context || !shadowContext) throw new Error('อุปกรณ์นี้ไม่รองรับการปรับภาพเอกสาร');
+
+                    context.fillStyle = '#ffffff';
+                    context.fillRect(0, 0, width, height);
+                    context.drawImage(image, 0, 0, width, height);
+                    shadowContext.fillStyle = '#ffffff';
+                    shadowContext.fillRect(0, 0, width, height);
+                    shadowContext.filter = `blur(${Math.max(12, Math.round(Math.min(width, height) / 55))}px)`;
+                    shadowContext.drawImage(image, 0, 0, width, height);
+                    shadowContext.filter = 'none';
+
+                    const source = context.getImageData(0, 0, width, height);
+                    const background = shadowContext.getImageData(0, 0, width, height).data;
+                    const corrected = new Uint8ClampedArray(source.data);
+                    for (let i = 0; i < corrected.length; i += 4) {
+                        const backgroundLuma = (0.2126 * background[i]) + (0.7152 * background[i + 1]) + (0.0722 * background[i + 2]);
+                        const shadowGain = Math.min(1.55, Math.max(0.9, 238 / Math.max(105, backgroundLuma)));
+                        let red = source.data[i] * shadowGain;
+                        let green = source.data[i + 1] * shadowGain;
+                        let blue = source.data[i + 2] * shadowGain;
+                        const grey = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+                        red = (red * 0.9) + (grey * 0.1);
+                        green = (green * 0.9) + (grey * 0.1);
+                        blue = (blue * 0.9) + (grey * 0.1);
+                        corrected[i] = Math.max(0, Math.min(255, ((red - 128) * 1.1) + 128));
+                        corrected[i + 1] = Math.max(0, Math.min(255, ((green - 128) * 1.1) + 128));
+                        corrected[i + 2] = Math.max(0, Math.min(255, ((blue - 128) * 1.1) + 128));
+                    }
+
+                    const sharpened = new Uint8ClampedArray(corrected);
+                    for (let y = 1; y < height - 1; y++) {
+                        for (let x = 1; x < width - 1; x++) {
+                            const offset = (y * width + x) * 4;
+                            const left = offset - 4;
+                            const right = offset + 4;
+                            const above = offset - (width * 4);
+                            const below = offset + (width * 4);
+                            for (let channel = 0; channel < 3; channel++) {
+                                const value = (corrected[offset + channel] * 1.4)
+                                    - (corrected[left + channel] * 0.1)
+                                    - (corrected[right + channel] * 0.1)
+                                    - (corrected[above + channel] * 0.1)
+                                    - (corrected[below + channel] * 0.1);
+                                sharpened[offset + channel] = Math.max(0, Math.min(255, value));
+                            }
+                        }
+                    }
+                    source.data.set(sharpened);
+                    context.putImageData(source, 0, 0);
+                    canvas.toBlob(blob => {
+                        if (!blob) {
+                            reject(new Error('ไม่สามารถสร้างภาพเอกสารที่ปรับแล้วได้'));
+                            return;
+                        }
+                        resolve(new File([blob], getEnhancedReceiptFileName(file.name), {
+                            type: 'image/jpeg',
+                            lastModified: Date.now()
+                        }));
+                    }, 'image/jpeg', 0.9);
+                } catch (error) {
+                    reject(error);
+                }
+            };
+            image.src = event.target.result;
+        };
+        reader.readAsDataURL(file);
     });
 }
 
@@ -4615,8 +4841,20 @@ function renderTempBillAttachmentsPreview(expId) {
             const div = document.createElement('div');
             div.style = 'position:relative; width:48px; height:48px; border:1px solid var(--border-color); border-radius:4px; overflow:hidden; opacity:0.7;';
             div.title = "ไฟล์แนบที่มีอยู่แล้วในระบบ";
-            div.innerHTML = `<img src="${att.viewUrl}" style="width:100%; height:100%; object-fit:cover;" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'32\\' height=\\'32\\' viewBox=\\'0 0 24 24\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'2\\' stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\'><path d=\\'M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z\\'/></svg>'">`;
-            if(container) container.appendChild(div);
+            if (inferAttachmentMime(att).startsWith('image/')) {
+                div.innerHTML = `<img src="${ATTACHMENT_PREVIEW_PLACEHOLDER}" class="is-loading" alt="${escapeHTML(getAttachmentDisplayName(att))}" style="width:100%; height:100%; object-fit:cover;">`;
+            } else {
+                div.innerHTML = '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#f1f5f9;font-size:9px;font-weight:700;color:var(--text-secondary);">FILE</div>';
+            }
+            if (container) container.appendChild(div);
+            const image = div.querySelector('img');
+            if (image) getAttachmentImageDataUrl(att).then(dataUrl => {
+                if (!dataUrl) throw new Error('preview unavailable');
+                image.src = dataUrl;
+                image.classList.remove('is-loading');
+            }).catch(() => {
+                div.innerHTML = '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#f1f5f9;font-size:9px;font-weight:700;color:var(--text-secondary);">IMAGE</div>';
+            });
         });
     }
 
@@ -4841,10 +5079,134 @@ function getStorageUsageKB() {
 // PHASE 2: Expense Attachment Modal
 // ==========================================================================
 let currentExpAttId = null;
+let pendingExpenseAttachmentFiles = [];
+let expenseAttachmentUploadInProgress = false;
+const ATTACHMENT_PREVIEW_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+
+function getExpenseAttachmentRecord(expId) {
+    return [...(state.expenses || []), ...(state.attachments || [])]
+        .find(item => String(item && item.id) === String(expId)) || null;
+}
+
+function getAttachmentDisplayName(attachment) {
+    return String((attachment && (attachment.originalFileName || attachment.fileName || attachment.storedFileName || attachment.name)) || 'ไฟล์หลักฐาน');
+}
+
+function renderExpenseAttachmentRecordSummary(expId) {
+    const tbody = document.getElementById('att-record-summary-body');
+    if (!tbody) return;
+    const expense = getExpenseAttachmentRecord(expId);
+    if (!expense) {
+        tbody.innerHTML = '<tr><td colspan="4">ไม่พบข้อมูลรายการสำหรับตรวจสอบ</td></tr>';
+        return;
+    }
+    const amount = Number(expense.amount || expense.totalAmount || 0) || 0;
+    const quantity = Number(expense.quantity || 0) || 0;
+    const unitPrice = Number(expense.unitPrice || 0) || 0;
+    const vendorName = expense.vendorId ? getVendorName(expense.vendorId) : '';
+    const calculation = quantity && unitPrice
+        ? `${quantity.toLocaleString('th-TH')} ${expense.unit || 'รายการ'} × ฿${unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        : '';
+    tbody.innerHTML = `
+        <tr>
+            <td>
+                <span class="attachment-summary-primary">${escapeHTML(expense.documentNo || 'รอเลขบิล')}</span>
+                <span class="attachment-summary-secondary">เล่มที่ / เลขที่ ${escapeHTML(expense.receiptNo || '-')}</span>
+            </td>
+            <td>
+                <span class="attachment-summary-primary">${escapeHTML(formatThaiDate(expense.expenseDate) || '-')}</span>
+                <span class="attachment-summary-secondary">รอบ ${escapeHTML(formatPostingMonth(getExpensePostingMonth(expense)))}</span>
+            </td>
+            <td>
+                <span class="attachment-summary-primary">${escapeHTML(expense.description || '-')}</span>
+                ${vendorName || calculation ? `<span class="attachment-summary-secondary">${[vendorName, calculation].filter(Boolean).map(escapeHTML).join(' · ')}</span>` : ''}
+            </td>
+            <td class="text-right">
+                <span class="attachment-summary-primary">฿${amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </td>
+        </tr>`;
+}
+
+function clearPendingExpenseAttachmentFiles() {
+    pendingExpenseAttachmentFiles.forEach(item => {
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    });
+    pendingExpenseAttachmentFiles = [];
+    renderPendingExpenseAttachmentFiles();
+}
+
+function stageExpenseAttachmentFiles(expId, files) {
+    if (!expId || String(expId) !== String(currentExpAttId)) return;
+    Array.from(files || []).forEach(file => {
+        if (!file) return;
+        const duplicate = pendingExpenseAttachmentFiles.some(item =>
+            item.file.name === file.name && item.file.size === file.size && item.file.lastModified === file.lastModified
+        );
+        if (duplicate) return;
+        pendingExpenseAttachmentFiles.push({
+            file,
+            previewUrl: String(file.type || '').startsWith('image/') ? URL.createObjectURL(file) : '',
+            error: ''
+        });
+    });
+    renderPendingExpenseAttachmentFiles();
+}
+
+function removePendingExpenseAttachmentFile(index) {
+    if (expenseAttachmentUploadInProgress) return;
+    const removed = pendingExpenseAttachmentFiles.splice(index, 1)[0];
+    if (removed && removed.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+    renderPendingExpenseAttachmentFiles();
+}
+
+function renderPendingExpenseAttachmentFiles() {
+    const container = document.getElementById('att-upload-queue');
+    if (!container) return;
+    if (!pendingExpenseAttachmentFiles.length) {
+        container.hidden = true;
+        container.innerHTML = '';
+        return;
+    }
+    container.hidden = false;
+    const errorMessages = pendingExpenseAttachmentFiles.map(item => item.error).filter(Boolean);
+    container.innerHTML = `
+        <div class="attachment-upload-queue-header">
+            <strong>ตรวจสอบไฟล์ก่อนอัปโหลด (${pendingExpenseAttachmentFiles.length})</strong>
+            <span class="attachment-summary-secondary">ภาพจะยังไม่ถูกส่งจนกว่าจะกดยืนยัน</span>
+        </div>
+        <div class="attachment-upload-queue-list">
+            ${pendingExpenseAttachmentFiles.map((item, index) => {
+                const name = getAttachmentDisplayName(item.file);
+                const preview = item.previewUrl
+                    ? `<img src="${escapeHTML(item.previewUrl)}" alt="ตัวอย่าง ${escapeHTML(name)}">`
+                    : `<div class="att-icon-file"><i data-lucide="file-text"></i><span>${escapeHTML(name.split('.').pop().toUpperCase())}</span></div>`;
+                return `<div class="attachment-upload-queue-item">
+                    <div class="attachment-upload-queue-preview">${preview}</div>
+                    <span class="attachment-upload-queue-name" title="${escapeHTML(name)}">${escapeHTML(name)}</span>
+                    <button type="button" class="attachment-upload-queue-remove" onclick="removePendingExpenseAttachmentFile(${index})" ${expenseAttachmentUploadInProgress ? 'disabled' : ''} title="นำไฟล์นี้ออก" aria-label="นำไฟล์ ${escapeHTML(name)} ออก"><i data-lucide="x"></i></button>
+                </div>`;
+            }).join('')}
+        </div>
+        <div class="attachment-upload-queue-actions">
+            <span class="attachment-summary-secondary">${expenseAttachmentUploadInProgress ? 'กำลังประมวลผลและอัปโหลด กรุณารอสักครู่...' : 'ตรวจเลขบิลและรายละเอียดด้านบนก่อนยืนยัน'}</span>
+            <div class="attachment-upload-actions">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="clearPendingExpenseAttachmentFiles()" ${expenseAttachmentUploadInProgress ? 'disabled' : ''}>ยกเลิก</button>
+                <button type="button" class="btn btn-primary btn-sm" onclick="confirmExpenseAttachmentUpload()" ${expenseAttachmentUploadInProgress ? 'disabled' : ''}><i data-lucide="upload-cloud"></i> ยืนยันอัปโหลด ${pendingExpenseAttachmentFiles.length} ไฟล์</button>
+            </div>
+        </div>
+        ${errorMessages.length ? `<p class="attachment-upload-queue-error">${errorMessages.map(escapeHTML).join('<br>')}</p>` : ''}`;
+    initializeLucide();
+}
+
+async function confirmExpenseAttachmentUpload() {
+    if (!currentExpAttId || !pendingExpenseAttachmentFiles.length || expenseAttachmentUploadInProgress) return;
+    await handleAttachmentUpload(currentExpAttId, pendingExpenseAttachmentFiles.map(item => item.file));
+}
 
 async function openExpenseAttachmentModal(expId) {
     currentExpAttId = expId;
-    const exp = state.expenses.find(e => e.id === expId);
+    clearPendingExpenseAttachmentFiles();
+    const exp = getExpenseAttachmentRecord(expId);
     const docNo = exp ? exp.documentNo : '';
     const desc = exp ? exp.description : '';
     (document.getElementById('modal-att-title') || {}).textContent =
@@ -4852,13 +5214,29 @@ async function openExpenseAttachmentModal(expId) {
 
     const storageEl = document.getElementById('att-storage-info');
     if (storageEl) storageEl.textContent = `ระบบจัดเก็บบน Google Drive คลาวด์`;
+    renderExpenseAttachmentRecordSummary(expId);
 
-    // Wire file input
+    // Wire file inputs. Mobile browsers open the rear camera for the camera input.
     const fileInput = document.getElementById('att-file-input');
     if (fileInput) {
         fileInput.value = '';
-        fileInput.onchange = () => handleAttachmentUpload(expId, fileInput.files);
+        fileInput.onchange = () => {
+            stageExpenseAttachmentFiles(expId, fileInput.files);
+            fileInput.value = '';
+        };
     }
+    const cameraInput = document.getElementById('att-camera-input');
+    if (cameraInput) {
+        cameraInput.value = '';
+        cameraInput.onchange = () => {
+            stageExpenseAttachmentFiles(expId, cameraInput.files);
+            cameraInput.value = '';
+        };
+    }
+
+    const body = document.getElementById('modal-att-body');
+    if (body) body.innerHTML = '<div class="att-empty"><p>กำลังโหลดหลักฐานแนบ...</p></div>';
+    document.getElementById('modal-attachments').classList.add('active');
 
     showLoading(true);
     try {
@@ -4866,16 +5244,17 @@ async function openExpenseAttachmentModal(expId) {
         attachmentStore[expId] = res.attachments || [];
         renderExpenseAttachmentModal(expId);
     } catch (err) {
+        if (body) body.innerHTML = '<div class="att-empty"><p>โหลดรายการหลักฐานไม่สำเร็จ</p><small>ยังสามารถเลือกไฟล์ไว้ก่อนได้ แล้วลองเปิดรายการใหม่อีกครั้ง</small></div>';
         appAlert('ดึงข้อมูลไฟล์แนบล้มเหลว: ' + err.message);
     } finally {
         showLoading(false);
     }
-    
-    document.getElementById('modal-attachments').classList.add('active');
 }
 
 function closeExpenseAttachmentModal() {
+    if (expenseAttachmentUploadInProgress) return;
     document.getElementById('modal-attachments').classList.remove('active');
+    clearPendingExpenseAttachmentFiles();
     currentExpAttId = null;
     renderTables();
 }
@@ -4896,16 +5275,19 @@ function renderExpenseAttachmentModal(expId) {
         return;
     }
 
-    body.innerHTML = `<div class="att-grid">${attachments.map((att, i) => `
+    body.innerHTML = `<div class="att-grid">${attachments.map((att, i) => {
+        const fileName = getAttachmentDisplayName(att);
+        const mimeType = inferAttachmentMime(att);
+        return `
         <div class="att-item">
             <div class="att-preview" onclick="previewAttachmentFile('${expId}',${i})">
-                ${att.fileType && att.fileType.startsWith('image/')
-                    ? `<img src="${att.fileUrl}" class="att-thumb" alt="${att.fileName}">`
-                    : `<div class="att-icon-file"><i data-lucide="file-text"></i><span>${att.fileName.split('.').pop().toUpperCase()}</span></div>`
+                ${mimeType.startsWith('image/')
+                    ? `<img src="${ATTACHMENT_PREVIEW_PLACEHOLDER}" class="att-thumb is-loading" data-att-preview-index="${i}" alt="${escapeHTML(fileName)}">`
+                    : `<div class="att-icon-file"><i data-lucide="file-text"></i><span>${escapeHTML(fileName.split('.').pop().toUpperCase())}</span></div>`
                 }
             </div>
             <div class="att-info">
-                <div class="att-name" title="${att.fileName}">${att.fileName}</div>
+                <div class="att-name" title="${escapeHTML(fileName)}">${escapeHTML(fileName)}</div>
                 <div class="att-date">${att.uploadedAt ? formatThaiDate(att.uploadedAt) : ''}</div>
             </div>
             <div class="att-item-actions">
@@ -4916,47 +5298,179 @@ function renderExpenseAttachmentModal(expId) {
                     <i data-lucide="trash-2"></i>
                 </button>
             </div>
-        </div>`).join('')}</div>`;
+        </div>`;
+    }).join('')}</div>`;
     initializeLucide();
+    hydrateExpenseAttachmentPreviewImages(expId, attachments);
+}
+
+function hydrateExpenseAttachmentPreviewImages(expId, attachments) {
+    const body = document.getElementById('modal-att-body');
+    if (!body) return;
+    body.querySelectorAll('img[data-att-preview-index]').forEach(image => {
+        const index = Number(image.dataset.attPreviewIndex);
+        const attachment = attachments[index];
+        if (!attachment) return;
+        getAttachmentImageDataUrl(attachment).then(dataUrl => {
+            if (!dataUrl || String(currentExpAttId) !== String(expId)) throw new Error('preview unavailable');
+            image.src = dataUrl;
+            image.classList.remove('is-loading');
+        }).catch(() => {
+            const preview = image.closest('.att-preview');
+            if (!preview) return;
+            preview.classList.add('is-unavailable');
+            preview.innerHTML = '<div class="att-preview-error"><i data-lucide="image-off"></i><span>ไม่สามารถแสดงตัวอย่างได้<br>กดปุ่มเปิดไฟล์เพื่อดูใน Drive</span></div>';
+            initializeLucide();
+        });
+    });
+}
+
+function hydrateVisibleAttachmentThumbnails() {
+    document.querySelectorAll('img[data-attachment-preview-exp-id][data-attachment-preview-index]').forEach(image => {
+        const expId = image.dataset.attachmentPreviewExpId;
+        const index = Number(image.dataset.attachmentPreviewIndex);
+        const attachment = (attachmentStore[expId] || [])[index];
+        if (!attachment || !inferAttachmentMime(attachment).startsWith('image/')) return;
+        getAttachmentImageDataUrl(attachment).then(dataUrl => {
+            if (!dataUrl) throw new Error('preview unavailable');
+            image.src = dataUrl;
+            image.style.opacity = '1';
+        }).catch(() => {
+            image.style.opacity = '0.45';
+            image.title = 'ไม่สามารถแสดงตัวอย่างได้ กดเพื่อเปิดไฟล์จาก Google Drive';
+        });
+    });
+}
+
+async function prepareSavedExpenseAttachment(file, enhanceImages) {
+    await validateFile(file);
+    const originalSize = file.size;
+    let processedFile = file;
+    if (enhanceImages && String(file.type || '').startsWith('image/')) {
+        try {
+            processedFile = await enhanceReceiptImage(file);
+        } catch (enhancementError) {
+            console.warn('Receipt enhancement unavailable; uploading the original image:', enhancementError);
+            processedFile = file;
+        }
+    }
+    const maxSizeMb = Math.max(1, Number(state.maxUploadSizeMb) || 2);
+    if (String(processedFile.type || '').startsWith('image/') && processedFile.size > maxSizeMb * 1024 * 1024) {
+        processedFile = (await compressImage(processedFile, maxSizeMb)).file;
+    } else if (!String(processedFile.type || '').startsWith('image/') && processedFile.size > 10 * 1024 * 1024) {
+        throw new Error('ไฟล์เอกสารต้องมีขนาดไม่เกิน 10MB');
+    }
+    const bytes = await processedFile.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
+    const sha256Hash = Array.from(new Uint8Array(hashBuffer))
+        .map(byte => byte.toString(16).padStart(2, '0'))
+        .join('');
+    return {
+        file: processedFile,
+        originalFileName: file.name,
+        uploadFileName: processedFile.name || file.name,
+        originalSize,
+        compressedSize: processedFile.size,
+        sha256Hash
+    };
 }
 
 async function handleAttachmentUpload(expId, files) {
     if (!files || files.length === 0) return;
-    
+    expenseAttachmentUploadInProgress = true;
+    pendingExpenseAttachmentFiles.forEach(item => { item.error = ''; });
+    renderPendingExpenseAttachmentFiles();
     showLoading(true);
+    const failed = [];
+    const uploadedPreviews = new Map();
+    const uploadedRecords = [];
     try {
+        const enhanceImages = Boolean((document.getElementById('att-enhance-image') || {}).checked);
         for (const file of files) {
-            const reader = new FileReader();
-            const promise = new Promise((resolve, reject) => {
-                reader.onload = async (e) => {
-                    const base64Data = e.target.result.split(',')[1];
-                    try {
-                        await apiCall('uploadAttachment', {
-                            expenseId: expId,
-                            fileName: file.name,
-                            fileType: file.type,
-                            fileBase64: base64Data,
-                            fileSize: file.size
-                        });
-                        resolve();
-                    } catch (err) {
-                        reject(err);
-                    }
-                };
-                reader.onerror = reject;
-                reader.readAsDataURL(file);
-            });
-            await promise;
+            try {
+                const prepared = await prepareSavedExpenseAttachment(file, enhanceImages);
+                const base64Data = await fileAsBase64(prepared.file);
+                const result = await apiCall('uploadAttachment', {
+                    expenseId: expId,
+                    fileName: prepared.uploadFileName,
+                    mimeType: prepared.file.type,
+                    base64Data,
+                    originalSize: prepared.originalSize,
+                    compressedSize: prepared.compressedSize,
+                    sha256Hash: prepared.sha256Hash
+                });
+                if (result && result.id && prepared.file.type.startsWith('image/')) {
+                    uploadedPreviews.set(String(result.id), `data:${prepared.file.type};base64,${base64Data}`);
+                }
+                if (result && result.id) {
+                    const uploadedRecord = {
+                        id: result.id,
+                        expenseId: expId,
+                        originalFileName: prepared.uploadFileName,
+                        fileName: result.fileName || prepared.uploadFileName,
+                        fileType: prepared.file.type,
+                        fileSize: prepared.originalSize,
+                        compressedSize: prepared.compressedSize,
+                        sha256Hash: prepared.sha256Hash,
+                        driveFileId: result.driveFileId || '',
+                        fileUrl: result.viewUrl || '',
+                        viewUrl: result.viewUrl || ''
+                    };
+                    const cachedPreview = uploadedPreviews.get(String(result.id));
+                    if (cachedPreview) Object.defineProperty(uploadedRecord, '_cachedImageDataUrl', {
+                        value: cachedPreview,
+                        writable: true,
+                        configurable: true
+                    });
+                    uploadedRecords.push(uploadedRecord);
+                }
+            } catch (error) {
+                failed.push({ file, error });
+            }
         }
-        appAlert('อัปโหลดไฟล์แนบขึ้น Google Drive เรียบร้อย!');
-        // ดึงข้อมูลและอัปเดต Modal อีกครั้ง
-        const res = await apiCall('getAttachments', { expenseId: expId });
-        attachmentStore[expId] = res.attachments || [];
-        renderExpenseAttachmentModal(expId);
-    } catch (err) {
-        appAlert('การอัปโหลดไฟล์ล้มเหลว: ' + err.message);
+        if (files.length > failed.length) {
+            try {
+                const res = await apiCall('getAttachments', { expenseId: expId });
+                attachmentStore[expId] = (res.attachments || []).map(attachment => {
+                    const cachedPreview = uploadedPreviews.get(String(attachment.id || attachment.attachmentId));
+                    if (cachedPreview) Object.defineProperty(attachment, '_cachedImageDataUrl', {
+                        value: cachedPreview,
+                        writable: true,
+                        configurable: true
+                    });
+                    return attachment;
+                });
+            } catch (refreshError) {
+                console.warn('Attachment upload succeeded but refresh failed:', refreshError);
+                if (!attachmentStore[expId]) attachmentStore[expId] = [];
+                uploadedRecords.forEach(record => {
+                    if (!attachmentStore[expId].some(item => String(item.id) === String(record.id))) {
+                        attachmentStore[expId].push(record);
+                    }
+                });
+            }
+            renderExpenseAttachmentModal(expId);
+        }
     } finally {
         showLoading(false);
+        expenseAttachmentUploadInProgress = false;
+        clearPendingExpenseAttachmentFiles();
+        failed.forEach(item => {
+            pendingExpenseAttachmentFiles.push({
+                file: item.file,
+                previewUrl: String(item.file.type || '').startsWith('image/') ? URL.createObjectURL(item.file) : '',
+                error: `${item.file.name}: ${item.error.message}`
+            });
+        });
+        renderPendingExpenseAttachmentFiles();
+    }
+    const successCount = files.length - failed.length;
+    if (successCount && !failed.length) {
+        appAlert(`อัปโหลดหลักฐาน ${successCount} ไฟล์ และแสดงตัวอย่างเรียบร้อย!`, 'success');
+    } else if (successCount) {
+        appAlert(`อัปโหลดสำเร็จ ${successCount} ไฟล์ และไม่สำเร็จ ${failed.length} ไฟล์ กรุณาตรวจสอบข้อความแล้วลองอีกครั้ง`, 'warning');
+    } else if (failed.length) {
+        appAlert('การอัปโหลดไฟล์ล้มเหลว: ' + failed[0].error.message, 'error');
     }
 }
 
@@ -5323,7 +5837,7 @@ function renderExpenseRow(exp, idx, tbody) {
                 if (attachments.length > 0) {
                     let attachHtml = `<div style="display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:4px;">`;
                     attachments.forEach((fileData, i) => {
-                        attachHtml += `<img src="${fileData.viewUrl}" class="attachment-thumbnail" onclick="previewAttachmentFile('${exp.id}', ${i})" title="ดูหลักฐาน" onerror="this.onerror=null; this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'32\\' height=\\'32\\' viewBox=\\'0 0 24 24\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'2\\' stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\'><path d=\\'M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z\\'/></svg>'; this.style.opacity='0.5';"/>`;
+                        attachHtml += `<img src="${ATTACHMENT_PREVIEW_PLACEHOLDER}" class="attachment-thumbnail" data-attachment-preview-exp-id="${escapeHTML(exp.id)}" data-attachment-preview-index="${i}" onclick="previewAttachmentFile('${exp.id}', ${i})" title="ดูหลักฐาน" alt="${escapeHTML(getAttachmentDisplayName(fileData))}"/>`;
                     });
                     attachHtml += `<button class="btn btn-icon btn-icon-attach" data-exp-id="${exp.id}" title="แนบไฟล์เพิ่มเติม/แก้ไข" style="margin-left:4px;"><i data-lucide="upload-cloud" style="width:14px; height:14px;"></i></button></div>`;
                     td.innerHTML = attachHtml;
@@ -6801,6 +7315,7 @@ async function resetQuickFoodEntry(options = {}) {
     quickFoodRows = [];
     quickFoodAttachmentsByRow = {};
     quickFoodFileProcessingCount = 0;
+    setBatchUploadProgress('quick-food-save', 0, 0, { hidden: true });
     const tbody = document.getElementById('quick-food-rows');
     if (tbody) tbody.innerHTML = '';
     const category = document.getElementById('quick-food-category');
@@ -7342,7 +7857,9 @@ function getImportedValue(source, aliases) {
 }
 
 function normalizeImportedDate(value) {
-    if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+        return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+    }
     if (typeof value === 'number' && window.XLSX && XLSX.SSF && XLSX.SSF.parse_date_code) {
         const parsed = XLSX.SSF.parse_date_code(value);
         if (parsed) return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`;
@@ -7360,6 +7877,11 @@ function normalizeImportedDate(value) {
         return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
     }
     return '';
+}
+
+function createImportTemplateDate(dateValue) {
+    const parts = getSystemDateParts(dateValue);
+    return parts ? new Date(parts.year, parts.month - 1, parts.day, 12, 0, 0) : '';
 }
 
 function normalizeImportedPostingMonth(value) {
@@ -7380,7 +7902,7 @@ function getQuickImportTemplateRows(type) {
         return [{
             'รอบบันทึก': postingMonth,
             'หมวดหมู่': String((document.getElementById('quick-food-category') || {}).value || 'อาหารประจำเดือน'),
-            'วันที่ซื้อ': getSelectedMonthDefaultDateStr(),
+            'วันที่ซื้อ (เดือน-วัน-ปี)': createImportTemplateDate(getSelectedMonthDefaultDateStr()),
             'รายการ': 'ตัวอย่างวัตถุดิบอาหาร',
             'จำนวน': 1,
             'หน่วย': 'รายการ',
@@ -7397,7 +7919,7 @@ function getQuickImportTemplateRows(type) {
         'แหล่งเงิน': String((document.getElementById('inline-exp-fund-input') || {}).value || ''),
         'ประเภท': (document.getElementById('inline-exp-claimable') || {}).value === 'false' ? 'ไม่เบิกมูลนิธิ' : 'เบิกมูลนิธิ',
         'เลขที่ใบเสร็จ': quickExpenseEntryMode === 'ATT' ? '' : 'เล่ม 1 / เลขที่ 001',
-        'วันที่บิล': getSelectedMonthDefaultDateStr(),
+        'วันที่บิล (เดือน-วัน-ปี)': createImportTemplateDate(getSelectedMonthDefaultDateStr()),
         'ร้านค้า/ผู้ขาย': quickExpenseEntryMode === 'ATT' ? 'ผู้ให้บริการสาธารณูปโภค' : 'ร้านค้าตัวอย่าง',
         'รายละเอียด': quickExpenseEntryMode === 'ATT' ? 'ค่าไฟฟ้าประจำเดือน' : 'รายการตัวอย่าง',
         'จำนวน': 1,
@@ -7413,8 +7935,12 @@ async function downloadQuickImportTemplate(type) {
     try {
         await ensureSpreadsheetLib('กำลังสร้างไฟล์แม่แบบ...');
         const workbook = XLSX.utils.book_new();
-        const worksheet = XLSX.utils.json_to_sheet(rows);
+        const worksheet = XLSX.utils.json_to_sheet(rows, { cellDates: true });
         worksheet['!cols'] = Object.keys(rows[0]).map(key => ({ wch: Math.max(14, key.length + 6) }));
+        const dateHeader = importType === 'FOOD' ? 'วันที่ซื้อ (เดือน-วัน-ปี)' : 'วันที่บิล (เดือน-วัน-ปี)';
+        const dateColumnIndex = Object.keys(rows[0]).indexOf(dateHeader);
+        const dateCell = dateColumnIndex >= 0 ? worksheet[XLSX.utils.encode_cell({ r: 1, c: dateColumnIndex })] : null;
+        if (dateCell) dateCell.z = 'mm-dd-yyyy';
         XLSX.utils.book_append_sheet(workbook, worksheet, importType === 'FOOD' ? 'ค่าอาหาร' : importType === 'ATT' ? 'บิลแนบ' : 'บิลประจำเดือน');
         XLSX.writeFile(workbook, `RDF_${importType}_IMPORT_TEMPLATE.xlsx`);
     } catch (error) {
@@ -7466,8 +7992,24 @@ async function readQuickImportFile(file) {
     return XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet], { defval: '', raw: true });
 }
 
+function isQuickImportHeaderRow(source, type) {
+    const values = Object.values(source || {})
+        .map(normalizeImportHeader)
+        .filter(Boolean);
+    if (!values.length) return false;
+    const expectedHeaders = type === 'FOOD'
+        ? ['รอบบันทึก', 'หมวดหมู่', 'วันที่ซื้อ (เดือน-วัน-ปี)', 'รายการ', 'จำนวน', 'หน่วย', 'ราคา/หน่วย']
+        : ['รอบบันทึก', 'รหัสผู้ออกบิล', 'โครงการ', 'หมวดหมู่', 'แหล่งเงิน', 'ประเภท', 'เลขที่ใบเสร็จ', 'วันที่บิล (เดือน-วัน-ปี)', 'ร้านค้า/ผู้ขาย', 'รายละเอียด', 'จำนวน', 'หน่วย', 'ราคา/หน่วย', 'หมายเหตุ'];
+    const expected = new Set(expectedHeaders.map(normalizeImportHeader));
+    const matchCount = values.filter(value => expected.has(value)).length;
+    return matchCount >= 4;
+}
+
 function mapQuickImportRows(rawRows, type) {
-    return (rawRows || []).map((source, index) => {
+    return (rawRows || []).flatMap((source, index) => {
+        // XLSX normally consumes the first worksheet row as column names. This
+        // guard also ignores a repeated header copied into the data area.
+        if (isQuickImportHeaderRow(source, type)) return [];
         const common = {
             postingMonth: normalizeImportedPostingMonth(getImportedValue(source, ['รอบบันทึก', 'postingMonth', 'month'])),
             documentPrefix: String(getImportedValue(source, ['รหัสผู้ออกบิล', 'documentPrefix', 'prefix']) || '').trim().toUpperCase(),
@@ -7477,14 +8019,14 @@ function mapQuickImportRows(rawRows, type) {
             claimable: normalizeImportedClaimable(getImportedValue(source, ['ประเภท', 'claimable', 'claimType']))
         };
         const row = type === 'FOOD' ? {
-            expenseDate: normalizeImportedDate(getImportedValue(source, ['วันที่ซื้อ', 'วันที่', 'expenseDate', 'date'])),
+            expenseDate: normalizeImportedDate(getImportedValue(source, ['วันที่ซื้อ (เดือน-วัน-ปี)', 'วันที่ซื้อ', 'วันที่', 'expenseDate', 'date'])),
             name: String(getImportedValue(source, ['รายการ', 'ชื่อรายการ', 'name', 'ingredientName']) || '').trim(),
             quantity: Number(getImportedValue(source, ['จำนวน', 'quantity', 'qty'])) || 0,
             unit: String(getImportedValue(source, ['หน่วย', 'unit']) || 'รายการ').trim() || 'รายการ',
             unitPrice: Number(getImportedValue(source, ['ราคา/หน่วย', 'ราคาต่อหน่วย', 'unitPrice', 'price'])) || 0
         } : {
             receiptNo: String(getImportedValue(source, ['เลขที่ใบเสร็จ', 'เล่มที่/เลขที่ใบเสร็จ', 'receiptNo', 'receipt']) || '').trim(),
-            expenseDate: normalizeImportedDate(getImportedValue(source, ['วันที่บิล', 'วันที่', 'expenseDate', 'date'])),
+            expenseDate: normalizeImportedDate(getImportedValue(source, ['วันที่บิล (เดือน-วัน-ปี)', 'วันที่บิล', 'วันที่', 'expenseDate', 'date'])),
             vendorName: String(getImportedValue(source, ['ร้านค้า/ผู้ขาย', 'ผู้ขาย', 'vendorName', 'vendor']) || '').trim(),
             description: String(getImportedValue(source, ['รายละเอียด', 'รายการ', 'description']) || '').trim(),
             quantity: Number(getImportedValue(source, ['จำนวน', 'quantity', 'qty'])) || 0,
@@ -7502,7 +8044,15 @@ function mapQuickImportRows(rawRows, type) {
         if (type !== 'FOOD' && !row.vendorName) errors.push('ไม่พบร้านค้า/ผู้ขาย');
         if (row.quantity <= 0) errors.push('จำนวนต้องมากกว่า 0');
         if (row.unitPrice <= 0) errors.push('ราคา/หน่วยต้องมากกว่า 0');
-        return { sourceRow: index + 2, common, row, errors };
+        return [{ sourceRow: index + 2, common, row, errors }];
+    });
+}
+
+function sortQuickImportRowsByDate(rows) {
+    return [...(rows || [])].sort((left, right) => {
+        const leftDate = String((left.row || {}).expenseDate || '9999-12-31');
+        const rightDate = String((right.row || {}).expenseDate || '9999-12-31');
+        return leftDate.localeCompare(rightDate) || Number(left.sourceRow || 0) - Number(right.sourceRow || 0);
     });
 }
 
@@ -7554,7 +8104,8 @@ async function handleQuickTableImport(event, requestedType) {
         if (file.size > 10 * 1024 * 1024) throw new Error('ไฟล์นำเข้าต้องมีขนาดไม่เกิน 10MB');
         const rawRows = await readQuickImportFile(file);
         if (rawRows.length > 1000) throw new Error('ไฟล์หนึ่งครั้งรองรับไม่เกิน 1,000 รายการ');
-        const rows = mapQuickImportRows(rawRows, type);
+        const mappedRows = mapQuickImportRows(rawRows, type);
+        const rows = type === 'FOOD' ? sortQuickImportRowsByDate(mappedRows) : mappedRows;
         if (!rows.length) throw new Error('ไม่พบแถวข้อมูล กรุณาใช้ไฟล์แม่แบบของระบบ');
         const firstCommon = rows[0].common;
         rows.forEach(item => {
@@ -7581,6 +8132,7 @@ window.handleQuickTableImport = handleQuickTableImport;
 function closeQuickImportPreview() {
     const modal = document.getElementById('modal-quick-import');
     if (modal) modal.classList.remove('active');
+    setBatchUploadProgress('quick-import', 0, 0, { hidden: true });
     quickImportPreview = null;
 }
 window.closeQuickImportPreview = closeQuickImportPreview;
@@ -7616,28 +8168,96 @@ function setImportedExpenseCommonValues(common = {}) {
     setValue('inline-exp-claimable', common.claimable === false ? 'false' : 'true');
 }
 
-function confirmQuickTableImport() {
+function removeEmptyQuickFoodRowsBeforeImport() {
+    const emptyRowIds = quickFoodRows.filter(rowId => isQuickFoodDraftEmpty(getQuickFoodRowDraft(rowId)));
+    if (!emptyRowIds.length) return;
+    const emptyRowIdSet = new Set(emptyRowIds);
+    emptyRowIds.forEach(rowId => {
+        const row = getQuickFoodRowElement(rowId);
+        if (row) row.remove();
+        delete quickFoodAttachmentsByRow[rowId];
+    });
+    quickFoodRows = quickFoodRows.filter(rowId => !emptyRowIdSet.has(rowId));
+}
+
+function setBatchUploadProgress(prefix, completed, total, options = {}) {
+    const container = document.getElementById(`${prefix}-progress`);
+    if (!container) return;
+    if (options.hidden || total <= 0) {
+        container.hidden = true;
+        return;
+    }
+    const safeTotal = Math.max(1, Number(total) || 1);
+    const safeCompleted = Math.min(safeTotal, Math.max(0, Number(completed) || 0));
+    const percent = Math.round((safeCompleted / safeTotal) * 100);
+    const label = document.getElementById(`${prefix}-progress-label`);
+    const count = document.getElementById(`${prefix}-progress-count`);
+    const track = document.getElementById(`${prefix}-progress-track`);
+    const bar = document.getElementById(`${prefix}-progress-bar`);
+    container.hidden = false;
+    container.classList.toggle('is-success', options.state === 'success');
+    container.classList.toggle('is-warning', options.state === 'warning');
+    if (label && options.label) label.textContent = options.label;
+    if (count) count.textContent = `${safeCompleted}/${safeTotal}`;
+    if (bar) bar.style.width = `${percent}%`;
+    if (track) {
+        track.setAttribute('aria-valuemax', String(safeTotal));
+        track.setAttribute('aria-valuenow', String(safeCompleted));
+        track.setAttribute('aria-valuetext', `${safeCompleted} จาก ${safeTotal} รายการ`);
+    }
+}
+
+function waitForNextPaint() {
+    return new Promise(resolve => {
+        if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(() => resolve());
+        else window.setTimeout(resolve, 0);
+    });
+}
+
+async function confirmQuickTableImport() {
     const preview = quickImportPreview;
     if (!preview || !preview.rows.length || preview.rows.some(item => item.errors.length)) return;
-    if (preview.type === 'FOOD') {
-        const postingMonth = preview.common.postingMonth || getSelectedPostingMonth();
-        const category = preview.common.category || 'อาหารประจำเดือน';
-        const postingInput = document.getElementById('quick-food-posting-month');
-        const categoryInput = document.getElementById('quick-food-category');
-        if (postingInput) postingInput.value = postingMonth;
-        if (categoryInput) categoryInput.value = category;
-        preview.rows.forEach(item => addQuickFoodRow(item.row, { focus: false }));
-        updateQuickFoodBatchSummary();
-    } else {
-        if (quickExpenseEntryMode !== preview.type) setQuickExpenseEntryMode(preview.type);
-        setImportedExpenseCommonValues(preview.common);
-        preview.rows.forEach(item => addQuickExpenseRow(item.row, { focus: false }));
-        refreshQuickExpenseDocumentPreviews();
-        scheduleQuickExpenseDraftSave();
+    const confirmButton = document.getElementById('quick-import-confirm');
+    const total = preview.rows.length;
+    const paintEvery = Math.max(1, Math.ceil(total / 50));
+    if (confirmButton) confirmButton.disabled = true;
+    setBatchUploadProgress('quick-import', 0, total, { label: 'กำลังเพิ่มรายการจากไฟล์ลงตาราง' });
+    try {
+        if (preview.type === 'FOOD') {
+            const postingMonth = preview.common.postingMonth || getSelectedPostingMonth();
+            const category = preview.common.category || 'อาหารประจำเดือน';
+            const postingInput = document.getElementById('quick-food-posting-month');
+            const categoryInput = document.getElementById('quick-food-category');
+            if (postingInput) postingInput.value = postingMonth;
+            if (categoryInput) categoryInput.value = category;
+            removeEmptyQuickFoodRowsBeforeImport();
+        } else {
+            if (quickExpenseEntryMode !== preview.type) setQuickExpenseEntryMode(preview.type);
+            setImportedExpenseCommonValues(preview.common);
+        }
+        for (let index = 0; index < preview.rows.length; index++) {
+            const item = preview.rows[index];
+            if (preview.type === 'FOOD') addQuickFoodRow(item.row, { focus: false });
+            else addQuickExpenseRow(item.row, { focus: false });
+            const completed = index + 1;
+            setBatchUploadProgress('quick-import', completed, total, { label: 'กำลังเพิ่มรายการจากไฟล์ลงตาราง' });
+            if (completed % paintEvery === 0 || completed === total) await waitForNextPaint();
+        }
+        if (preview.type === 'FOOD') {
+            renumberQuickFoodRows();
+        } else {
+            refreshQuickExpenseDocumentPreviews();
+            scheduleQuickExpenseDraftSave();
+        }
+        setBatchUploadProgress('quick-import', total, total, { label: 'เพิ่มรายการจากไฟล์ครบแล้ว', state: 'success' });
+        await new Promise(resolve => window.setTimeout(resolve, 350));
+        closeQuickImportPreview();
+        appAlert(`เพิ่มข้อมูลจากไฟล์ลงตารางแล้ว ${total} รายการ กรุณาตรวจสอบอีกครั้งก่อนกดบันทึกทั้งหมด`, 'success');
+    } catch (error) {
+        setBatchUploadProgress('quick-import', 0, total, { label: 'เพิ่มรายการจากไฟล์ไม่สำเร็จ', state: 'warning' });
+        if (confirmButton) confirmButton.disabled = false;
+        appAlert('เพิ่มข้อมูลจากไฟล์ลงตารางไม่สำเร็จ: ' + (error.message || error), 'error');
     }
-    const count = preview.rows.length;
-    closeQuickImportPreview();
-    appAlert(`เพิ่มข้อมูลจากไฟล์ลงตารางแล้ว ${count} รายการ กรุณาตรวจสอบอีกครั้งก่อนกดบันทึกทั้งหมด`, 'success');
 }
 window.confirmQuickTableImport = confirmQuickTableImport;
 
@@ -7894,6 +8514,8 @@ async function submitQuickFoodEntry(event) {
     const savedRows = [];
     const failedRows = [];
     let attachmentErrorCount = 0;
+    let processedCount = 0;
+    setBatchUploadProgress('quick-food-save', 0, drafts.length, { label: 'กำลังอัปโหลดรายการค่าอาหาร' });
     try {
         const [year, month] = postingMonth.split('-').map(Number);
         const currentUser = getCurrentUser() || {};
@@ -7963,6 +8585,11 @@ async function submitQuickFoodEntry(event) {
                     row.classList.add('has-error');
                 }
                 if (status) status.textContent = `บันทึกไม่สำเร็จ: ${error.message || error}`;
+            } finally {
+                processedCount += 1;
+                setBatchUploadProgress('quick-food-save', processedCount, drafts.length, {
+                    label: 'กำลังอัปโหลดรายการค่าอาหาร'
+                });
             }
         }
 
@@ -7978,6 +8605,10 @@ async function submitQuickFoodEntry(event) {
         renderFoodBillsTable();
         if (!quickFoodRows.length) addQuickFoodRow({}, { focus: false });
         renumberQuickFoodRows();
+        setBatchUploadProgress('quick-food-save', processedCount, drafts.length, {
+            label: failedRows.length ? 'อัปโหลดครบแล้ว โดยมีบางรายการไม่สำเร็จ' : 'อัปโหลดรายการค่าอาหารครบแล้ว',
+            state: failedRows.length ? 'warning' : 'success'
+        });
         const message = [
             savedRows.length ? `บันทึกค่าอาหารสำเร็จ ${savedRows.length} รายการ` : '',
             attachmentErrorCount ? `หลักฐานอัปโหลดไม่สำเร็จ ${attachmentErrorCount} ไฟล์` : '',
@@ -7987,6 +8618,12 @@ async function submitQuickFoodEntry(event) {
     } catch (error) {
         appAlert('ไม่สามารถเริ่มบันทึกค่าอาหารได้: ' + error.message, 'error');
     } finally {
+        if (processedCount < drafts.length) {
+            setBatchUploadProgress('quick-food-save', processedCount, drafts.length, {
+                label: 'การอัปโหลดหยุดก่อนครบรายการ',
+                state: 'warning'
+            });
+        }
         showLoading(false);
         if (form) form.removeAttribute('aria-busy');
         if (saveButton) saveButton.disabled = false;

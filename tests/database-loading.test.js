@@ -80,6 +80,7 @@ function successfulValue(action) {
 
 test('monthly records render before slow supplementary reads finish', async () => {
     const { context, api, elements } = createHarness();
+    api.setMonth(9, 2569);
     const slowCarry = deferred();
     const calls = [];
     context.__mockApiCall = (action) => {
