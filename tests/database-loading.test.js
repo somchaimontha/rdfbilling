@@ -56,7 +56,7 @@ function createHarness() {
     vm.createContext(context);
     vm.runInContext(source + `\n;globalThis.__loadingTest = {
         initAppWithAPI, retryDatabaseLoad, apiCall, fetchAllExpensesForMonth,
-        renderSignaturePreviews,
+        renderSignaturePreviews, normalizeFundReceiptMonth, filterFundReceiptsForYear,
         getState: () => state,
         setMonth: (month, year) => { state.selectedMonth = month; state.selectedYear = year; },
         getProgress: () => appLoadProgress
@@ -139,6 +139,19 @@ test('monthly loading reads all authorized rows and filters legacy sheet dates i
     ]);
     assert.equal(context.__expenseCalls.length, 1);
     assert.equal(context.__expenseCalls[0], null);
+});
+
+test('fund receipt months normalize legacy Sheet dates and filter by the saved year in the browser', () => {
+    const { api } = createHarness();
+    assert.equal(api.normalizeFundReceiptMonth('2026-09-01T00:00:00.000Z'), '2026-09');
+    assert.equal(api.normalizeFundReceiptMonth('2569/9'), '2026-09');
+    const rows = api.filterFundReceiptsForYear([
+        { id: 'FR-SEP', month: '2026-09-01T00:00:00.000Z', fileName: 'receipt.pdf' },
+        { id: 'FR-AUG', month: '2025-08' }
+    ], 2026);
+    assert.deepEqual(JSON.parse(JSON.stringify(rows)), [
+        { id: 'FR-SEP', month: '2026-09', fileName: 'receipt.pdf' }
+    ]);
 });
 
 test('initial database loading never runs more than three tasks concurrently', async () => {

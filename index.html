@@ -7,7 +7,7 @@
     <meta name="description" content="ระบบบันทึกและบริหารรายจ่ายโครงการ มูลนิธิ Dr. Robert Dyckerhoff  วิทยาลัยการอาชีพแม่สะเรียง">
     <!-- SweetAlert2 -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="stylesheet" href="style.css?v=20261004-03">
+    <link rel="stylesheet" href="style.css?v=20261005-02">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- node-qrcode (MIT) ไม่มี browser UMD build — path build/qrcode.min.js เดิม 404 มาตลอด (QRCode จึง undefined)
          โหลดผ่าน ESM bundle ของ jsdelivr (CommonJS→ESM) แล้ว expose เป็น window.QRCode ให้โค้ดเดิมใช้ได้
@@ -795,11 +795,11 @@
                         <h3 class="widget-title">รายการค่าอาหารประจำเดือน</h3>
                         <div class="kpi-value" style="color:var(--primary); font-size:24px;" id="food-overview-total">0.00 บาท</div>
                     </div>
-                    <div class="table-container">
-                        <table class="data-table">
+                    <div class="table-container food-overview-table-container">
+                        <table class="data-table" id="food-overview-table">
                             <thead>
                                 <tr>
-                                    <th style="width:40px;">#</th>
+                                    <th class="text-center" style="width:52px;">ที่</th>
                                     <th style="width:100px;">วันที่ซื้อ</th>
                                     <th style="width:125px;">รอบบันทึก</th>
                                     <th>รายการอาหาร/วัตถุดิบ</th>
@@ -807,12 +807,21 @@
                                     <th class="text-right">จำนวน</th>
                                     <th class="text-right">ราคา/หน่วย</th>
                                     <th class="text-right">รวมเป็นเงิน</th>
+                                    <th>หลักฐาน / เครื่องมือ</th>
                                 </tr>
                             </thead>
                             <tbody id="food-overview-tbody">
                                 <!-- Data will be loaded here -->
                             </tbody>
+                            <tfoot id="food-overview-tfoot"></tfoot>
                         </table>
+                    </div>
+                    <div class="food-table-disclosure" id="food-overview-disclosure" hidden>
+                        <span class="food-table-count" id="food-overview-count" aria-live="polite"></span>
+                        <button class="btn btn-sm btn-action-view" id="food-overview-toggle" type="button" onclick="toggleFoodOverviewTable()" aria-controls="food-overview-table" aria-expanded="false">
+                            <i data-lucide="chevron-down"></i>
+                            <span data-role="label">ดูรายการทั้งหมด</span>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -1686,15 +1695,13 @@
                     <label class="form-label" for="bill-note">หมายเหตุ (ถ้ามี)</label>
                     <input type="text" id="bill-note" class="form-input" placeholder="ระบุรายละเอียดเพิ่มเติม">
                 </div>
-                <div class="form-group attachment-drop-zone" data-attachment-drop-zone tabindex="0" style="background:var(--bg-color); padding:12px; border-radius:6px; border:1px solid var(--border-color);"
-                    ondragover="setAttachmentDropZoneState(event, true)" ondragleave="setAttachmentDropZoneState(event, false)" ondrop="handleBillAttachmentDrop(event)" onpaste="handleBillAttachmentPaste(event)">
+                <div class="form-group attachment-manager-launcher">
                     <label class="form-label">หลักฐานแนบ (สามารถเพิ่มได้หลายไฟล์)</label>
                     <div id="bill-attachments-preview" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;"></div>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('bill-attachment-input').click()" style="display:flex; align-items:center; gap:6px; margin-top:8px;">
-                        <i data-lucide="upload-cloud" style="width:16px; height:16px;"></i> เพิ่มไฟล์หลักฐาน
+                    <button type="button" class="btn btn-outline btn-sm" onclick="openExpenseFormAttachmentManager()" style="display:flex; align-items:center; gap:6px; margin-top:8px;">
+                        <i data-lucide="folder-open" style="width:16px; height:16px;"></i> จัดการหลักฐาน
                     </button>
-                    <span class="attachment-drop-hint"><i data-lucide="clipboard-paste"></i> ลากไฟล์มาวาง หรือกด Ctrl+V</span>
-                    <input type="file" id="bill-attachment-input" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,.csv,.xlsx,.docx" style="display:none;" onchange="handleBillAttachmentSelect(event)">
+                    <small class="form-help">เปิดหน้าต่างเดียวกับเมนูจัดการหลักฐาน เพื่อดู เลือก ถ่ายภาพ หรือลบไฟล์</small>
                 </div>
             </div>
             <footer class="modal-footer">
@@ -2430,7 +2437,7 @@
 
 <!-- Application Scripts -->
 <script src="thai-baht.js"></script>
-<script src="app.js?v=20261004-03"></script>
+<script src="app.js?v=20261005-02"></script>
 <script>
     // Wire up Master Data modal buttons
     (document.getElementById('modal-master-close') || {}).addEventListener?.('click', closeMasterModal);
@@ -2612,11 +2619,9 @@
                     </div>
                     <div>
                         <label class="form-label">6. อัปโหลดสลิป/บิล (ถ้ามี)</label>
-                        <div class="attachment-drop-zone" data-attachment-drop-zone tabindex="0"
-                            ondragover="setAttachmentDropZoneState(event, true)" ondragleave="setAttachmentDropZoneState(event, false)" ondrop="handleFoodFilesDrop(event)" onpaste="handleFoodFilesPaste(event)">
-                            <input type="file" id="food-entry-file" class="form-input" accept=".jpg,.jpeg,.png,.webp,.pdf,.csv,.xlsx,.docx" multiple onchange="handleFoodFiles(event)">
-                            <span class="attachment-drop-hint"><i data-lucide="clipboard-paste"></i> ลากไฟล์มาวาง หรือกด Ctrl+V</span>
-                        </div>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="openFoodFormAttachmentManager()">
+                            <i data-lucide="folder-open"></i> จัดการหลักฐาน
+                        </button>
                         <div id="food-file-list" style="margin-top:6px; display:flex; flex-direction:column; gap:6px;"></div>
                     </div>
                 </div>
@@ -2644,7 +2649,7 @@
                                 <th>รายการ</th>
                                 <th>หมวดหมู่</th>
                                 <th class="text-right">ยอดเงิน</th>
-                                <th class="text-center" style="width:70px;">จัดการ</th>
+                                <th class="text-center" style="width:112px;">จัดการ</th>
                             </tr>
                         </thead>
                         <tbody id="food-entry-tbody"></tbody>
@@ -2662,31 +2667,57 @@
      MODAL: Fund Receipt Document (เอกสารรับเงินทุนประจำเดือน)
 ===================================================== -->
 <div class="modal-overlay" id="modal-fund-receipt">
-    <div class="modal-card" style="max-width:480px;">
+    <div class="modal-card modal-wide fund-receipt-manager-card">
         <header class="modal-header">
-            <h3 class="modal-title">เอกสารรับเงินทุนประจำเดือน</h3>
+            <div style="flex:1;min-width:0;">
+                <h3 class="modal-title">เอกสารรับเงินทุนประจำเดือน</h3>
+                <div id="fund-receipt-modal-period" style="font-size:11px;color:var(--text-muted);margin-top:2px;">จัดการข้อมูลและไฟล์เอกสารในหน้าเดียว</div>
+            </div>
             <button class="modal-close" onclick="closeFundReceiptModal()"><i data-lucide="x"></i></button>
         </header>
-        <div class="modal-body">
+        <div class="modal-body fund-receipt-manager-body">
             <input type="hidden" id="fund-receipt-id" value="">
             <input type="hidden" id="fund-receipt-month" value="">
             <div class="form-group">
-                <label class="form-label">จำนวนเงิน (บาท) *</label>
-                <input type="number" id="fund-receipt-amount" class="form-input" step="0.01" min="0" required>
+                <label class="form-label" for="fund-receipt-amount">1. จำนวนเงิน (บาท) *</label>
+                <div class="fund-receipt-amount-row">
+                    <input type="number" id="fund-receipt-amount" class="form-input" step="0.01" min="0" inputmode="decimal" required>
+                    <span class="fund-receipt-future-source"><i data-lucide="link"></i> เตรียมเชื่อมข้อมูลจากระบบทุนการศึกษา RDF ในอนาคต</span>
+                </div>
+            </div>
+            <div class="form-group fund-receipt-document-panel attachment-drop-zone" data-attachment-drop-zone tabindex="0"
+                ondragover="setAttachmentDropZoneState(event, true)" ondragleave="setAttachmentDropZoneState(event, false)" ondrop="handleFundReceiptDrop(event)" onpaste="handleFundReceiptPaste(event)">
+                <div class="fund-receipt-document-heading">
+                    <div>
+                        <label class="form-label">2. แนบไฟล์เอกสาร (รูปภาพ หรือ PDF) *</label>
+                        <span>รองรับไฟล์หลัก 1 ไฟล์ เลือกไฟล์ใหม่เพื่อแทนที่ไฟล์เดิม</span>
+                    </div>
+                    <span class="attachment-drop-hint"><i data-lucide="clipboard-paste"></i> ลากไฟล์มาวาง หรือกด Ctrl+V</span>
+                </div>
+                <div id="fund-receipt-file-preview" class="fund-receipt-file-preview" aria-live="polite"></div>
             </div>
             <div class="form-group">
-                <label class="form-label">แนบไฟล์เอกสาร (รูปภาพ หรือ PDF) *</label>
-                <input type="file" id="fund-receipt-file" class="form-input" accept=".jpg,.jpeg,.png,.webp,.pdf" onchange="handleFundReceiptFile(event)">
-                <div id="fund-receipt-file-preview" style="margin-top:6px; font-size:12px; color:var(--text-secondary);"></div>
-            </div>
-            <div class="form-group">
-                <label class="form-label">หมายเหตุ</label>
+                <label class="form-label" for="fund-receipt-note">3. หมายเหตุ</label>
                 <textarea id="fund-receipt-note" class="form-input" rows="2"></textarea>
             </div>
         </div>
-        <footer class="modal-footer">
-            <button class="btn btn-outline" onclick="closeFundReceiptModal()">ยกเลิก</button>
-            <button class="btn btn-primary" onclick="saveFundReceipt()">บันทึก</button>
+        <footer class="modal-footer attachment-modal-footer fund-receipt-manager-footer">
+            <div class="attachment-upload-options">
+                <span>รองรับ: JPG, PNG, WEBP และ PDF</span>
+                <span>ไฟล์จะบันทึกขึ้น Google Drive เมื่อกดบันทึก</span>
+            </div>
+            <div class="attachment-upload-actions">
+                <label class="btn btn-secondary" for="fund-receipt-camera" style="cursor:pointer;">
+                    <i data-lucide="camera"></i> ถ่ายภาพ
+                </label>
+                <input type="file" id="fund-receipt-camera" accept="image/*" capture="environment" hidden onchange="handleFundReceiptFile(event)">
+                <label class="btn btn-secondary" for="fund-receipt-file" style="cursor:pointer;">
+                    <i data-lucide="upload"></i> เลือกไฟล์
+                </label>
+                <input type="file" id="fund-receipt-file" accept=".jpg,.jpeg,.png,.webp,.pdf" hidden onchange="handleFundReceiptFile(event)">
+                <button class="btn btn-outline" onclick="closeFundReceiptModal()">ยกเลิก</button>
+                <button class="btn btn-primary" onclick="saveFundReceipt()"><i data-lucide="save"></i> บันทึก</button>
+            </div>
         </footer>
     </div>
 </div>

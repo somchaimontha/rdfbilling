@@ -13,6 +13,7 @@ const backendSystemPath = path.join(__dirname, '..', 'backend', 'SystemService.g
 const backendCodePath = path.join(__dirname, '..', 'backend', 'Code.gs');
 const backendAttachmentPath = path.join(__dirname, '..', 'backend', 'AttachmentService.gs');
 const backendFoodPath = path.join(__dirname, '..', 'backend', 'FoodExpenseService.gs');
+const backendFundReceiptPath = path.join(__dirname, '..', 'backend', 'FundReceiptService.gs');
 const source = fs.readFileSync(appPath, 'utf8');
 const html = fs.readFileSync(htmlPath, 'utf8');
 const style = fs.readFileSync(stylePath, 'utf8');
@@ -22,6 +23,7 @@ const backendSystemSource = fs.readFileSync(backendSystemPath, 'utf8');
 const backendCodeSource = fs.readFileSync(backendCodePath, 'utf8');
 const backendAttachmentSource = fs.readFileSync(backendAttachmentPath, 'utf8');
 const backendFoodSource = fs.readFileSync(backendFoodPath, 'utf8');
+const backendFundReceiptSource = fs.readFileSync(backendFundReceiptPath, 'utf8');
 
 const commonValues = {
     'inline-exp-project': 'PRJ-9',
@@ -243,8 +245,43 @@ test('monthly food records collapse responsively and expose semantic row actions
     assert.match(source, /class="text-center food-row-number" data-label="ลำดับ">\$\{index \+ 1\}/);
     assert.match(source, /btn-icon-edit/);
     assert.match(source, /btn-icon-delete/);
+    assert.match(source, /btn-icon-attach[\s\S]*data-lucide="folder-open"/);
+    assert.match(source, /querySelectorAll\('\.btn-icon-attach\[data-exp-id\]'\)/);
+    assert.match(source, /querySelectorAll\('\.btn-icon-edit\[data-idx\]'\)/);
+    assert.match(source, /querySelectorAll\('\.btn-icon-delete\[data-idx\]'\)/);
+    assert.doesNotMatch(source, /querySelectorAll\('\.btn-icon-attach'\)/);
     assert.match(style, /\.btn svg,[\s\S]*stroke: currentColor/);
     assert.match(style, /\.btn-action-view/);
+    assert.match(style, /\.btn-icon-attach[\s\S]*background: var\(--action-view\)/);
+});
+
+test('food overview shares monthly records with inline editing, evidence, totals, and six-row disclosure', () => {
+    assert.match(html, /id="food-overview-table"/);
+    assert.match(html, /<th class="text-center" style="width:52px;">ที่<\/th>/);
+    assert.match(html, /id="food-overview-tfoot"/);
+    assert.match(html, /id="food-overview-disclosure" hidden/);
+    assert.match(html, /id="food-overview-toggle"[\s\S]*toggleFoodOverviewTable\(\)/);
+    assert.match(source, /const FOOD_OVERVIEW_COLLAPSED_LIMIT = 6/);
+    assert.match(source, /data\.slice\(0, FOOD_OVERVIEW_COLLAPSED_LIMIT\)/);
+    assert.match(source, /function buildFoodOverviewEditRow/);
+    assert.match(source, /window\.saveFoodOverviewInlineEdit = async function/);
+    assert.match(source, /apiCall\('updateFoodExpense'/);
+    assert.match(source, /openFoodAttachmentModal/);
+    assert.match(source, /food-overview-summary-row/);
+    assert.match(style, /#food-overview-table[\s\S]*min-width: 1120px/);
+});
+
+test('food PDF uses accounting pagination with a QR footer on every page', () => {
+    assert.match(source, /const FOOD_REPORT_ROWS_PER_PAGE = 14/);
+    assert.match(source, /ยอดยกมาจากหน้าก่อน/);
+    assert.match(source, /รวมรายการในหน้านี้/);
+    assert.match(source, /ยอดยกไปหน้าถัดไป/);
+    assert.match(source, /ยอดรวมทั้งสิ้น/);
+    assert.match(source, /<th class="sequence">ที่<\/th>/);
+    assert.match(source, /reportPages = pages\.map/);
+    assert.match(source, /QR Code สำหรับตรวจสอบรายงานหน้า/);
+    assert.match(source, /footer-copy[\s\S]*flex-direction: column/);
+    assert.match(source, /@page \{ size: A4 landscape/);
 });
 
 test('saved bill and food records stay in compact columns on narrow screens', () => {
@@ -285,28 +322,47 @@ test('attachment bills share the repeatable monthly bill workflow', () => {
     assert.match(style, /#attached-bills-table\.compact-record-table th:nth-child\(6\)/);
 });
 
-test('evidence attachments support drag and drop in every expense entry flow', () => {
+test('expense and food evidence use the shared attachment manager', () => {
     assert.match(html, /id="modal-att-body" data-attachment-drop-zone/);
     assert.match(html, /ondrop="handleSavedAttachmentDrop\(event\)"/);
-    assert.match(html, /ondrop="handleBillAttachmentDrop\(event\)"/);
-    assert.match(html, /ondrop="handleFoodFilesDrop\(event\)"/);
-    assert.match(html, /id="food-entry-file"[^>]+multiple/);
+    assert.match(html, /onclick="openExpenseFormAttachmentManager\(\)"/);
+    assert.match(html, /onclick="openFoodFormAttachmentManager\(\)"/);
+    assert.match(source, /function openQuickExpenseAttachmentManager/);
+    assert.match(source, /function openQuickFoodAttachmentManager/);
+    assert.match(source, /function openFoodAttachmentModal/);
     assert.match(source, /function setAttachmentDropZoneState/);
-    assert.match(source, /handleQuickExpenseRowDrop\('\$\{rowId\}', event\)/);
-    assert.match(source, /handleQuickFoodRowDrop\('\$\{rowId\}', event\)/);
     assert.match(style, /\.attachment-drop-zone\.is-dragover/);
     assert.match(style, /วางไฟล์หลักฐานที่นี่/);
 });
 
+test('fund receipts manage fields and one document in a single responsive modal', () => {
+    assert.match(html, /class="modal-card modal-wide fund-receipt-manager-card"/);
+    assert.match(html, /1\. จำนวนเงิน \(บาท\) \*/);
+    assert.match(html, /2\. แนบไฟล์เอกสาร \(รูปภาพ หรือ PDF\) \*/);
+    assert.match(html, /3\. หมายเหตุ/);
+    assert.match(html, /id="fund-receipt-file-preview" class="fund-receipt-file-preview"/);
+    assert.match(html, /ondrop="handleFundReceiptDrop\(event\)"/);
+    assert.match(html, /onpaste="handleFundReceiptPaste\(event\)"/);
+    assert.match(html, /id="fund-receipt-camera"[^>]+capture="environment"/);
+    assert.doesNotMatch(html, /onclick="openFundReceiptAttachmentManager\(\)"/);
+    assert.match(source, /function renderFundReceiptFilePreview/);
+    assert.match(source, /function clearFundReceiptFile/);
+    assert.match(source, /function normalizeFundReceiptMonth/);
+    assert.match(source, /apiCall\('getFundReceipts'\)/);
+    assert.match(source, /const savedYearBE = Number\(normalizeFundReceiptMonth\(month\)/);
+    assert.match(source, /upsertFundReceiptState\(optimisticRecord\)/);
+    assert.match(backendFundReceiptSource, /function normalizeFundReceiptMonth_/);
+    assert.match(backendFundReceiptSource, /fundReceipt: saved/);
+    assert.match(backendFundReceiptSource, /fundReceipt: newRow/);
+    assert.match(style, /\.fund-receipt-manager-card[\s\S]*width: min\(920px/);
+});
+
 test('evidence attachments accept clipboard files without blocking pasted text', () => {
     assert.match(html, /onpaste="handleSavedAttachmentPaste\(event\)"/);
-    assert.match(html, /onpaste="handleBillAttachmentPaste\(event\)"/);
-    assert.match(html, /onpaste="handleFoodFilesPaste\(event\)"/);
     assert.match(source, /function getPastedAttachmentFiles/);
     assert.match(source, /if \(!files\.length\) return \[\]/);
     assert.match(source, /event\.preventDefault\(\)/);
-    assert.match(source, /handleQuickExpenseRowPaste\('\$\{rowId\}', event\)/);
-    assert.match(source, /handleQuickFoodRowPaste\('\$\{rowId\}', event\)/);
+    assert.match(source, /stageExpenseAttachmentFiles\(currentExpAttId, files\)/);
     assert.match(source, /clipboard-\$\{Date\.now\(\)\}-\$\{index \+ 1\}/);
     assert.match(style, /\.attachment-drop-zone\.is-pasting/);
 });

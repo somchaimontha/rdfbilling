@@ -82,6 +82,7 @@ const MUTATING_API_ACTIONS = new Set([
     'updateFoodExpense',
     'deleteFoodExpenseAPI',
     'uploadFoodAttachment',
+    'deleteFoodAttachment',
     'saveFundReceipt',
     'deleteFundReceipt',
 ]);
@@ -101,7 +102,7 @@ function getApiActionDisplayName(action) {
     const labels = {
         createExpense: 'เพิ่มรายการบิล', updateExpense: 'แก้ไขรายการบิล', deleteExpense: 'ลบรายการบิล',
         createFoodExpense: 'เพิ่มค่าอาหาร', updateFoodExpense: 'แก้ไขค่าอาหาร', deleteFoodExpenseAPI: 'ลบค่าอาหาร',
-        uploadAttachment: 'อัปโหลดหลักฐาน', uploadFoodAttachment: 'อัปโหลดหลักฐานค่าอาหาร',
+        uploadAttachment: 'อัปโหลดหลักฐาน', uploadFoodAttachment: 'อัปโหลดหลักฐานค่าอาหาร', deleteFoodAttachment: 'ลบหลักฐานค่าอาหาร',
         saveFundReceipt: 'บันทึกเอกสารรับเงินทุน', updateSystemConfig: 'บันทึกการตั้งค่า',
         createClaim: 'สร้างชุดส่งเบิก', cancelClaimDraft: 'ยกเลิกชุดส่งเบิก',
         createProject: 'เพิ่มโครงการ', createUser: 'เพิ่มผู้ใช้', updateUser: 'แก้ไขผู้ใช้'
@@ -1510,8 +1511,8 @@ async function initAppWithAPI({ retryFailed = false, automaticRetry = false } = 
             state.claimsLoadStatus = 'ready';
             if (load.coreRendered && state.activeTab === 'claims-view') renderClaims();
         } },
-        { key: 'receipts', label: 'เอกสารรับเงิน', fetch: () => read('getFundReceipts', null, { year: String(selectedYear - 543) }), apply: value => {
-            state.fundReceipts = value.fundReceipts || [];
+        { key: 'receipts', label: 'เอกสารรับเงิน', fetch: () => read('getFundReceipts'), apply: value => {
+            state.fundReceipts = (value.fundReceipts || []).map(normalizeFundReceiptRecord);
             state.fundReceiptsLoadStatus = 'ready';
             if (load.coreRendered) {
                 updateFundReceiptWidget();
@@ -1711,6 +1712,7 @@ const LOCAL_ICON_PATHS = Object.freeze({
     pencil: '<path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/>',
     trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/>',
     paperclip: '<path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L14 3a3.5 3.5 0 0 1 5 5l-9.5 9.5a2 2 0 0 1-3-3L15 6"/>',
+    link: '<path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/>',
     menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>',
     file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h4M9 13h6M9 17h6"/>',
@@ -2334,18 +2336,68 @@ function selectedMonthKey() {
     return `${gYear}-${mStr}`;
 }
 
+function normalizeFundReceiptMonth(value) {
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+        return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}`;
+    }
+    const raw = String(value || '').trim().replace(/^'/, '');
+    const direct = raw.match(/^(\d{4})[-/](\d{1,2})(?:\D|$)/);
+    if (direct) {
+        let year = Number(direct[1]);
+        if (year > 2400) year -= 543;
+        const month = Number(direct[2]);
+        if (month >= 1 && month <= 12) return `${year}-${String(month).padStart(2, '0')}`;
+    }
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+        return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}`;
+    }
+    return raw;
+}
+
+function normalizeFundReceiptRecord(record) {
+    if (!record || typeof record !== 'object') return record;
+    return { ...record, month: normalizeFundReceiptMonth(record.month) };
+}
+
+function filterFundReceiptsForYear(records, ceYear) {
+    const yearPrefix = `${Number(ceYear)}-`;
+    return (records || [])
+        .map(normalizeFundReceiptRecord)
+        .filter(record => record && String(record.month || '').startsWith(yearPrefix));
+}
+
+function upsertFundReceiptState(record) {
+    const normalized = normalizeFundReceiptRecord(record);
+    if (!normalized || !normalized.month) return;
+    const rows = [...(state.fundReceipts || [])];
+    const index = rows.findIndex(item => String(item.id || '') === String(normalized.id || '')
+        || normalizeFundReceiptMonth(item.month) === normalized.month);
+    if (index >= 0) rows[index] = { ...rows[index], ...normalized };
+    else rows.push(normalized);
+    state.fundReceipts = rows;
+    state.fundReceiptsLoadStatus = 'ready';
+}
+
 function getFundReceiptByMonth(monthKey) {
-    return (state.fundReceipts || []).find(r => r.month === monthKey);
+    const normalizedMonth = normalizeFundReceiptMonth(monthKey);
+    const matches = (state.fundReceipts || []).filter(record => normalizeFundReceiptMonth(record.month) === normalizedMonth);
+    if (matches.length <= 1) return matches[0];
+    const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
+    const organizationId = currentUser && (currentUser.organizationId || currentUser.organization_id);
+    return matches.find(record => String(record.organizationId || record.organization_id || '') === String(organizationId || '')) || matches[0];
 }
 
 async function loadFundReceiptsForYear(yearBE) {
     const ceYear = Number(yearBE) - 543;
     state.fundReceiptsLoadStatus = 'loading';
     try {
-        const res = await apiCall('getFundReceipts', null, { year: String(ceYear) });
-        state.fundReceipts = res.fundReceipts || [];
+        // ดึงรายการที่ผู้ใช้มีสิทธิ์ทั้งหมดแล้ว normalize เดือนใน browser เพื่อรองรับ
+        // Google Sheets ที่คืนคอลัมน์ month เป็น Date/ISO แทนข้อความ YYYY-MM
+        const res = await apiCall('getFundReceipts');
+        state.fundReceipts = (res.fundReceipts || []).map(normalizeFundReceiptRecord);
         state.fundReceiptsLoadStatus = 'ready';
-        return state.fundReceipts;
+        return filterFundReceiptsForYear(state.fundReceipts, ceYear);
     } catch (error) {
         state.fundReceiptsLoadStatus = 'error';
         throw error;
@@ -2461,13 +2513,44 @@ window.exportFundReceiptSlip = exportFundReceiptSlip;
 function renderFundReceiptFilePreview(existingRec) {
     const el = document.getElementById('fund-receipt-file-preview');
     if (!el) return;
-    if (fundReceiptFile) {
-        el.textContent = 'ไฟล์ที่เลือก: ' + fundReceiptFile.filename;
-    } else if (existingRec && existingRec.fileName) {
-        el.innerHTML = 'ไฟล์เดิม: <a href="' + existingRec.fileUrl + '" target="_blank">' + escapeHTML(existingRec.fileName) + '</a> (เลือกไฟล์ใหม่เพื่อแทนที่)';
-    } else {
-        el.textContent = '';
+    const file = fundReceiptFile || (existingRec && existingRec.fileName ? existingRec : null);
+    if (!file) {
+        el.innerHTML = `
+            <div class="att-empty fund-receipt-file-empty">
+                <i data-lucide="file-x"></i>
+                <p>ยังไม่ได้แนบเอกสารรับเงินทุน</p>
+                <small>ถ่ายภาพ เลือกไฟล์ ลากไฟล์มาวาง หรือกด Ctrl+V ได้จากหน้าต่างนี้</small>
+            </div>`;
+        initializeLucide();
+        return;
     }
+
+    const isPending = Boolean(fundReceiptFile);
+    const fileName = String(isPending ? fundReceiptFile.filename : existingRec.fileName || 'ไฟล์เอกสาร');
+    const mimeType = String(isPending ? fundReceiptFile.mimeType : existingRec.mimeType || '');
+    const previewUrl = isPending ? String(fundReceiptFile.base64 || '') : '';
+    const fileUrl = !isPending ? String(existingRec.fileUrl || '') : '';
+    const openUrl = previewUrl || fileUrl;
+    const isImage = mimeType.startsWith('image/') && previewUrl;
+    el.innerHTML = `
+        <div class="att-grid fund-receipt-file-grid">
+            <div class="att-item">
+                <div class="att-preview">
+                    ${isImage
+                        ? `<img src="${escapeHTML(previewUrl)}" class="att-thumb" alt="${escapeHTML(fileName)}">`
+                        : `<div class="att-icon-file"><i data-lucide="file-text"></i><span>${escapeHTML((fileName.split('.').pop() || 'FILE').toUpperCase())}</span></div>`}
+                </div>
+                <div class="att-info">
+                    <div class="att-name" title="${escapeHTML(fileName)}">${escapeHTML(fileName)}</div>
+                    <div class="att-date">${isPending ? 'ไฟล์ใหม่ · รอการบันทึก' : 'ไฟล์ที่บันทึกอยู่ใน Google Drive'}</div>
+                </div>
+                <div class="att-item-actions">
+                    ${openUrl ? `<a class="btn-icon" href="${escapeHTML(openUrl)}" target="_blank" rel="noopener" title="เปิดไฟล์"><i data-lucide="external-link"></i></a>` : ''}
+                    ${isPending ? `<button type="button" class="btn-icon btn-icon-delete" onclick="clearFundReceiptFile()" title="นำไฟล์ที่เลือกออก"><i data-lucide="trash-2"></i></button>` : ''}
+                </div>
+            </div>
+        </div>`;
+    initializeLucide();
 }
 
 function openFundReceiptModal(monthKey) {
@@ -2479,8 +2562,13 @@ function openFundReceiptModal(monthKey) {
     document.getElementById('fund-receipt-amount').value = rec ? rec.amount : '';
     document.getElementById('fund-receipt-note').value = rec ? (rec.note || '') : '';
     document.getElementById('fund-receipt-file').value = '';
+    const cameraInput = document.getElementById('fund-receipt-camera');
+    if (cameraInput) cameraInput.value = '';
     fundReceiptFile = null;
     renderFundReceiptFilePreview(rec);
+
+    const periodLabel = document.getElementById('fund-receipt-modal-period');
+    if (periodLabel) periodLabel.textContent = `${formatPostingMonth(month)} · จัดการข้อมูลและไฟล์เอกสารในหน้าเดียว`;
 
     document.getElementById('modal-fund-receipt').classList.add('active');
     initializeLucide();
@@ -2491,14 +2579,41 @@ function closeFundReceiptModal() {
 }
 
 async function handleFundReceiptFile(event) {
-    const file = event.target.files[0];
+    const file = event && event.target && event.target.files && event.target.files[0];
     if (!file) return;
+    const allowedMime = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    const extension = String(file.name || '').split('.').pop().toLowerCase();
+    if (!allowedMime.includes(file.type) && !['jpg', 'jpeg', 'png', 'webp', 'pdf'].includes(extension)) {
+        appAlert('เอกสารรับเงินทุนรองรับเฉพาะไฟล์ JPG, PNG, WEBP และ PDF', 'error');
+        if (event.target) event.target.value = '';
+        return;
+    }
     try {
         fundReceiptFile = await processUploadFile(file, state.maxUploadSizeMb || 2);
-        renderFundReceiptFilePreview(null);
+        renderFundReceiptFilePreview(getFundReceiptByMonth((document.getElementById('fund-receipt-month') || {}).value));
     } catch (err) {
         appAlert('ไม่สามารถแนบไฟล์นี้ได้: ' + err.message, 'error');
+    } finally {
+        if (event.target) event.target.value = '';
     }
+}
+
+function clearFundReceiptFile() {
+    fundReceiptFile = null;
+    const month = String((document.getElementById('fund-receipt-month') || {}).value || '');
+    renderFundReceiptFilePreview(getFundReceiptByMonth(month));
+}
+
+async function handleFundReceiptDrop(event) {
+    const files = getDroppedAttachmentFiles(event);
+    if (!files.length) return;
+    await handleFundReceiptFile(createAttachmentFileEvent(files.slice(0, 1)));
+}
+
+async function handleFundReceiptPaste(event) {
+    const files = getPastedAttachmentFiles(event);
+    if (!files.length) return;
+    await handleFundReceiptFile(createAttachmentFileEvent(files.slice(0, 1)));
 }
 
 async function saveFundReceipt() {
@@ -2506,6 +2621,7 @@ async function saveFundReceipt() {
     const amount = parseFloat(document.getElementById('fund-receipt-amount').value);
     const note = document.getElementById('fund-receipt-note').value.trim();
     const existingRec = getFundReceiptByMonth(month);
+    const pendingFile = fundReceiptFile ? { ...fundReceiptFile } : null;
 
     if (!amount || amount <= 0) {
         appAlert('กรุณาระบุจำนวนเงินให้ถูกต้อง', 'error');
@@ -2527,14 +2643,36 @@ async function saveFundReceipt() {
 
     showLoading(true);
     try {
-        await apiCall('saveFundReceipt', payload);
-        appAlert('บันทึกเอกสารรับเงินทุนสำเร็จ!', 'success');
-        closeFundReceiptModal();
-
-        const overviewYear = Number((document.getElementById('fund-receipt-year-select') || {}).value) || state.selectedYear;
-        await loadFundReceiptsForYear(overviewYear);
+        const result = await apiCall('saveFundReceipt', payload);
+        const optimisticRecord = normalizeFundReceiptRecord(result.fundReceipt || {
+            ...(existingRec || {}),
+            id: result.id || (existingRec && existingRec.id) || '',
+            month,
+            amount,
+            note,
+            ...(pendingFile ? {
+                fileName: pendingFile.filename,
+                fileUrl: pendingFile.base64 || '',
+                mimeType: pendingFile.mimeType
+            } : {})
+        });
+        upsertFundReceiptState(optimisticRecord);
         updateFundReceiptWidget();
         if (state.activeTab === 'fund-receipts') renderFundReceiptsOverview();
+        closeFundReceiptModal();
+
+        // โหลดปีของเอกสารที่เพิ่งบันทึก ไม่ใช้ค่าปีค้างจากหน้ารายงานอีกแท็บ
+        // และคงข้อมูล optimistic ไว้หาก Apps Script โหลดซ้ำขัดข้องชั่วคราว
+        const savedYearBE = Number(normalizeFundReceiptMonth(month).slice(0, 4)) + 543;
+        try {
+            await loadFundReceiptsForYear(savedYearBE);
+        } catch (refreshError) {
+            console.error('โหลดเอกสารรับเงินทุนหลังบันทึกไม่สำเร็จ:', refreshError);
+        }
+        if (!getFundReceiptByMonth(month)) upsertFundReceiptState(optimisticRecord);
+        updateFundReceiptWidget();
+        if (state.activeTab === 'fund-receipts') renderFundReceiptsOverview();
+        appAlert('บันทึกเอกสารรับเงินทุนสำเร็จ!', 'success');
     } catch (err) {
         appAlert('บันทึกไม่สำเร็จ: ' + err.message, 'error');
     } finally {
@@ -3354,17 +3492,19 @@ function renderTables() {
 }
 
 function bindTableActionButtons() {
-    // Attachment button
-    document.querySelectorAll('.btn-icon-attach').forEach(btn => {
+    // Scope delegated bill actions by their required data attributes. Other
+    // modules (for example food expenses) reuse the semantic button classes
+    // with their own onclick handlers and must not trigger bill APIs as well.
+    document.querySelectorAll('.btn-icon-attach[data-exp-id]').forEach(btn => {
         btn.addEventListener('click', () => {
             const expId = btn.getAttribute('data-exp-id');
             openExpenseAttachmentModal(expId);
         });
     });
-    document.querySelectorAll('.btn-icon-edit').forEach(btn => {
+    document.querySelectorAll('.btn-icon-edit[data-idx]').forEach(btn => {
         btn.addEventListener('click', () => openExpenseModal(parseInt(btn.getAttribute('data-idx'), 10)));
     });
-    document.querySelectorAll('.btn-icon-delete').forEach(btn => {
+    document.querySelectorAll('.btn-icon-delete[data-idx]').forEach(btn => {
         btn.addEventListener('click', async () => {
             const idx = parseInt(btn.getAttribute('data-idx'), 10);
             const exp = state.expenses[idx];
@@ -4540,13 +4680,13 @@ function createAttachmentFileEvent(files) {
 
 async function handleSavedAttachmentDrop(event) {
     const files = getDroppedAttachmentFiles(event);
-    if (!files.length || !currentExpAttId) return;
+    if (!files.length || !attachmentManagerContext) return;
     stageExpenseAttachmentFiles(currentExpAttId, files);
 }
 
 async function handleSavedAttachmentPaste(event) {
     const files = getPastedAttachmentFiles(event);
-    if (!files.length || !currentExpAttId) return;
+    if (!files.length || !attachmentManagerContext) return;
     stageExpenseAttachmentFiles(currentExpAttId, files);
 }
 
@@ -5079,6 +5219,7 @@ function getStorageUsageKB() {
 // PHASE 2: Expense Attachment Modal
 // ==========================================================================
 let currentExpAttId = null;
+let attachmentManagerContext = null;
 let pendingExpenseAttachmentFiles = [];
 let expenseAttachmentUploadInProgress = false;
 const ATTACHMENT_PREVIEW_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
@@ -5095,6 +5236,10 @@ function getAttachmentDisplayName(attachment) {
 function renderExpenseAttachmentRecordSummary(expId) {
     const tbody = document.getElementById('att-record-summary-body');
     if (!tbody) return;
+    const headings = document.querySelectorAll('.attachment-record-summary-table thead th');
+    ['เลขบิล / ใบเสร็จ', 'วันที่ / รอบ', 'รายละเอียดรายการ', 'จำนวนเงิน'].forEach((label, index) => {
+        if (headings[index]) headings[index].textContent = label;
+    });
     const expense = getExpenseAttachmentRecord(expId);
     if (!expense) {
         tbody.innerHTML = '<tr><td colspan="4">ไม่พบข้อมูลรายการสำหรับตรวจสอบ</td></tr>';
@@ -5109,19 +5254,19 @@ function renderExpenseAttachmentRecordSummary(expId) {
         : '';
     tbody.innerHTML = `
         <tr>
-            <td>
+            <td data-label="เลขบิล / ใบเสร็จ">
                 <span class="attachment-summary-primary">${escapeHTML(expense.documentNo || 'รอเลขบิล')}</span>
                 <span class="attachment-summary-secondary">เล่มที่ / เลขที่ ${escapeHTML(expense.receiptNo || '-')}</span>
             </td>
-            <td>
+            <td data-label="วันที่ / รอบ">
                 <span class="attachment-summary-primary">${escapeHTML(formatThaiDate(expense.expenseDate) || '-')}</span>
                 <span class="attachment-summary-secondary">รอบ ${escapeHTML(formatPostingMonth(getExpensePostingMonth(expense)))}</span>
             </td>
-            <td>
+            <td data-label="รายละเอียดรายการ">
                 <span class="attachment-summary-primary">${escapeHTML(expense.description || '-')}</span>
                 ${vendorName || calculation ? `<span class="attachment-summary-secondary">${[vendorName, calculation].filter(Boolean).map(escapeHTML).join(' · ')}</span>` : ''}
             </td>
-            <td class="text-right">
+            <td class="text-right" data-label="จำนวนเงิน">
                 <span class="attachment-summary-primary">฿${amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </td>
         </tr>`;
@@ -5136,7 +5281,12 @@ function clearPendingExpenseAttachmentFiles() {
 }
 
 function stageExpenseAttachmentFiles(expId, files) {
-    if (!expId || String(expId) !== String(currentExpAttId)) return;
+    if (!attachmentManagerContext) return;
+    const incoming = Array.from(files || []);
+    if (attachmentManagerContext.kind === 'fund-receipt') {
+        clearPendingExpenseAttachmentFiles();
+        files = incoming.slice(-1);
+    }
     Array.from(files || []).forEach(file => {
         if (!file) return;
         const duplicate = pendingExpenseAttachmentFiles.some(item =>
@@ -5169,10 +5319,15 @@ function renderPendingExpenseAttachmentFiles() {
     }
     container.hidden = false;
     const errorMessages = pendingExpenseAttachmentFiles.map(item => item.error).filter(Boolean);
+    const storesImmediately = ['expense-saved', 'food-saved'].includes((attachmentManagerContext || {}).kind);
+    const actionLabel = storesImmediately ? 'ยืนยันอัปโหลด' : 'เพิ่มในรายการ';
+    const pendingHint = storesImmediately
+        ? 'ภาพจะยังไม่ถูกส่งจนกว่าจะกดยืนยัน'
+        : 'ไฟล์จะถูกอัปโหลดเมื่อกดบันทึกรายการหลัก';
     container.innerHTML = `
         <div class="attachment-upload-queue-header">
             <strong>ตรวจสอบไฟล์ก่อนอัปโหลด (${pendingExpenseAttachmentFiles.length})</strong>
-            <span class="attachment-summary-secondary">ภาพจะยังไม่ถูกส่งจนกว่าจะกดยืนยัน</span>
+            <span class="attachment-summary-secondary">${pendingHint}</span>
         </div>
         <div class="attachment-upload-queue-list">
             ${pendingExpenseAttachmentFiles.map((item, index) => {
@@ -5191,7 +5346,7 @@ function renderPendingExpenseAttachmentFiles() {
             <span class="attachment-summary-secondary">${expenseAttachmentUploadInProgress ? 'กำลังประมวลผลและอัปโหลด กรุณารอสักครู่...' : 'ตรวจเลขบิลและรายละเอียดด้านบนก่อนยืนยัน'}</span>
             <div class="attachment-upload-actions">
                 <button type="button" class="btn btn-secondary btn-sm" onclick="clearPendingExpenseAttachmentFiles()" ${expenseAttachmentUploadInProgress ? 'disabled' : ''}>ยกเลิก</button>
-                <button type="button" class="btn btn-primary btn-sm" onclick="confirmExpenseAttachmentUpload()" ${expenseAttachmentUploadInProgress ? 'disabled' : ''}><i data-lucide="upload-cloud"></i> ยืนยันอัปโหลด ${pendingExpenseAttachmentFiles.length} ไฟล์</button>
+                <button type="button" class="btn btn-primary btn-sm" onclick="confirmExpenseAttachmentUpload()" ${expenseAttachmentUploadInProgress ? 'disabled' : ''}><i data-lucide="upload-cloud"></i> ${actionLabel} ${pendingExpenseAttachmentFiles.length} ไฟล์</button>
             </div>
         </div>
         ${errorMessages.length ? `<p class="attachment-upload-queue-error">${errorMessages.map(escapeHTML).join('<br>')}</p>` : ''}`;
@@ -5199,12 +5354,37 @@ function renderPendingExpenseAttachmentFiles() {
 }
 
 async function confirmExpenseAttachmentUpload() {
-    if (!currentExpAttId || !pendingExpenseAttachmentFiles.length || expenseAttachmentUploadInProgress) return;
-    await handleAttachmentUpload(currentExpAttId, pendingExpenseAttachmentFiles.map(item => item.file));
+    if (!attachmentManagerContext || !pendingExpenseAttachmentFiles.length || expenseAttachmentUploadInProgress) return;
+    const files = pendingExpenseAttachmentFiles.map(item => item.file);
+    if (attachmentManagerContext.kind === 'expense-saved') {
+        await handleAttachmentUpload(attachmentManagerContext.id, files);
+        return;
+    }
+    if (attachmentManagerContext.kind === 'food-saved') {
+        await handleFoodAttachmentUpload(files);
+        return;
+    }
+
+    expenseAttachmentUploadInProgress = true;
+    renderPendingExpenseAttachmentFiles();
+    try {
+        const event = createAttachmentFileEvent(files);
+        if (attachmentManagerContext.kind === 'expense-draft') await handleBillAttachmentSelect(event);
+        if (attachmentManagerContext.kind === 'food-draft') await handleFoodFiles(event);
+        if (attachmentManagerContext.kind === 'quick-expense') await handleQuickExpenseRowFiles(attachmentManagerContext.rowId, event);
+        if (attachmentManagerContext.kind === 'quick-food') await handleQuickFoodRowFiles(attachmentManagerContext.rowId, event);
+        if (attachmentManagerContext.kind === 'fund-receipt') await handleFundReceiptFile(event);
+        clearPendingExpenseAttachmentFiles();
+        renderAttachmentManagerBody();
+    } finally {
+        expenseAttachmentUploadInProgress = false;
+        renderPendingExpenseAttachmentFiles();
+    }
 }
 
 async function openExpenseAttachmentModal(expId) {
     currentExpAttId = expId;
+    attachmentManagerContext = { kind: 'expense-saved', id: expId };
     clearPendingExpenseAttachmentFiles();
     const exp = getExpenseAttachmentRecord(expId);
     const docNo = exp ? exp.documentNo : '';
@@ -5215,6 +5395,7 @@ async function openExpenseAttachmentModal(expId) {
     const storageEl = document.getElementById('att-storage-info');
     if (storageEl) storageEl.textContent = `ระบบจัดเก็บบน Google Drive คลาวด์`;
     renderExpenseAttachmentRecordSummary(expId);
+    configureAttachmentManagerInputs();
 
     // Wire file inputs. Mobile browsers open the rear camera for the camera input.
     const fileInput = document.getElementById('att-file-input');
@@ -5251,11 +5432,339 @@ async function openExpenseAttachmentModal(expId) {
     }
 }
 
+function configureAttachmentManagerInputs(options = {}) {
+    const accept = options.accept || '.jpg,.jpeg,.png,.webp,.pdf,.csv,.xls,.xlsx,.docx';
+    const multiple = options.multiple !== false;
+    const onFiles = files => stageExpenseAttachmentFiles(currentExpAttId, files);
+    const fileInput = document.getElementById('att-file-input');
+    if (fileInput) {
+        fileInput.value = '';
+        fileInput.accept = accept;
+        fileInput.multiple = multiple;
+        fileInput.onchange = () => {
+            onFiles(fileInput.files);
+            fileInput.value = '';
+        };
+    }
+    const cameraInput = document.getElementById('att-camera-input');
+    if (cameraInput) {
+        cameraInput.value = '';
+        cameraInput.onchange = () => {
+            onFiles(cameraInput.files);
+            cameraInput.value = '';
+        };
+    }
+}
+
+function setAttachmentManagerSummary(labels, cells) {
+    const table = document.querySelector('.attachment-record-summary-table');
+    const headings = table ? table.querySelectorAll('thead th') : [];
+    labels.forEach((label, index) => {
+        if (headings[index]) headings[index].textContent = label;
+    });
+    const tbody = document.getElementById('att-record-summary-body');
+    if (!tbody) return;
+    tbody.innerHTML = `<tr>${cells.map((cell, index) => `
+        <td class="${index === cells.length - 1 ? 'text-right' : ''}" data-label="${escapeHTML(labels[index])}">
+            <span class="attachment-summary-primary">${escapeHTML(cell.primary || '-')}</span>
+            ${cell.secondary ? `<span class="attachment-summary-secondary">${escapeHTML(cell.secondary)}</span>` : ''}
+        </td>`).join('')}</tr>`;
+}
+
+function getLocalAttachmentManagerFiles() {
+    const context = attachmentManagerContext || {};
+    if (context.kind === 'expense-draft') return tempBillAttachments;
+    if (context.kind === 'food-draft') return foodFiles;
+    if (context.kind === 'quick-expense') return quickExpenseAttachmentsByRow[context.rowId] || [];
+    if (context.kind === 'quick-food') return quickFoodAttachmentsByRow[context.rowId] || [];
+    if (context.kind === 'fund-receipt') return fundReceiptFile ? [fundReceiptFile] : [];
+    return [];
+}
+
+function getManagedFileMime(file) {
+    return String(file && (file.mimeType || file.fileType || (file.file && file.file.type) || file.type) || '');
+}
+
+function getManagedFilePreview(file) {
+    return String(file && (file.previewUrl || file.base64 || file.dataUrl) || '');
+}
+
+function removeLocalAttachmentManagerFile(index) {
+    const context = attachmentManagerContext || {};
+    if (context.kind === 'expense-draft') removeTempBillAttachment(index);
+    if (context.kind === 'food-draft') removeFoodFile(index);
+    if (context.kind === 'quick-expense') removeQuickExpenseRowFile(context.rowId, index);
+    if (context.kind === 'quick-food') removeQuickFoodRowFile(context.rowId, index);
+    if (context.kind === 'fund-receipt') {
+        fundReceiptFile = null;
+        renderFundReceiptFilePreview(getFundReceiptByMonth(context.month));
+    }
+    renderAttachmentManagerBody();
+}
+
+function renderLocalAttachmentManager() {
+    const body = document.getElementById('modal-att-body');
+    if (!body) return;
+    const context = attachmentManagerContext || {};
+    const localFiles = getLocalAttachmentManagerFiles();
+    const existingFund = context.kind === 'fund-receipt' ? getFundReceiptByMonth(context.month) : null;
+    const entries = localFiles.map(file => ({ file, saved: false }));
+    if (!localFiles.length && existingFund && existingFund.fileName) entries.push({ file: existingFund, saved: true });
+
+    if (!entries.length) {
+        body.innerHTML = `<div class="att-empty"><i data-lucide="file-x" style="width:52px;height:52px;color:var(--text-muted);margin-bottom:12px;"></i><p>ยังไม่มีหลักฐานแนบ</p><small>เลือกไฟล์ ถ่ายภาพ ลากไฟล์มาวาง หรือกด Ctrl+V ได้จากหน้าต่างนี้</small></div>`;
+        initializeLucide();
+        return;
+    }
+
+    body.innerHTML = `<div class="att-grid">${entries.map((entry, index) => {
+        const file = entry.file;
+        const name = getAttachmentDisplayName(file.filename ? { originalFileName: file.filename } : file);
+        const mime = getManagedFileMime(file);
+        const preview = getManagedFilePreview(file);
+        const isImage = mime.startsWith('image/') && preview;
+        const openUrl = entry.saved ? (file.fileUrl || file.viewUrl || '') : preview;
+        return `<div class="att-item">
+            <div class="att-preview">${isImage ? `<img src="${escapeHTML(preview)}" class="att-thumb" alt="${escapeHTML(name)}">` : `<div class="att-icon-file"><i data-lucide="file-text"></i><span>${escapeHTML((name.split('.').pop() || 'FILE').toUpperCase())}</span></div>`}</div>
+            <div class="att-info"><div class="att-name" title="${escapeHTML(name)}">${escapeHTML(name)}</div><div class="att-date">${entry.saved ? 'ไฟล์ที่บันทึกแล้ว' : 'รอบันทึกพร้อมรายการ'}</div></div>
+            <div class="att-item-actions">
+                ${openUrl ? `<button type="button" class="btn-icon" onclick="window.open('${escapeHTML(openUrl)}','_blank')" title="เปิดไฟล์"><i data-lucide="external-link"></i></button>` : ''}
+                ${entry.saved ? '' : `<button type="button" class="btn-icon btn-icon-delete" onclick="removeLocalAttachmentManagerFile(${index})" title="นำออก"><i data-lucide="trash-2"></i></button>`}
+            </div>
+        </div>`;
+    }).join('')}</div>`;
+    initializeLucide();
+}
+
+function renderFoodAttachmentManager() {
+    const body = document.getElementById('modal-att-body');
+    if (!body) return;
+    const attachments = (attachmentManagerContext && attachmentManagerContext.attachments) || [];
+    if (!attachments.length) {
+        body.innerHTML = `<div class="att-empty"><i data-lucide="file-x" style="width:52px;height:52px;color:var(--text-muted);margin-bottom:12px;"></i><p>ยังไม่มีหลักฐานค่าอาหาร</p><small>เพิ่มรูปสลิป บิล หรือเอกสารจากปุ่มด้านล่าง</small></div>`;
+        initializeLucide();
+        return;
+    }
+    body.innerHTML = `<div class="att-grid">${attachments.map((att, index) => {
+        const name = getAttachmentDisplayName(att);
+        const mime = inferAttachmentMime(att);
+        return `<div class="att-item">
+            <div class="att-preview" onclick="previewFoodAttachment(${index})">${mime.startsWith('image/') ? `<img src="${ATTACHMENT_PREVIEW_PLACEHOLDER}" class="att-thumb is-loading" data-food-att-preview-index="${index}" alt="${escapeHTML(name)}">` : `<div class="att-icon-file"><i data-lucide="file-text"></i><span>${escapeHTML((name.split('.').pop() || 'FILE').toUpperCase())}</span></div>`}</div>
+            <div class="att-info"><div class="att-name" title="${escapeHTML(name)}">${escapeHTML(name)}</div><div class="att-date">${att.uploadedAt ? formatThaiDate(att.uploadedAt) : ''}</div></div>
+            <div class="att-item-actions"><button type="button" class="btn-icon" onclick="previewFoodAttachment(${index})" title="เปิดไฟล์"><i data-lucide="external-link"></i></button><button type="button" class="btn-icon btn-icon-delete" onclick="deleteFoodAttachment(${index})" title="ลบ"><i data-lucide="trash-2"></i></button></div>
+        </div>`;
+    }).join('')}</div>`;
+    initializeLucide();
+    body.querySelectorAll('img[data-food-att-preview-index]').forEach(image => {
+        const attachment = attachments[Number(image.dataset.foodAttPreviewIndex)];
+        getAttachmentImageDataUrl(attachment).then(dataUrl => {
+            if (!dataUrl || !attachmentManagerContext || attachmentManagerContext.kind !== 'food-saved') throw new Error('preview unavailable');
+            image.src = dataUrl;
+            image.classList.remove('is-loading');
+        }).catch(() => { image.closest('.att-preview').innerHTML = '<div class="att-preview-error"><i data-lucide="image-off"></i><span>กดปุ่มเปิดไฟล์เพื่อดู</span></div>'; initializeLucide(); });
+    });
+}
+
+function renderAttachmentManagerBody() {
+    if (!attachmentManagerContext) return;
+    if (attachmentManagerContext.kind === 'expense-saved') renderExpenseAttachmentModal(attachmentManagerContext.id);
+    else if (attachmentManagerContext.kind === 'food-saved') renderFoodAttachmentManager();
+    else renderLocalAttachmentManager();
+}
+
+function openLocalAttachmentManager(kind, options = {}) {
+    currentExpAttId = null;
+    attachmentManagerContext = { kind, ...options };
+    clearPendingExpenseAttachmentFiles();
+    configureAttachmentManagerInputs({
+        accept: kind === 'fund-receipt' ? '.jpg,.jpeg,.png,.webp,.pdf' : undefined,
+        multiple: kind !== 'fund-receipt'
+    });
+    const titles = {
+        'expense-draft': 'จัดการหลักฐานรายการรายจ่าย',
+        'food-draft': 'จัดการหลักฐานค่าอาหาร',
+        'quick-expense': 'จัดการหลักฐานรายการรายจ่าย',
+        'quick-food': 'จัดการหลักฐานค่าอาหาร',
+        'fund-receipt': 'จัดการเอกสารรับเงินทุนประจำเดือน'
+    };
+    (document.getElementById('modal-att-title') || {}).textContent = titles[kind] || 'จัดการหลักฐาน';
+    (document.getElementById('att-storage-info') || {}).textContent = kind === 'fund-receipt'
+        ? 'รองรับไฟล์หลัก 1 ไฟล์ · บันทึกขึ้น Google Drive เมื่อกดบันทึกเอกสาร'
+        : 'ไฟล์ที่เลือกจะบันทึกขึ้น Google Drive พร้อมรายการ';
+
+    if (kind === 'fund-receipt') {
+        const month = options.month || selectedMonthKey();
+        const amount = Number((document.getElementById('fund-receipt-amount') || {}).value || 0);
+        setAttachmentManagerSummary(['ประเภทเอกสาร', 'รอบเดือน', 'สถานะ', 'จำนวนเงิน'], [
+            { primary: 'เอกสารรับเงินทุน' }, { primary: formatPostingMonth(month) },
+            { primary: getFundReceiptByMonth(month) ? 'มีเอกสารเดิม' : 'เอกสารใหม่' },
+            { primary: `฿${amount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}` }
+        ]);
+    } else if (kind === 'food-draft' || kind === 'quick-food') {
+        const draft = kind === 'quick-food' ? getQuickFoodRowDraft(options.rowId) : {
+            name: (document.getElementById('food-entry-name') || {}).value || 'รายการค่าอาหาร',
+            expenseDate: (document.getElementById('food-entry-date') || {}).value || '',
+            quantity: Number((document.getElementById('food-entry-qty') || {}).value || 0),
+            unit: (document.getElementById('food-entry-unit') || {}).value || '',
+            unitPrice: Number((document.getElementById('food-entry-price') || {}).value || 0)
+        };
+        setAttachmentManagerSummary(['ประเภท', 'วันที่ / รอบ', 'รายการ', 'จำนวนเงิน'], [
+            { primary: 'ค่าอาหารประจำเดือน' }, { primary: formatThaiDate(draft.expenseDate) || '-', secondary: formatPostingMonth((document.getElementById('food-modal-month') || {}).value || getSelectedPostingMonth()) },
+            { primary: draft.name || '-', secondary: `${draft.quantity || 0} ${draft.unit || 'รายการ'}` },
+            { primary: `฿${((draft.quantity || 0) * (draft.unitPrice || 0)).toLocaleString('th-TH', { minimumFractionDigits: 2 })}` }
+        ]);
+    } else {
+        const draft = kind === 'quick-expense' ? getQuickExpenseRowDraft(options.rowId) : null;
+        const description = draft ? draft.description : ((document.getElementById('bill-desc') || {}).value || 'รายการรายจ่าย');
+        const date = draft ? draft.expenseDate : ((document.getElementById('bill-date') || {}).value || '');
+        const amount = draft ? draft.amount : (Number((document.getElementById('bill-qty') || {}).value || 0) * Number((document.getElementById('bill-price') || {}).value || 0));
+        setAttachmentManagerSummary(['เลขบิล / ใบเสร็จ', 'วันที่ / รอบ', 'รายละเอียดรายการ', 'จำนวนเงิน'], [
+            { primary: draft ? (draft.receiptNo || 'รายการใหม่') : ((document.getElementById('bill-docno') || {}).value || 'รายการใหม่') },
+            { primary: formatThaiDate(date) || '-' }, { primary: description || '-' },
+            { primary: `฿${amount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}` }
+        ]);
+    }
+    renderAttachmentManagerBody();
+    document.getElementById('modal-attachments').classList.add('active');
+    initializeLucide();
+}
+
+function openExpenseFormAttachmentManager() {
+    const editIndex = String((document.getElementById('bill-edit-index') || {}).value || '');
+    const expense = editIndex !== '' ? state.expenses[Number(editIndex)] : null;
+    if (expense && expense.id) openExpenseAttachmentModal(expense.id);
+    else openLocalAttachmentManager('expense-draft');
+}
+
+function openFoodFormAttachmentManager() {
+    const id = String((document.getElementById('food-entry-edit-id') || {}).value || '');
+    if (id) openFoodAttachmentModal(id);
+    else openLocalAttachmentManager('food-draft');
+}
+
+function openQuickExpenseAttachmentManager(rowId) {
+    openLocalAttachmentManager('quick-expense', { rowId });
+}
+
+function openQuickFoodAttachmentManager(rowId) {
+    openLocalAttachmentManager('quick-food', { rowId });
+}
+
+function openFundReceiptAttachmentManager() {
+    const month = String((document.getElementById('fund-receipt-month') || {}).value || selectedMonthKey());
+    openLocalAttachmentManager('fund-receipt', { month });
+}
+
+async function openFoodAttachmentModal(foodExpenseId) {
+    const record = (state.foodExpenses || []).find(item => String(item.id) === String(foodExpenseId));
+    currentExpAttId = null;
+    attachmentManagerContext = { kind: 'food-saved', id: foodExpenseId, itemId: record && record.itemId, attachments: [], record };
+    clearPendingExpenseAttachmentFiles();
+    configureAttachmentManagerInputs();
+    (document.getElementById('modal-att-title') || {}).textContent = `หลักฐานค่าอาหาร — ${(record && record.name) || foodExpenseId}`;
+    (document.getElementById('att-storage-info') || {}).textContent = 'ระบบจัดเก็บบน Google Drive คลาวด์';
+    setAttachmentManagerSummary(['เลขรายการ', 'วันที่ / รอบ', 'รายการค่าอาหาร', 'จำนวนเงิน'], [
+        { primary: (record && record.documentNo) || foodExpenseId },
+        { primary: formatThaiDate(record && record.date) || '-', secondary: formatPostingMonth(record && getFoodPostingMonth(record)) },
+        { primary: (record && record.name) || '-', secondary: record ? `${record.quantity || 0} ${record.unit || 'รายการ'}` : '' },
+        { primary: `฿${Number(record && record.totalAmount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })}` }
+    ]);
+    const body = document.getElementById('modal-att-body');
+    if (body) body.innerHTML = '<div class="att-empty"><p>กำลังโหลดหลักฐานค่าอาหาร...</p></div>';
+    document.getElementById('modal-attachments').classList.add('active');
+    showLoading(true);
+    try {
+        await refreshFoodAttachmentManager();
+    } catch (error) {
+        if (body) body.innerHTML = '<div class="att-empty"><p>โหลดหลักฐานค่าอาหารไม่สำเร็จ</p></div>';
+        appAlert('ดึงข้อมูลไฟล์แนบล้มเหลว: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+async function refreshFoodAttachmentManager() {
+    const context = attachmentManagerContext;
+    if (!context || context.kind !== 'food-saved') return;
+    const response = await apiCall('getFoodExpenseById', { id: context.id });
+    if (!attachmentManagerContext || attachmentManagerContext !== context) return;
+    const item = (response.items || []).find(entry => String(entry.id) === String(context.itemId)) || (response.items || [])[0];
+    context.itemId = item && item.id;
+    context.attachments = (item && item.attachments) || [];
+    renderFoodAttachmentManager();
+}
+
+async function handleFoodAttachmentUpload(files) {
+    const context = attachmentManagerContext;
+    if (!context || context.kind !== 'food-saved' || !context.itemId) return;
+    expenseAttachmentUploadInProgress = true;
+    renderPendingExpenseAttachmentFiles();
+    showLoading(true);
+    const failures = [];
+    try {
+        const enhanceImages = Boolean((document.getElementById('att-enhance-image') || {}).checked);
+        for (const file of files) {
+            try {
+                const prepared = await prepareSavedExpenseAttachment(file, enhanceImages);
+                await apiCall('uploadFoodAttachment', {
+                    foodExpenseItemId: context.itemId,
+                    fileName: prepared.uploadFileName,
+                    mimeType: prepared.file.type,
+                    base64Data: await fileAsBase64(prepared.file),
+                    originalSize: prepared.originalSize,
+                    compressedSize: prepared.compressedSize,
+                    sha256Hash: prepared.sha256Hash
+                });
+            } catch (error) { failures.push({ file, error }); }
+        }
+        await refreshFoodAttachmentManager();
+        await loadFoodExpensesForMonth(getSelectedPostingMonth());
+        renderFoodBillsTable();
+    } finally {
+        showLoading(false);
+        expenseAttachmentUploadInProgress = false;
+        clearPendingExpenseAttachmentFiles();
+        failures.forEach(item => pendingExpenseAttachmentFiles.push({ file: item.file, previewUrl: item.file.type.startsWith('image/') ? URL.createObjectURL(item.file) : '', error: `${item.file.name}: ${item.error.message}` }));
+        renderPendingExpenseAttachmentFiles();
+    }
+    if (!failures.length) appAlert(`อัปโหลดหลักฐาน ${files.length} ไฟล์เรียบร้อย`, 'success');
+    else appAlert(`มีไฟล์อัปโหลดไม่สำเร็จ ${failures.length} ไฟล์`, 'warning');
+}
+
+function previewFoodAttachment(index) {
+    const attachment = attachmentManagerContext && attachmentManagerContext.attachments && attachmentManagerContext.attachments[index];
+    const url = attachment && (attachment.fileUrl || attachment.viewUrl);
+    if (url) window.open(url, '_blank');
+    else appAlert('ไม่พบลิงก์สำหรับเข้าดูไฟล์นี้');
+}
+
+async function deleteFoodAttachment(index) {
+    const attachment = attachmentManagerContext && attachmentManagerContext.attachments && attachmentManagerContext.attachments[index];
+    if (!attachment || !await appConfirm(`ลบหลักฐานไฟล์ “${getAttachmentDisplayName(attachment)}” ใช่หรือไม่?`)) return;
+    showLoading(true);
+    try {
+        await apiCall('deleteFoodAttachment', { id: attachment.id });
+        await refreshFoodAttachmentManager();
+        await loadFoodExpensesForMonth(getSelectedPostingMonth());
+        renderFoodBillsTable();
+        appAlert('ลบไฟล์หลักฐานเรียบร้อย', 'success');
+    } catch (error) {
+        appAlert('ลบไฟล์หลักฐานไม่สำเร็จ: ' + error.message, 'error');
+    } finally { showLoading(false); }
+}
+
 function closeExpenseAttachmentModal() {
     if (expenseAttachmentUploadInProgress) return;
     document.getElementById('modal-attachments').classList.remove('active');
     clearPendingExpenseAttachmentFiles();
     currentExpAttId = null;
+    attachmentManagerContext = null;
+    const editIndex = String((document.getElementById('bill-edit-index') || {}).value || '');
+    if (editIndex !== '') {
+        const expense = state.expenses[Number(editIndex)];
+        renderTempBillAttachmentsPreview(expense ? expense.id : null);
+    }
+    renderFoodFileList();
     renderTables();
 }
 
@@ -5312,7 +5821,7 @@ function hydrateExpenseAttachmentPreviewImages(expId, attachments) {
         const attachment = attachments[index];
         if (!attachment) return;
         getAttachmentImageDataUrl(attachment).then(dataUrl => {
-            if (!dataUrl || String(currentExpAttId) !== String(expId)) throw new Error('preview unavailable');
+            if (!dataUrl || !attachmentManagerContext || attachmentManagerContext.kind !== 'expense-saved' || String(currentExpAttId) !== String(expId)) throw new Error('preview unavailable');
             image.src = dataUrl;
             image.classList.remove('is-loading');
         }).catch(() => {
@@ -5839,10 +6348,10 @@ function renderExpenseRow(exp, idx, tbody) {
                     attachments.forEach((fileData, i) => {
                         attachHtml += `<img src="${ATTACHMENT_PREVIEW_PLACEHOLDER}" class="attachment-thumbnail" data-attachment-preview-exp-id="${escapeHTML(exp.id)}" data-attachment-preview-index="${i}" onclick="previewAttachmentFile('${exp.id}', ${i})" title="ดูหลักฐาน" alt="${escapeHTML(getAttachmentDisplayName(fileData))}"/>`;
                     });
-                    attachHtml += `<button class="btn btn-icon btn-icon-attach" data-exp-id="${exp.id}" title="แนบไฟล์เพิ่มเติม/แก้ไข" style="margin-left:4px;"><i data-lucide="upload-cloud" style="width:14px; height:14px;"></i></button></div>`;
+                    attachHtml += `<button class="btn btn-icon btn-icon-attach" data-exp-id="${exp.id}" title="จัดการหลักฐาน" style="margin-left:4px;"><i data-lucide="folder-open" style="width:14px; height:14px;"></i></button></div>`;
                     td.innerHTML = attachHtml;
                 } else {
-                    td.innerHTML = `<button class="btn btn-icon btn-icon-attach" data-exp-id="${exp.id}" title="แนบไฟล์หลักฐาน"><i data-lucide="upload-cloud" style="width:14px; height:14px;"></i></button>`;
+                    td.innerHTML = `<button class="btn btn-icon btn-icon-attach" data-exp-id="${exp.id}" title="จัดการหลักฐาน"><i data-lucide="folder-open" style="width:14px; height:14px;"></i></button>`;
                 }
                 break;
             case 'organizationId':
@@ -5908,7 +6417,7 @@ function renderCompactExpenseRow(exp, idx, tbody) {
         <td data-label="หลักฐาน / ประเภท">
             <div class="record-meta" style="margin-top:0;">
                 <span class="badge ${exp.claimable ? 'badge-claimable' : 'badge-non-claimable'}">${exp.claimable ? 'เบิกมูลนิธิ' : 'ไม่เบิก'}</span>
-                <button type="button" class="btn btn-icon btn-icon-attach" data-exp-id="${escapeHTML(exp.id)}" title="จัดการหลักฐาน"><i data-lucide="paperclip" style="width:14px;height:14px;"></i><span style="font-size:11px;">${attachments.length}</span></button>
+                <button type="button" class="btn btn-icon btn-icon-attach" data-exp-id="${escapeHTML(exp.id)}" title="จัดการหลักฐาน"><i data-lucide="folder-open" style="width:14px;height:14px;"></i><span style="font-size:11px;">${attachments.length}</span></button>
             </div>
         </td>
         <td class="text-center" data-label="เครื่องมือ">
@@ -5956,7 +6465,7 @@ function renderAttachmentRow(a, idx, tbody) {
             <td data-label="หลักฐาน / ประเภท">
                 <div class="record-meta" style="margin-top:0;">
                     <span class="badge ${a.claimable ? 'badge-claimable' : 'badge-non-claimable'}">${a.claimable ? 'เบิกมูลนิธิ' : 'ไม่เบิก'}</span>
-                    <button type="button" class="btn btn-icon btn-icon-attach" data-exp-id="${escapeHTML(a.id)}" title="จัดการหลักฐาน"><i data-lucide="paperclip"></i><span>${attachments.length}</span></button>
+                    <button type="button" class="btn btn-icon btn-icon-attach" data-exp-id="${escapeHTML(a.id)}" title="จัดการหลักฐาน"><i data-lucide="folder-open"></i><span>${attachments.length}</span></button>
                 </div>
             </td>
             <td class="text-center" data-label="เครื่องมือ">
@@ -6041,10 +6550,10 @@ function renderAttachmentRow(a, idx, tbody) {
                     attachmentsAttach.forEach((fileData, i) => {
                         attachHtml += `<img src="${fileData.viewUrl}" class="attachment-thumbnail" onclick="previewAttachmentFile('${a.id}', ${i})" title="ดูหลักฐาน" onerror="this.onerror=null; this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'32\\' height=\\'32\\' viewBox=\\'0 0 24 24\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'2\\' stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\'><path d=\\'M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z\\'/></svg>'; this.style.opacity='0.5';"/>`;
                     });
-                    attachHtml += `<button class="btn btn-icon btn-icon-attach" data-exp-id="${a.id}" title="แนบไฟล์เพิ่มเติม/แก้ไข" style="margin-left:4px;"><i data-lucide="upload-cloud" style="width:14px; height:14px;"></i></button></div>`;
+                    attachHtml += `<button class="btn btn-icon btn-icon-attach" data-exp-id="${a.id}" title="จัดการหลักฐาน" style="margin-left:4px;"><i data-lucide="folder-open" style="width:14px; height:14px;"></i></button></div>`;
                     td.innerHTML = attachHtml;
                 } else {
-                    td.innerHTML = `<button class="btn btn-icon btn-icon-attach" data-exp-id="${a.id}" title="แนบไฟล์หลักฐาน"><i data-lucide="upload-cloud" style="width:14px; height:14px;"></i></button>`;
+                    td.innerHTML = `<button class="btn btn-icon btn-icon-attach" data-exp-id="${a.id}" title="จัดการหลักฐาน"><i data-lucide="folder-open" style="width:14px; height:14px;"></i></button>`;
                 }
                 break;
             case 'organizationId':
@@ -6524,10 +7033,9 @@ function buildQuickFoodRowHTML(rowId, initial = {}) {
         <td data-label="หน่วย / หลักฐาน">
             <details class="quick-food-row-details">
                 <summary data-role="extra-summary">หน่วย: ${escapeHTML(unit)}</summary>
-                <div class="quick-food-row-extra attachment-drop-zone" data-attachment-drop-zone tabindex="0" ondragover="setAttachmentDropZoneState(event, true)" ondragleave="setAttachmentDropZoneState(event, false)" ondrop="handleQuickFoodRowDrop('${rowId}', event)" onpaste="handleQuickFoodRowPaste('${rowId}', event)">
+                <div class="quick-food-row-extra">
                     <label>หน่วย<input type="text" class="form-input" data-field="unit" value="${escapeHTML(unit)}" oninput="handleQuickFoodRowInput('${rowId}', 'unit')" required></label>
-                    <label>หลักฐาน<input type="file" class="form-input" accept=".jpg,.jpeg,.png,.webp,.pdf,.xlsx,.docx,.csv" multiple onchange="handleQuickFoodRowFiles('${rowId}', event)"></label>
-                    <span class="attachment-drop-hint"><i data-lucide="clipboard-paste"></i> ลากไฟล์ หรือกด Ctrl+V</span>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="openQuickFoodAttachmentManager('${rowId}')"><i data-lucide="folder-open"></i> จัดการหลักฐาน</button>
                     <div class="quick-file-list" data-role="file-list" aria-live="polite"></div>
                 </div>
             </details>
@@ -6774,14 +7282,12 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
             <td><input type="number" class="form-input text-right" data-field="unitPrice" min="0.01" step="any" value="${escapeHTML(unitPrice)}" oninput="updateQuickExpenseRowTotal('${rowId}')"></td>
             <td><span class="quick-expense-row-total" data-role="row-total">0.00</span></td>
             <td>
-                <details class="quick-expense-row-details attachment-drop-zone" data-attachment-drop-zone tabindex="0" ondragover="setAttachmentDropZoneState(event, true)" ondragleave="setAttachmentDropZoneState(event, false)" ondrop="handleQuickExpenseRowDrop('${rowId}', event)" onpaste="handleQuickExpenseRowPaste('${rowId}', event)">
+                <details class="quick-expense-row-details">
                     <summary data-role="extra-summary">หมายเหตุ / หลักฐาน</summary>
                     <textarea class="form-input" data-field="note" rows="2" placeholder="รายละเอียดเพิ่มเติม">${escapeHTML(note)}</textarea>
-                    <label class="btn btn-outline btn-sm quick-expense-file-button">
-                        <i data-lucide="paperclip"></i> แนบหลักฐาน
-                        <input type="file" hidden multiple accept=".jpg,.jpeg,.png,.webp,.pdf,.xlsx,.docx,.csv" onchange="handleQuickExpenseRowFiles('${rowId}', event)">
-                    </label>
-                    <span class="attachment-drop-hint"><i data-lucide="clipboard-paste"></i> ลากไฟล์ หรือกด Ctrl+V</span>
+                    <button type="button" class="btn btn-outline btn-sm quick-expense-file-button" onclick="openQuickExpenseAttachmentManager('${rowId}')">
+                        <i data-lucide="folder-open"></i> จัดการหลักฐาน
+                    </button>
                     <div class="quick-file-list" data-role="file-list" aria-live="polite"></div>
                 </details>
             </td>
@@ -11570,6 +12076,7 @@ const PERMISSION_ACTIONS = [
     { action: 'createFoodExpense',    label: 'เพิ่มรายการค่าอาหาร',             category: 'ค่าอาหาร' },
     { action: 'updateFoodExpense',    label: 'แก้ไขรายการค่าอาหาร',             category: 'ค่าอาหาร' },
     { action: 'uploadFoodAttachment', label: 'แนบหลักฐานค่าอาหาร',              category: 'ค่าอาหาร' },
+    { action: 'deleteFoodAttachment', label: 'ลบหลักฐานค่าอาหาร',               category: 'ค่าอาหาร' },
     { action: 'deleteFoodExpenseAPI', label: 'ลบรายการค่าอาหาร',                category: 'ค่าอาหาร' },
     { action: 'createClaim',         label: 'สร้างใบเบิก',                     category: 'ใบเบิก' },
     { action: 'cancelClaimDraft',    label: 'ยกเลิกใบเบิก (ฉบับร่าง)',          category: 'ใบเบิก' },
@@ -11601,6 +12108,7 @@ const DEFAULT_PERMISSION_MATRIX = {
     createFoodExpense:    { manager: true,  staff: true,  viewer: false },
     updateFoodExpense:    { manager: true,  staff: true,  viewer: false },
     uploadFoodAttachment: { manager: true,  staff: true,  viewer: false },
+    deleteFoodAttachment: { manager: true,  staff: true,  viewer: false },
     deleteFoodExpenseAPI: { manager: true,  staff: false, viewer: false },
     createClaim:         { manager: true,  staff: true,  viewer: false },
     cancelClaimDraft:    { manager: true,  staff: true,  viewer: false },
@@ -11777,6 +12285,10 @@ window.handleGoogleLogin = handleGoogleLogin;
 let foodFiles = [];
 let foodBillsTableExpanded = false;
 let foodBillsCollapsedLimit = getFoodBillsCollapsedLimit();
+let foodOverviewTableExpanded = false;
+let foodOverviewEditingId = '';
+const FOOD_OVERVIEW_COLLAPSED_LIMIT = 6;
+const FOOD_REPORT_ROWS_PER_PAGE = 14;
 
 function getFoodBillsCollapsedLimit() {
     return Number(window.innerWidth || 1024) <= 900 ? 5 : 6;
@@ -11785,6 +12297,11 @@ function getFoodBillsCollapsedLimit() {
 window.toggleFoodBillsTable = function() {
     foodBillsTableExpanded = !foodBillsTableExpanded;
     renderFoodBillsTable();
+};
+
+window.toggleFoodOverviewTable = function() {
+    foodOverviewTableExpanded = !foodOverviewTableExpanded;
+    renderFoodOverview();
 };
 
 window.addEventListener('resize', () => {
@@ -11808,13 +12325,23 @@ async function loadFoodExpensesForMonth(month) {
 
 // Load food data from API
 window.loadFoodOverview = async function() {
+    foodOverviewTableExpanded = false;
+    foodOverviewEditingId = '';
     try {
         const selectedMonth = (document.getElementById('food-overview-month') || {}).value || getSelectedPostingMonth();
         await loadFoodExpensesForMonth(selectedMonth);
         renderFoodOverview();
     } catch (err) {
         console.error(err);
-        appAlert('ไม่สามารถโหลดข้อมูลค่าอาหารได้: ' + err.message);
+        const tbody = document.getElementById('food-overview-tbody');
+        if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="9" class="food-overview-load-error">
+                <strong>โหลดข้อมูลค่าอาหารไม่สำเร็จ</strong>
+                <span>${escapeHTML(err.message || 'การเชื่อมต่อขัดข้องชั่วคราว')}</span>
+                <button type="button" class="btn btn-sm btn-outline" onclick="loadFoodOverview()"><i data-lucide="refresh-cw"></i> ลองอีกครั้ง</button>
+            </td></tr>`;
+            initializeLucide();
+        }
     }
 };
 
@@ -11882,7 +12409,8 @@ function renderFoodBillsTable() {
     const canDelete = ['admin', 'manager'].includes(getCurrentUserRole());
     tbody.innerHTML = visibleRows.map((item, index) => {
         const amount = parseFloat(item.totalAmount) || 0;
-        const hasFiles = Boolean(item.files);
+        const attachmentCount = Number(item.attachmentCount || (item.files ? 1 : 0));
+        const hasFiles = attachmentCount > 0;
         return `
             <tr>
                 <td class="text-center food-row-number" data-label="ลำดับ">${index + 1}</td>
@@ -11901,7 +12429,9 @@ function renderFoodBillsTable() {
                 <td class="text-right" data-label="รวมเป็นเงิน"><span class="record-amount">฿${amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></td>
                 <td data-label="หลักฐาน / เครื่องมือ">
                     <div class="record-tools">
-                        <span class="badge" title="${hasFiles ? 'มีไฟล์แนบ' : 'ไม่มีไฟล์แนบ'}">${hasFiles ? '<i data-lucide="paperclip" style="width:14px;height:14px;"></i> มีหลักฐาน' : 'ไม่มีหลักฐาน'}</span>
+                        <button type="button" class="btn btn-icon btn-sm btn-icon-attach ${hasFiles ? 'has-attach' : ''}" onclick="openFoodAttachmentModal('${escapeHTML(item.id)}')" title="จัดการหลักฐาน" aria-label="จัดการหลักฐานรายการ ${escapeHTML(item.name || '')}">
+                            <i data-lucide="folder-open"></i>${hasFiles ? `<span class="att-count-badge">${attachmentCount}</span>` : ''}
+                        </button>
                         <button type="button" class="btn btn-icon btn-sm btn-icon-edit" onclick="openFoodExpenseEditor('${escapeHTML(item.id)}')" title="แก้ไขรายการ" aria-label="แก้ไขรายการ"><i data-lucide="pencil"></i></button>
                         ${canDelete ? `<button type="button" class="btn btn-icon btn-sm btn-icon-delete" onclick="deleteFoodExpense('${escapeHTML(item.id)}')" title="ลบรายการ" aria-label="ลบรายการ"><i data-lucide="trash-2"></i></button>` : ''}
                     </div>
@@ -11916,47 +12446,182 @@ window.openFoodExpenseEditor = function(id) {
     editFoodExpense(id);
 };
 
+function getFoodOverviewEditRow(id) {
+    return Array.from(document.querySelectorAll('#food-overview-tbody tr[data-food-id]'))
+        .find(row => row.dataset.foodId === String(id || '')) || null;
+}
+
+function buildFoodOverviewEditRow(item, sequence) {
+    const id = String(item.id || '');
+    const amount = (parseFloat(item.quantity) || 0) * (parseFloat(item.price) || 0);
+    return `
+        <tr class="food-overview-edit-row" data-food-id="${escapeHTML(id)}">
+            <td class="text-center food-overview-sequence" data-label="ที่">${sequence}</td>
+            <td data-label="วันที่ซื้อ"><input type="date" class="form-input food-overview-inline-input" data-field="date" value="${escapeHTML(String(item.date || '').slice(0, 10))}" required></td>
+            <td data-label="รอบบันทึก"><input type="month" class="form-input food-overview-inline-input" data-field="postingMonth" value="${escapeHTML(getFoodPostingMonth(item))}" required></td>
+            <td data-label="รายการอาหาร/วัตถุดิบ"><input type="text" class="form-input food-overview-inline-input" data-field="name" value="${escapeHTML(item.name || '')}" required></td>
+            <td data-label="หมวดหมู่"><input type="text" class="form-input food-overview-inline-input" data-field="category" value="${escapeHTML(item.category || 'อาหารประจำเดือน')}" required></td>
+            <td data-label="จำนวน" class="food-overview-inline-pair">
+                <input type="number" min="0.01" step="0.01" class="form-input food-overview-inline-input" data-field="quantity" value="${escapeHTML(String(item.quantity || ''))}" oninput="updateFoodOverviewInlineTotal('${escapeHTML(id)}')" required>
+                <input type="text" class="form-input food-overview-inline-input food-overview-unit-input" data-field="unit" value="${escapeHTML(item.unit || 'รายการ')}" aria-label="หน่วย" required>
+            </td>
+            <td data-label="ราคา/หน่วย"><input type="number" min="0.01" step="0.01" class="form-input food-overview-inline-input" data-field="price" value="${escapeHTML(String(item.price || ''))}" oninput="updateFoodOverviewInlineTotal('${escapeHTML(id)}')" required></td>
+            <td class="text-right" data-label="รวมเป็นเงิน"><strong data-role="inline-total">${amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td>
+            <td data-label="หลักฐาน / เครื่องมือ">
+                <div class="record-tools food-overview-edit-actions">
+                    <button type="button" class="btn btn-icon btn-sm btn-icon-save" onclick="saveFoodOverviewInlineEdit('${escapeHTML(id)}')" title="บันทึกการแก้ไข" aria-label="บันทึกการแก้ไข"><i data-lucide="check"></i></button>
+                    <button type="button" class="btn btn-icon btn-sm btn-icon-cancel" onclick="cancelFoodOverviewInlineEdit()" title="ยกเลิก" aria-label="ยกเลิกการแก้ไข"><i data-lucide="x"></i></button>
+                </div>
+            </td>
+        </tr>`;
+}
+
+window.beginFoodOverviewInlineEdit = function(id) {
+    foodOverviewEditingId = String(id || '');
+    foodOverviewTableExpanded = true;
+    renderFoodOverview();
+    const row = getFoodOverviewEditRow(foodOverviewEditingId);
+    const firstInput = row && row.querySelector('[data-field="name"]');
+    if (firstInput) {
+        firstInput.focus();
+        firstInput.select();
+    }
+};
+
+window.cancelFoodOverviewInlineEdit = function() {
+    foodOverviewEditingId = '';
+    renderFoodOverview();
+};
+
+window.updateFoodOverviewInlineTotal = function(id) {
+    const row = getFoodOverviewEditRow(id);
+    if (!row) return;
+    const quantity = parseFloat((row.querySelector('[data-field="quantity"]') || {}).value) || 0;
+    const price = parseFloat((row.querySelector('[data-field="price"]') || {}).value) || 0;
+    const totalEl = row.querySelector('[data-role="inline-total"]');
+    if (totalEl) totalEl.textContent = (quantity * price).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+window.saveFoodOverviewInlineEdit = async function(id) {
+    const row = getFoodOverviewEditRow(id);
+    const existing = (state.foodExpenses || []).find(item => String(item.id) === String(id));
+    if (!row || !existing) {
+        appAlert('ไม่พบรายการค่าอาหารที่ต้องการแก้ไข', 'error');
+        return;
+    }
+    const value = field => String((row.querySelector(`[data-field="${field}"]`) || {}).value || '').trim();
+    const date = value('date');
+    const postingPeriod = value('postingMonth');
+    const name = value('name');
+    const category = value('category');
+    const quantity = parseFloat(value('quantity')) || 0;
+    const unit = value('unit');
+    const price = parseFloat(value('price')) || 0;
+    if (!date || !/^\d{4}-\d{2}$/.test(postingPeriod) || !name || !category || !unit || quantity <= 0 || price <= 0) {
+        appAlert('กรุณากรอกข้อมูลในแถวให้ครบ และระบุจำนวนกับราคาให้มากกว่า 0', 'error');
+        return;
+    }
+
+    const [year, month] = postingPeriod.split('-').map(Number);
+    const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
+    const saveButton = row.querySelector('.btn-icon-save');
+    if (saveButton) saveButton.disabled = true;
+    try {
+        await apiCall('updateFoodExpense', {
+            id: String(id),
+            month,
+            year,
+            dormitory: existing.dormitory || '',
+            responsiblePerson: existing.responsiblePerson || (currentUser && currentUser.name) || '',
+            note: category,
+            items: [{ expenseDate: date, ingredientName: name, quantity, unit, unitPrice: price }]
+        });
+        foodOverviewEditingId = '';
+        const selectedMonth = (document.getElementById('food-overview-month') || {}).value || postingPeriod;
+        await loadFoodExpensesForMonth(selectedMonth);
+        renderFoodOverview();
+        if (selectedMonth === getSelectedPostingMonth()) renderFoodBillsTable();
+        exportReportData.month = '';
+        appAlert('บันทึกการแก้ไขรายการค่าอาหารสำเร็จ', 'success');
+    } catch (err) {
+        if (saveButton) saveButton.disabled = false;
+        appAlert('ไม่สามารถแก้ไขรายการค่าอาหารได้: ' + err.message, 'error');
+    }
+};
+
 window.renderFoodOverview = function() {
     const tbody = document.getElementById('food-overview-tbody');
+    const tfoot = document.getElementById('food-overview-tfoot');
     const totalEl = document.getElementById('food-overview-total');
     if (!tbody || !totalEl) return;
 
-    const selectedMonth = document.getElementById('food-overview-month').value; // YYYY-MM
-    let data = [...(state.foodExpenses || [])];
-    
-    if (selectedMonth) {
-        data = data.filter(item => getFoodPostingMonth(item) === selectedMonth);
-    }
-    
-    // Sort by date desc
-    data.sort((a, b) => new Date(b.date) - new Date(a.date));
+    const selectedMonth = (document.getElementById('food-overview-month') || {}).value || '';
+    const data = [...(state.foodExpenses || [])]
+        .filter(item => !selectedMonth || getFoodPostingMonth(item) === selectedMonth)
+        .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+    const total = data.reduce((sum, item) => sum + (parseFloat(item.totalAmount) || 0), 0);
+    const hasHiddenRows = data.length > FOOD_OVERVIEW_COLLAPSED_LIMIT;
+    const visibleData = foodOverviewTableExpanded || !hasHiddenRows
+        ? data
+        : data.slice(0, FOOD_OVERVIEW_COLLAPSED_LIMIT);
+    const disclosure = document.getElementById('food-overview-disclosure');
+    const countLabel = document.getElementById('food-overview-count');
+    const toggleButton = document.getElementById('food-overview-toggle');
+    const canEdit = ['admin', 'manager', 'staff'].includes(getCurrentUserRole());
+    const canDelete = ['admin', 'manager'].includes(getCurrentUserRole());
 
-    let html = '';
-    let total = 0;
-    
+    if (disclosure) disclosure.hidden = !hasHiddenRows;
+    if (countLabel) {
+        countLabel.textContent = foodOverviewTableExpanded
+            ? `กำลังแสดงทั้งหมด ${data.length} รายการ`
+            : `กำลังแสดง ${visibleData.length} จาก ${data.length} รายการ`;
+    }
+    if (toggleButton) {
+        toggleButton.setAttribute('aria-expanded', String(foodOverviewTableExpanded));
+        toggleButton.innerHTML = foodOverviewTableExpanded
+            ? '<i data-lucide="chevron-up"></i><span data-role="label">ย่อรายการ</span>'
+            : `<i data-lucide="chevron-down"></i><span data-role="label">ดูทั้งหมด ${data.length} รายการ</span>`;
+    }
+
     if (data.length === 0) {
-        html = '<tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding:20px;">ไม่มีข้อมูลค่าอาหารในรอบบันทึกนี้</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-state">ไม่มีข้อมูลค่าอาหารในรอบบันทึกนี้</td></tr>';
     } else {
-        data.forEach((item, idx) => {
+        tbody.innerHTML = visibleData.map((item, idx) => {
+            const sequence = data.indexOf(item) + 1;
+            if (String(item.id) === foodOverviewEditingId) return buildFoodOverviewEditRow(item, sequence);
             const amount = parseFloat(item.totalAmount) || 0;
-            total += amount;
-            html += `
-                <tr>
-                    <td>${idx + 1}</td>
-                    <td>${formatThaiDate(item.date)}</td>
-                    <td>${formatPostingMonth(getFoodPostingMonth(item))}</td>
-                    <td>${escapeHTML(item.name || '')}</td>
-                    <td><span class="badge" style="background:var(--primary); color:white;">${escapeHTML(item.category || '')}</span></td>
-                    <td class="text-right">${escapeHTML(String(item.quantity || ''))} ${escapeHTML(item.unit || '')}</td>
-                    <td class="text-right">${parseFloat(item.price).toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
-                    <td class="text-right" style="font-weight:600;">${amount.toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
-                </tr>
-            `;
-        });
+            const attachmentCount = Number(item.attachmentCount || (item.files ? 1 : 0));
+            const hasFiles = attachmentCount > 0;
+            return `
+                <tr data-food-id="${escapeHTML(String(item.id || ''))}">
+                    <td class="text-center food-overview-sequence" data-label="ที่">${sequence}</td>
+                    <td data-label="วันที่ซื้อ">${escapeHTML(formatThaiDate(item.date) || '-')}</td>
+                    <td data-label="รอบบันทึก">${escapeHTML(formatPostingMonth(getFoodPostingMonth(item)))}</td>
+                    <td data-label="รายการอาหาร/วัตถุดิบ"><strong>${escapeHTML(item.name || '-')}</strong></td>
+                    <td data-label="หมวดหมู่"><span class="badge food-overview-category">${escapeHTML(item.category || '-')}</span></td>
+                    <td class="text-right" data-label="จำนวน">${escapeHTML(String(item.quantity || '-'))} ${escapeHTML(item.unit || '')}</td>
+                    <td class="text-right" data-label="ราคา/หน่วย">${(parseFloat(item.price) || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td class="text-right" data-label="รวมเป็นเงิน"><strong>${amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td>
+                    <td data-label="หลักฐาน / เครื่องมือ">
+                        <div class="record-tools">
+                            <button type="button" class="btn btn-icon btn-sm btn-icon-attach ${hasFiles ? 'has-attach' : ''}" onclick="openFoodAttachmentModal('${escapeHTML(String(item.id || ''))}')" title="จัดการหลักฐาน" aria-label="จัดการหลักฐานรายการ ${escapeHTML(item.name || '')}"><i data-lucide="folder-open"></i>${hasFiles ? `<span class="att-count-badge">${attachmentCount}</span>` : ''}</button>
+                            ${canEdit ? `<button type="button" class="btn btn-icon btn-sm btn-icon-edit" onclick="beginFoodOverviewInlineEdit('${escapeHTML(String(item.id || ''))}')" title="แก้ไขในตาราง" aria-label="แก้ไขรายการในตาราง"><i data-lucide="pencil"></i></button>` : ''}
+                            ${canDelete ? `<button type="button" class="btn btn-icon btn-sm btn-icon-delete" onclick="deleteFoodExpense('${escapeHTML(String(item.id || ''))}')" title="ลบรายการ" aria-label="ลบรายการ"><i data-lucide="trash-2"></i></button>` : ''}
+                        </div>
+                    </td>
+                </tr>`;
+        }).join('');
     }
 
-    if (tbody) tbody.innerHTML = html;
-    if (totalEl) totalEl.textContent = total.toLocaleString('th-TH', {minimumFractionDigits:2}) + ' บาท';
+    if (tfoot) {
+        tfoot.innerHTML = `<tr class="food-overview-summary-row">
+            <td colspan="7" class="text-right">รวม ${data.length.toLocaleString('th-TH')} รายการ</td>
+            <td class="text-right">${total.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</td>
+            <td></td>
+        </tr>`;
+    }
+    totalEl.textContent = total.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' บาท';
+    initializeLucide();
 };
 
 window.exportFoodPDF = async function() {
@@ -11981,68 +12646,108 @@ window.exportFoodPDF = async function() {
         }
     }
 
-    let total = 0;
-    const rows = data.length
-        ? data.map((item, idx) => {
-            const amount = parseFloat(item.totalAmount) || 0;
-            total += amount;
-            return `
-                <tr>
-                    <td>${idx + 1}</td>
-                    <td>${formatThaiDate(item.date)}</td>
-                    <td>${escapeHTML(formatPostingMonth(getFoodPostingMonth(item)))}</td>
-                    <td>${escapeHTML(item.name)}</td>
-                    <td>${escapeHTML(item.category)}</td>
-                    <td style="text-align:right;">${escapeHTML(String(item.quantity))} ${escapeHTML(item.unit || '')}</td>
-                    <td style="text-align:right;">${parseFloat(item.price).toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
-                    <td style="text-align:right; font-weight:600;">${amount.toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
-                </tr>
-            `;
-        }).join('')
-        : '<tr><td colspan="8" style="text-align:center; padding:20px;">ไม่มีข้อมูลค่าอาหารในรอบบันทึกนี้</td></tr>';
-
     const monthLabel = selectedMonth
         ? formatThaiDate(selectedMonth + '-01').split(' ').slice(1).join(' ')
         : '';
+    const grandTotal = data.reduce((sum, item) => sum + (parseFloat(item.totalAmount) || 0), 0);
+    const pages = [];
+    if (data.length === 0) {
+        pages.push([]);
+    } else {
+        for (let index = 0; index < data.length; index += FOOD_REPORT_ROWS_PER_PAGE) {
+            pages.push(data.slice(index, index + FOOD_REPORT_ROWS_PER_PAGE));
+        }
+    }
+    const money = value => Number(value || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const printedAt = formatSystemDate(new Date());
+    let carriedTotal = 0;
+    const reportPages = pages.map((pageItems, pageIndex) => {
+        const pageSubtotal = pageItems.reduce((sum, item) => sum + (parseFloat(item.totalAmount) || 0), 0);
+        const broughtForward = carriedTotal;
+        const carriedForward = broughtForward + pageSubtotal;
+        const firstSequence = pageIndex * FOOD_REPORT_ROWS_PER_PAGE;
+        const carryRow = pageIndex > 0
+            ? `<tr class="carry-row"><td colspan="7">ยอดยกมาจากหน้าก่อน</td><td class="number">${money(broughtForward)}</td></tr>`
+            : '';
+        const itemRows = pageItems.length
+            ? pageItems.map((item, itemIndex) => {
+                const amount = parseFloat(item.totalAmount) || 0;
+                return `<tr>
+                    <td class="sequence">${firstSequence + itemIndex + 1}</td>
+                    <td>${escapeHTML(formatThaiDate(item.date) || '-')}</td>
+                    <td>${escapeHTML(formatPostingMonth(getFoodPostingMonth(item)))}</td>
+                    <td>${escapeHTML(item.name || '-')}</td>
+                    <td>${escapeHTML(item.category || '-')}</td>
+                    <td class="number">${escapeHTML(String(item.quantity || '-'))} ${escapeHTML(item.unit || '')}</td>
+                    <td class="number">${money(item.price)}</td>
+                    <td class="number strong">${money(amount)}</td>
+                </tr>`;
+            }).join('')
+            : '<tr><td colspan="8" class="empty-report">ไม่มีข้อมูลค่าอาหารในรอบบันทึกนี้</td></tr>';
+        const accountingRows = pages.length > 1
+            ? `<tr class="subtotal-row"><td colspan="7">รวมรายการในหน้านี้</td><td class="number">${money(pageSubtotal)}</td></tr>
+               ${pageIndex < pages.length - 1
+                    ? `<tr class="carry-total-row"><td colspan="7">ยอดยกไปหน้าถัดไป</td><td class="number">${money(carriedForward)}</td></tr>`
+                    : `<tr class="grand-total-row"><td colspan="7">ยอดรวมทั้งสิ้น</td><td class="number">${money(grandTotal)} บาท</td></tr>`}`
+            : `<tr class="grand-total-row"><td colspan="7">ยอดรวมทั้งสิ้น</td><td class="number">${money(grandTotal)} บาท</td></tr>`;
+        carriedTotal = carriedForward;
+        return `<section class="report-page">
+            <header class="report-header">
+                <div><h2>สรุปค่าอาหารประจำเดือน</h2><div class="subtitle">${escapeHTML(monthLabel || 'ทุกเดือน')}</div></div>
+                <div class="page-label">หน้า ${pageIndex + 1} / ${pages.length}</div>
+            </header>
+            <table>
+                <thead><tr>
+                    <th class="sequence">ที่</th><th>วันที่ซื้อ</th><th>รอบบันทึก</th><th>รายการ</th><th>หมวดหมู่</th>
+                    <th class="number">จำนวน</th><th class="number">ราคา/หน่วย</th><th class="number">รวมเป็นเงิน</th>
+                </tr></thead>
+                <tbody>${carryRow}${itemRows}</tbody>
+                <tfoot>${accountingRows}</tfoot>
+            </table>
+            <footer class="doc-footer">
+                ${foodQrDataUrl ? `<img src="${foodQrDataUrl}" alt="QR Code สำหรับตรวจสอบรายงานหน้า ${pageIndex + 1}">` : ''}
+                <div class="footer-copy">
+                    <span>${foodQrDataUrl ? 'สแกน QR Code เพื่อตรวจสอบเอกสารนี้' : 'รายงานจากระบบบันทึกรายจ่าย RDF'}</span>
+                    <span>ระบบบันทึกรายจ่าย RDF · พิมพ์เมื่อ ${escapeHTML(printedAt)}</span>
+                </div>
+            </footer>
+        </section>`;
+    }).join('');
 
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>สรุปค่าอาหารประจำเดือน ${monthLabel}</title>
 <style>
-    body { font-family: 'Sarabun', sans-serif; padding: 24px; color: #111; }
-    h2 { margin-bottom: 4px; }
-    .subtitle { color: #555; margin-bottom: 20px; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { border: 1px solid #999; padding: 6px 8px; }
-    th { background: #f0f0f0; text-align: left; }
-    .total-row td { font-weight: bold; background: #fafafa; }
-    .doc-footer { margin-top: 24px; font-size: 11px; color: #777; text-align: right; }
-    @media print { button { display: none; } }
+    @page { size: A4 landscape; margin: 10mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Sarabun', sans-serif; margin: 0; color: #111827; background: #fff; }
+    .report-page { min-height: 185mm; display: flex; flex-direction: column; page-break-after: always; break-after: page; }
+    .report-page:last-child { page-break-after: auto; break-after: auto; }
+    .report-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 10px; }
+    h2 { margin: 0 0 2px; font-size: 20px; }
+    .subtitle { color: #4b5563; font-size: 12px; }
+    .page-label { color: #4b5563; font-size: 11px; padding-top: 5px; white-space: nowrap; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 10.5px; }
+    th, td { border: 1px solid #9ca3af; padding: 5px 6px; vertical-align: top; overflow-wrap: anywhere; }
+    th { background: #f3f4f6; text-align: left; font-weight: 700; }
+    tr { break-inside: avoid; page-break-inside: avoid; }
+    .sequence { width: 34px; text-align: center; white-space: nowrap; }
+    .number { text-align: right; white-space: nowrap; }
+    .strong { font-weight: 700; }
+    .empty-report { text-align: center; padding: 20px; color: #6b7280; }
+    tfoot td { font-weight: 700; text-align: right; }
+    .subtotal-row td { background: #f9fafb; }
+    .carry-row td, .carry-total-row td { background: #eff6ff; font-weight: 700; text-align: right; }
+    .grand-total-row td { background: #ecfdf5; font-size: 11.5px; }
+    .doc-footer { margin-top: auto; padding-top: 10px; display: flex; align-items: center; justify-content: flex-end; gap: 9px; color: #6b7280; font-size: 9.5px; }
+    .doc-footer img { width: 54px; height: 54px; flex: 0 0 54px; }
+    .footer-copy { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.45; }
+    .footer-copy span { display: block; }
+    @media screen { body { padding: 20px; } .report-page { max-width: 277mm; margin: 0 auto 24px; } }
+    @media print { body { padding: 0; } }
 </style>
 </head>
-<body onload="window.print();">
-    <h2>สรุปค่าอาหารประจำเดือน</h2>
-    <div class="subtitle">${monthLabel || 'ทุกเดือน'}</div>
-    <table>
-        <thead>
-            <tr>
-                <th>#</th><th>วันที่ซื้อ</th><th>รอบบันทึก</th><th>รายการ</th><th>หมวดหมู่</th>
-                <th style="text-align:right;">จำนวน</th><th style="text-align:right;">ราคา/หน่วย</th><th style="text-align:right;">รวมเป็นเงิน</th>
-            </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-        <tfoot>
-            <tr class="total-row">
-                <td colspan="7" style="text-align:right;">ยอดรวมทั้งสิ้น</td>
-                <td style="text-align:right;">${total.toLocaleString('th-TH', {minimumFractionDigits:2})} บาท</td>
-            </tr>
-        </tfoot>
-    </table>
-    <div class="doc-footer" style="${foodQrDataUrl ? 'display:flex; align-items:center; justify-content:flex-end; gap:10px;' : ''}">
-        ${foodQrDataUrl ? `<img src="${foodQrDataUrl}" style="width:56px; height:56px;"><span>สแกนเพื่อตรวจสอบเอกสารนี้กับระบบ &bull; </span>` : ''}
-        สร้างโดย: ระบบบันทึกรายจ่าย RDF &bull; พิมพ์เมื่อ: ${formatSystemDate(new Date())}
-    </div>
-</body></html>`;
+<body onload="window.print();">${reportPages}</body></html>`;
 
     const printWin = window.open('', '_blank', 'width=960,height=720');
     if (!printWin) {
@@ -12084,7 +12789,7 @@ window.renderFoodEntryList = function() {
         data.forEach(item => {
             const amount = parseFloat(item.totalAmount) || 0;
             // hasFiles check: if item.files exists or we stored something
-            const hasFiles = item.files && item.files.length > 0;
+            const hasFiles = Number(item.attachmentCount || (item.files ? 1 : 0)) > 0;
             html += `
                 <tr>
                     <td data-label="วันที่ซื้อ" class="food-entry-date-cell">${formatThaiDate(item.date)}</td>
@@ -12098,6 +12803,9 @@ window.renderFoodEntryList = function() {
                     <td data-label="ยอดเงิน" class="text-right food-entry-amount-cell">${amount.toLocaleString('th-TH', {minimumFractionDigits:2})}</td>
                     <td data-label="จัดการ" class="text-center">
                         <div class="food-entry-row-actions">
+                        <button type="button" class="btn btn-icon btn-sm btn-icon-attach ${hasFiles ? 'has-attach' : ''}" onclick="openFoodAttachmentModal('${item.id}')" title="จัดการหลักฐาน" aria-label="จัดการหลักฐาน">
+                            <i data-lucide="folder-open"></i>${hasFiles ? `<span class="att-count-badge">${Number(item.attachmentCount || 1)}</span>` : ''}
+                        </button>
                         <button type="button" class="btn btn-icon btn-sm btn-icon-edit" onclick="editFoodExpense('${item.id}')" title="แก้ไขรายการ" aria-label="แก้ไขรายการ">
                             <i data-lucide="pencil"></i>
                         </button>

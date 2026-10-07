@@ -2326,6 +2326,138 @@ button, input, select, textarea {
     height: 16px;
 }
 
+/* Monthly food overview keeps the familiar column layout on every screen.
+   Narrow screens scroll horizontally instead of turning each record into a
+   very tall card. */
+.food-overview-table-container {
+    overflow-x: auto;
+}
+
+#food-overview-table {
+    min-width: 1120px;
+    table-layout: fixed;
+}
+
+#food-overview-table th:nth-child(1) { width: 5%; }
+#food-overview-table th:nth-child(2) { width: 10%; }
+#food-overview-table th:nth-child(3) { width: 12%; }
+#food-overview-table th:nth-child(4) { width: 22%; }
+#food-overview-table th:nth-child(5) { width: 12%; }
+#food-overview-table th:nth-child(6) { width: 11%; }
+#food-overview-table th:nth-child(7) { width: 10%; }
+#food-overview-table th:nth-child(8) { width: 10%; }
+#food-overview-table th:nth-child(9) { width: 8%; }
+
+#food-overview-table th,
+#food-overview-table td {
+    padding: 11px 10px;
+}
+
+#food-overview-table .food-overview-sequence {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+}
+
+#food-overview-table .food-overview-category {
+    background: var(--primary);
+    color: #fff;
+}
+
+#food-overview-table .record-tools {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+#food-overview-table .record-tools .btn-icon {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    color: #fff;
+    box-shadow: 0 2px 5px rgba(15, 23, 42, 0.14);
+}
+
+#food-overview-table .btn-icon-edit {
+    border-color: var(--action-edit-hover);
+    background: var(--action-edit);
+}
+
+#food-overview-table .btn-icon-delete {
+    border-color: var(--action-delete-hover);
+    background: var(--action-delete);
+}
+
+#food-overview-table .btn-icon-save {
+    border-color: var(--primary-hover);
+    background: var(--primary);
+}
+
+#food-overview-table .btn-icon-cancel {
+    border-color: #64748b;
+    background: #64748b;
+}
+
+#food-overview-table .btn-icon-edit:hover,
+#food-overview-table .btn-icon-delete:hover,
+#food-overview-table .btn-icon-save:hover,
+#food-overview-table .btn-icon-cancel:hover {
+    color: #fff;
+    filter: brightness(0.92);
+}
+
+.food-overview-inline-input {
+    width: 100%;
+    min-width: 0;
+    height: 36px;
+    padding: 6px 7px;
+    font-size: 12px;
+}
+
+.food-overview-inline-pair {
+    display: grid;
+    grid-template-columns: minmax(58px, 1fr) minmax(62px, 0.85fr);
+    gap: 5px;
+}
+
+.food-overview-summary-row td {
+    border-top: 2px solid var(--border-color);
+    background: var(--primary-light);
+    color: var(--text-primary);
+    font-weight: 800;
+}
+
+.food-overview-load-error {
+    padding: 24px !important;
+    text-align: center;
+    color: var(--danger);
+}
+
+.food-overview-load-error strong,
+.food-overview-load-error span {
+    display: block;
+    margin-bottom: 8px;
+}
+
+@media screen and (max-width: 900px) {
+    #tab-food-overview .header-filters {
+        align-items: stretch !important;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    #tab-food-overview .header-filters > div {
+        align-items: stretch !important;
+        flex-wrap: wrap;
+    }
+
+    #food-overview-table {
+        min-width: 1000px;
+    }
+}
+
 .compact-record-table .record-primary {
     color: var(--text-primary);
     font-weight: 700;
@@ -2894,10 +3026,10 @@ button, input, select, textarea {
 }
 
 .food-entry-col-date { width: 17%; }
-.food-entry-col-item { width: 35%; }
+.food-entry-col-item { width: 31%; }
 .food-entry-col-category { width: 19%; }
 .food-entry-col-amount { width: 15%; }
-.food-entry-col-actions { width: 14%; }
+.food-entry-col-actions { width: 18%; }
 
 #modal-food-entry .food-entry-history-table th,
 #modal-food-entry .food-entry-history-table td {
@@ -2948,6 +3080,19 @@ button, input, select, textarea {
 }
 
 #modal-food-entry .food-entry-row-actions .btn-icon {
+    color: #fff;
+}
+
+#modal-food-entry .food-entry-row-actions .btn-icon-attach {
+    border-style: solid;
+    border-color: var(--action-view);
+    background: var(--action-view);
+    color: #fff;
+}
+
+#modal-food-entry .food-entry-row-actions .btn-icon-attach:hover {
+    border-color: var(--action-view-hover);
+    background: var(--action-view-hover);
     color: #fff;
 }
 
@@ -3426,25 +3571,25 @@ table.table tbody tr:hover {
     width: 32px;
     height: 32px;
     border-radius: 8px;
-    border: 1.5px dashed var(--border-color);
-    background: transparent;
-    color: var(--text-muted);
+    border: 1.5px solid var(--action-view);
+    background: var(--action-view);
+    color: #fff;
     cursor: pointer;
     font-size: 14px;
     transition: all 0.2s ease;
 }
 
 .btn-icon-attach:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-    background: var(--accent-light);
+    border-color: var(--action-view-hover);
+    color: #fff;
+    background: var(--action-view-hover);
 }
 
 .btn-icon-attach.has-attach {
     border-style: solid;
-    border-color: var(--primary);
-    color: var(--primary);
-    background: var(--primary-light);
+    border-color: var(--action-view);
+    color: #fff;
+    background: var(--action-view);
 }
 
 .att-count-badge {
@@ -3470,6 +3615,128 @@ table.table tbody tr:hover {
 .modal-wide {
     max-width: 920px;
     width: 95%;
+}
+
+#modal-attachments {
+    z-index: 1120;
+}
+
+.attachment-manager-launcher {
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-main);
+}
+
+.fund-receipt-manager-card {
+    width: min(920px, calc(100vw - 48px));
+    max-height: min(860px, calc(100vh - 36px));
+}
+
+.fund-receipt-manager-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow-y: auto;
+}
+
+.fund-receipt-amount-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.fund-receipt-amount-row .form-input {
+    flex: 0 1 300px;
+}
+
+.fund-receipt-future-source {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.fund-receipt-future-source svg {
+    width: 14px;
+    height: 14px;
+    color: var(--action-view);
+    flex: 0 0 auto;
+}
+
+.fund-receipt-document-panel {
+    min-height: 250px;
+    padding: 14px;
+    border: 1px dashed var(--border-color);
+    border-radius: 12px;
+    background: var(--bg-main);
+}
+
+.fund-receipt-document-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.fund-receipt-document-heading > div > span {
+    display: block;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.fund-receipt-file-preview {
+    min-height: 180px;
+    margin-top: 12px;
+}
+
+.fund-receipt-file-empty {
+    min-height: 170px;
+    padding: 20px;
+}
+
+.fund-receipt-file-empty > svg {
+    width: 46px;
+    height: 46px;
+    margin-bottom: 10px;
+    color: var(--text-muted);
+}
+
+.fund-receipt-file-grid {
+    grid-template-columns: minmax(180px, 280px);
+    justify-content: center;
+}
+
+.fund-receipt-manager-footer {
+    position: relative;
+}
+
+@media (max-width: 700px) {
+    .fund-receipt-manager-card {
+        width: 100%;
+        max-height: 100vh;
+    }
+
+    .fund-receipt-amount-row,
+    .fund-receipt-document-heading {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .fund-receipt-amount-row .form-input {
+        flex-basis: auto;
+        width: 100%;
+    }
+
+    .fund-receipt-document-panel {
+        min-height: 220px;
+    }
+
+    .fund-receipt-manager-footer .attachment-upload-actions {
+        width: 100%;
+    }
 }
 
 .attachment-record-summary {
@@ -3765,10 +4032,7 @@ table.table tbody tr:hover {
         font-weight: 700;
     }
 
-    .attachment-record-summary-table td:nth-child(1)::before { content: 'เลขบิล / ใบเสร็จ'; }
-    .attachment-record-summary-table td:nth-child(2)::before { content: 'วันที่ / รอบ'; }
-    .attachment-record-summary-table td:nth-child(3)::before { content: 'รายละเอียดรายการ'; }
-    .attachment-record-summary-table td:nth-child(4)::before { content: 'จำนวนเงิน'; }
+    .attachment-record-summary-table td::before { content: attr(data-label); }
 
     .attachment-upload-queue {
         margin: 10px 12px 0;
