@@ -6,7 +6,8 @@ Thumbs.db
 # clasp deployment bindings contain the real Apps Script scriptId — keep local only
 **/.clasp.json
 
-# Backend implementation + internal docs — public repo, local-only by policy
+# Backend implementation + internal docs — local-only by default.
+# Reviewed Apps Script files may be force-added explicitly; never add .clasp.json or private Config.gs.
 *.md
 *.gs
 backend/
