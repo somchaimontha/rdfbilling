@@ -4152,7 +4152,7 @@ function renderMasterOrganizations() {
             <td data-label="สถาบัน / สถานที่">
                 <div class="organization-name">${escapeHTML(o.name || o.nameTh || o.id)}</div>
                 <div class="organization-row-badges">
-                    ${isCurrent ? '<span class="badge badge-claimable">กำลังบันทึก</span>' : ''}
+                    ${isCurrent ? '<span class="badge badge-claimable">กำลังใช้งาน</span>' : ''}
                     ${hasDuplicateIdentity ? '<span class="badge organization-duplicate-badge">รหัสข้อมูลซ้ำ</span>' : ''}
                     <span class="organization-user-count">ผู้ใช้งาน ${assignedUsers} คน</span>
                 </div>
