@@ -7,7 +7,7 @@
     <meta name="description" content="ระบบบันทึกและบริหารรายจ่ายโครงการ มูลนิธิ Dr. Robert Dyckerhoff  วิทยาลัยการอาชีพแม่สะเรียง">
     <!-- SweetAlert2 -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="stylesheet" href="style.css?v=20261005-02">
+    <link rel="stylesheet" href="style.css?v=20261013-03">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- node-qrcode (MIT) ไม่มี browser UMD build — path build/qrcode.min.js เดิม 404 มาตลอด (QRCode จึง undefined)
          โหลดผ่าน ESM bundle ของ jsdelivr (CommonJS→ESM) แล้ว expose เป็น window.QRCode ให้โค้ดเดิมใช้ได้
@@ -161,6 +161,12 @@
             </div>
             <div class="header-actions">
 
+            <div class="organization-context" id="organization-context" hidden>
+                <label for="active-organization-select">สถาบันที่กำลังบันทึก</label>
+                <select id="active-organization-select" class="form-select" onchange="onActiveOrganizationChange(this.value)"></select>
+                <span id="active-organization-lock" hidden>กำหนดโดยผู้ดูแลระบบ</span>
+            </div>
+
             <!-- User Profile Top Right -->
             <div style="display:flex; align-items:center; gap:10px; cursor:pointer;" onclick="openUserProfileModal()">
                 <div style="text-align:right;">
@@ -170,7 +176,7 @@
                 <img id="header-avatar" src="https://ui-avatars.com/api/name=User&background=random" style="width:36px; height:36px; border-radius:50%; object-fit:cover;">
             </div>
 
-                <button class="btn btn-outline" id="btn-export-main" onclick="openExportModal()" style="display:flex; align-items:center; gap:8px; border-color:var(--primary); color:var(--primary);">
+                <button class="btn btn-outline" id="btn-export-main" onclick="openExportModal()">
                     <i data-lucide="file-down" style="width:16px;height:16px;"></i> ส่งออกรายงาน
                 </button>
             </div>
@@ -760,7 +766,7 @@
                         <i data-lucide="file-spreadsheet" style="vertical-align:middle;"></i>
                         ใบขอเบิกเงินบิล RDF ประจำเดือน <span id="sheet-month-name">สิงหาคม</span> พ.ศ. <span id="sheet-year-val">2566</span>
                     </span>
-                    <button class="btn btn-success btn-sm" id="btn-export-excel" style="background-color: var(--success); border-color: var(--success); color: white; display:flex; align-items:center; gap:6px;">
+                    <button class="btn btn-action-save btn-sm" id="btn-export-excel">
                         <i data-lucide="download"></i> ส่งออกไฟล์ Excel (.xlsx)
                     </button>
                 </div>
@@ -961,12 +967,13 @@
                                 <th>Username</th>
                                 <th>อีเมล</th>
                                 <th>สิทธิ์</th>
+                                <th>สถาบันที่กำลังบันทึก</th>
                                 <th style="text-align:center;">สถานะ</th>
                                 <th style="text-align:center; width:100px;">จัดการ</th>
                             </tr>
                         </thead>
                         <tbody id="user-management-tbody">
-                            <tr><td colspan="6" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>
+                            <tr><td colspan="7" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1085,6 +1092,10 @@
                     <i data-lucide="database" class="settings-tab-icon"></i>
                     <span>จัดการข้อมูลหลัก</span>
                 </button>
+                <button type="button" class="settings-tab-btn" data-settings-tab="organizations" onclick="switchSettingsTab('organizations')">
+                    <i data-lucide="building-2" class="settings-tab-icon"></i>
+                    <span>สถาบัน / สถานที่</span>
+                </button>
                 <button type="button" class="settings-tab-btn" data-settings-tab="general" onclick="switchSettingsTab('general')">
                     <i data-lucide="sliders-horizontal" class="settings-tab-icon"></i>
                     <span>ตั้งค่าทั่วไป</span>
@@ -1193,28 +1204,46 @@
                             </div>
                         </div>
 
-                        <!-- สถานศึกษา -->
-                        <div class="card" style="margin-bottom:0; display: flex; flex-direction: column;">
-                            <div class="master-section-header">
-                                <div class="master-section-title">
-                                    <div class="master-section-icon icon-org"><i data-lucide="school"></i></div>
-                                    <div>
-                                        <div class="master-section-name">สถานศึกษา <span class="master-section-count" id="master-organizations-count">0</span></div>
-                                        <div class="master-section-desc">หน่วยงาน/สถานศึกษาที่ใช้ระบบร่วมกัน</div>
-                                    </div>
-                                </div>
-                                <button class="btn btn-primary master-add-btn" onclick="openMasterModal('organization')"><i data-lucide="plus"></i> เพิ่ม</button>
-                            </div>
-                            <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
-                                <table class="table" id="master-organizations-table" style="margin:0;">
-                                    <thead style="position: sticky; top: 0; background: var(--bg-primary); z-index: 10;">
-                                        <tr><th>สถานศึกษา</th><th style="text-align:right;width:80px;">จัดการ</th></tr>
-                                    </thead>
-                                    <tbody></tbody>
-                                </table>
+                    </div>
+            </div>
+
+            <!-- ========================================================= -->
+            <!-- PANEL: Institution / Location Management -->
+            <!-- ========================================================= -->
+            <div class="settings-tab-panel" id="settings-panel-organizations" style="display:none;">
+                <div class="card organization-management-card">
+                    <div class="organization-management-toolbar">
+                        <div class="master-section-title">
+                            <div class="master-section-icon icon-org"><i data-lucide="building-2"></i></div>
+                            <div>
+                                <div class="master-section-name">จัดการสถาบัน / สถานที่ <span class="master-section-count" id="master-organizations-count">0</span></div>
+                                <div class="master-section-desc">ทะเบียนกลางสำหรับสถาบันที่กำลังบันทึก ผู้ใช้งาน แบบฟอร์ม และรายงานทุกส่วน</div>
                             </div>
                         </div>
+                        <div class="organization-management-actions">
+                            <span class="organization-sync-status" id="organization-sync-status" role="status"><i data-lucide="check-circle-2"></i> ข้อมูลพร้อมใช้งาน</span>
+                            <button type="button" class="btn btn-secondary master-add-btn" onclick="refreshOrganizationsAcrossSystem(true)"><i data-lucide="refresh-cw"></i> อ่านข้อมูลล่าสุดจาก Sheet</button>
+                            <button type="button" class="btn btn-primary master-add-btn" onclick="openMasterModal('organization')"><i data-lucide="plus"></i> เพิ่มสถาบัน / สถานที่</button>
+                        </div>
                     </div>
+                    <div class="organization-sync-note">
+                        เมื่อเพิ่ม แก้ไข หรือเปลี่ยนข้อมูลโดยตรงใน Google Sheet ให้กด “อ่านข้อมูลล่าสุดจาก Sheet” ระบบจะข้าม Cache และอัปเดตส่วนหัว ผู้ใช้ แบบฟอร์ม ตัวกรองรายงาน โครงการ และแหล่งเงินทันที
+                    </div>
+                    <div class="table-responsive organization-management-table-wrap">
+                        <table class="table organization-management-table" id="master-organizations-table" style="margin:0;">
+                            <thead>
+                                <tr>
+                                    <th style="width:110px;">รหัส</th>
+                                    <th>สถาบัน / สถานที่</th>
+                                    <th>ที่อยู่ / ติดต่อ</th>
+                                    <th>ผู้บริหาร</th>
+                                    <th style="text-align:center;width:110px;">จัดการ</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
 
             <!-- ========================================================= -->
@@ -2033,7 +2062,13 @@
                         </div>
                         <div id="export-org-filter-wrap" class="form-group" style="display:none; margin-bottom:8px;">
                             <label class="form-label" style="font-size:11px;">สถานศึกษา (สำหรับรายงานนี้)</label>
-                            <select id="export-org-filter" class="form-select" style="font-size:13px;padding:6px 10px;" onchange="renderExportPreview()"></select>
+                            <select id="export-org-filter" class="form-select" style="font-size:13px;padding:6px 10px;" onchange="onExportOrganizationFilterChange()"></select>
+                        </div>
+                        <div class="export-data-toolbar">
+                            <span id="export-data-status" class="export-data-status is-loading" role="status" aria-live="polite">กำลังโหลดข้อมูลรายงาน...</span>
+                            <button type="button" class="btn btn-outline btn-sm" id="btn-refresh-export-data" onclick="refreshExportReportData()" title="ดึงข้อมูลเดือนนี้จากฐานข้อมูลอีกครั้ง">
+                                <i data-lucide="refresh-cw"></i> รีเฟรชข้อมูล
+                            </button>
                         </div>
                         <div class="form-group" style="margin-bottom:0;">
                             <label class="form-label" style="font-size:11px;">รายละเอียดส่วนหัว (Sub-heading)</label>
@@ -2049,67 +2084,53 @@
                         <i data-lucide="chevron-down" style="width:16px;height:16px;" class="acc-chevron"></i>
                     </div>
                     <div class="export-acc-body" style="padding:0 20px 16px;">
-                        <!-- Section: Bills -->
-                        <div style="border:1px solid var(--border-color); border-radius:8px; margin-bottom:8px; overflow:hidden;">
-                            <div style="display:flex; align-items:center; gap:8px; padding:0 0 0 0;">
-                                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-weight:600; font-size:13px; flex:1; padding:8px 14px; background:var(--bg-main);">
-                                <input type="checkbox" id="export-chk-bills" checked style="accent-color:var(--primary); width:15px; height:15px;" onchange="renderExportPreview()">
-                                <i data-lucide="receipt" style="width:15px;height:15px;color:var(--accent);"></i>
-                                รายการบิลประจำเดือน
-                                <span id="export-bills-badge" style="font-size:10px; background:var(--accent-light); color:var(--accent); padding:2px 8px; border-radius:20px;">0 รายการ</span>
-                                <button type="button" onclick="exportSingleSection('bills')" title="ดาวน์โหลดเฉพาะหัวข้อนี้" style="background:none; border:1px solid var(--accent); color:var(--accent); border-radius:6px; padding:3px 8px; font-size:11px; cursor:pointer; white-space:nowrap; display:flex; align-items:center; gap:4px; margin-left:4px;">
-                                    <i data-lucide="download" style="width:12px;height:12px;"></i> ดาวน์โหลด
-                                </button>
-                            </label></div>
-                            <div style="padding:8px 14px 12px; display:flex; flex-direction:column; gap:6px; border-top:1px solid var(--border-color);">
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="docNo" checked onchange="renderExportPreview()"> เลขบิล</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="date" checked onchange="renderExportPreview()"> วันที่</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="postingMonth" checked onchange="renderExportPreview()"> รอบบันทึก</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="project" checked onchange="renderExportPreview()"> โครงการ</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="category" checked onchange="renderExportPreview()"> หมวดหมู่</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="vendor" checked onchange="renderExportPreview()"> ร้านค้า/ผู้ขาย</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="amount" checked onchange="renderExportPreview()"> ยอดรวม</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="attachmentsCount" checked onchange="renderExportPreview()"> จำนวนหลักฐาน</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-col-chk" value="claimType" checked onchange="renderExportPreview()"> ประเภทเบิก</label>
+                        <section class="export-evidence-layout-panel" aria-labelledby="export-evidence-layout-title">
+                            <div class="export-evidence-layout-heading">
+                                <div>
+                                    <strong id="export-evidence-layout-title">ทดลองเลือกรูปแบบจัดวางหลักฐาน</strong>
+                                    <small>ค่านี้เป็นค่าเริ่มต้นของทั้งรายงาน แต่ละหัวข้อสามารถกำหนดต่างกันได้</small>
+                                </div>
+                                <span class="export-layout-saved-state" id="export-layout-saved-state" role="status" aria-live="polite">พร้อมบันทึกอัตโนมัติ</span>
                             </div>
+                            <div class="export-evidence-layout-workspace">
+                                <div class="export-evidence-layout-controls">
+                                    <label>แนวกระดาษ
+                                        <select id="export-evidence-orientation" class="form-select" onchange="handleExportEvidenceLayoutChange()">
+                                            <option value="portrait">แนวตั้ง</option>
+                                            <option value="landscape">แนวนอน</option>
+                                        </select>
+                                    </label>
+                                    <label>หลักฐานต่อหน้า
+                                        <select id="export-evidence-items-per-page" class="form-select" onchange="handleExportEvidenceLayoutChange()">
+                                            <option value="1">1 รายการ</option>
+                                            <option value="2">2 รายการ</option>
+                                        </select>
+                                    </label>
+                                    <label>การจัดเรียง
+                                        <select id="export-evidence-placement" class="form-select" onchange="handleExportEvidenceLayoutChange()">
+                                            <option value="vertical">บน–ล่าง</option>
+                                            <option value="horizontal">ซ้าย–ขวา</option>
+                                        </select>
+                                    </label>
+                                    <p class="export-evidence-layout-note">รูปภาพจะรักษาสัดส่วนและอยู่ภายในขอบ A4 ส่วน PDF/เอกสารจะคงเป็นลิงก์ไฟล์ต้นฉบับเพื่อไม่ลดความคมชัด</p>
+                                </div>
+                                <div class="export-layout-preview-wrap">
+                                    <span>ตัวอย่างการจัดหน้า A4</span>
+                                    <div id="export-evidence-layout-preview" class="export-layout-preview" data-orientation="portrait" data-items="1" data-placement="vertical" aria-label="ตัวอย่างการจัดหน้าหลักฐาน">
+                                        <div class="export-layout-preview-header">เอกสารหลักฐานประกอบรายงาน</div>
+                                        <div class="export-layout-preview-slots">
+                                            <div class="export-layout-preview-item"><i data-lucide="image"></i><b>หลักฐานที่ 1</b><small>คำอธิบายรายการ</small></div>
+                                            <div class="export-layout-preview-item"><i data-lucide="image"></i><b>หลักฐานที่ 2</b><small>คำอธิบายรายการ</small></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+                        <div class="export-section-toolbar" aria-label="เครื่องมือหัวข้อรายงาน">
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="toggleAllExportSectionDetails(true)"><i data-lucide="chevrons-down"></i> ขยายทั้งหมด</button>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="toggleAllExportSectionDetails(false)"><i data-lucide="chevrons-up"></i> ยุบทั้งหมด</button>
                         </div>
-
-                        <!-- Section: Food -->
-                        <div style="border:1px solid var(--border-color); border-radius:8px; margin-bottom:8px; overflow:hidden;">
-                            <div style="display:flex; align-items:center; gap:8px; padding:8px 14px; background:var(--bg-main);">
-                                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-weight:600; font-size:13px; flex:1;">
-                                    <input type="checkbox" id="export-chk-food" checked style="accent-color:var(--primary); width:15px; height:15px;" onchange="renderExportPreview()">
-                                    <i data-lucide="utensils" style="width:15px;height:15px;color:#f59e0b;"></i>
-                                    ค่าอาหารประจำเดือน
-                                    <span id="export-food-badge" style="font-size:10px; background:#fef3c7; color:#d97706; padding:2px 8px; border-radius:20px;">0 รายการ</span>
-                                </label>
-                                <button type="button" onclick="exportSingleSection('food')" title="ดาวน์โหลดเฉพาะหัวข้อนี้" style="background:none; border:1px solid #f59e0b; color:#d97706; border-radius:6px; padding:3px 8px; font-size:11px; cursor:pointer; white-space:nowrap; display:flex; align-items:center; gap:4px; flex-shrink:0;">
-                                    <i data-lucide="download" style="width:12px;height:12px;"></i> ดาวน์โหลด
-                                </button>
-                            </div>
-                            <div style="padding:8px 14px 12px; display:flex; flex-direction:column; gap:6px; border-top:1px solid var(--border-color);">
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="foodDate" checked onchange="renderExportPreview()"> วันที่</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="postingMonth" checked onchange="renderExportPreview()"> รอบบันทึก</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="foodName" checked onchange="renderExportPreview()"> รายการ</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="foodCategory" checked onchange="renderExportPreview()"> หมวดหมู่</label>
-                                <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="export-food-col" value="foodAmount" checked onchange="renderExportPreview()"> ยอดเงิน</label>
-                            </div>
-                        </div>
-
-                        <!-- Section: Attach -->
-                        <div style="border:1px solid var(--border-color); border-radius:8px; overflow:hidden;">
-                            <div style="display:flex; align-items:center; gap:8px; padding:8px 14px; background:var(--bg-main);">
-                                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-weight:600; font-size:13px; flex:1;">
-                                    <input type="checkbox" id="export-chk-attach" checked style="accent-color:var(--primary); width:15px; height:15px;" onchange="renderExportPreview()">
-                                    <i data-lucide="paperclip" style="width:15px;height:15px;color:#8b5cf6;"></i>
-                                    บิลแนบ / ค่าสาธารณูปโภค
-                                    <span id="export-attach-badge" style="font-size:10px; background:#ede9fe; color:#7c3aed; padding:2px 8px; border-radius:20px;">0 รายการ</span>
-                                </label>
-                                <button type="button" onclick="exportSingleSection('attach')" title="ดาวน์โหลดเฉพาะหัวข้อนี้" style="background:none; border:1px solid #8b5cf6; color:#7c3aed; border-radius:6px; padding:3px 8px; font-size:11px; cursor:pointer; white-space:nowrap; display:flex; align-items:center; gap:4px; flex-shrink:0;">
-                                    <i data-lucide="download" style="width:12px;height:12px;"></i> ดาวน์โหลด
-                                </button>
-                            </div>
-                        </div>
+                        <div id="export-section-options" aria-live="polite"></div>
                     </div>
                 </div>
 
@@ -2123,9 +2144,9 @@
                         <div class="form-group" style="margin-bottom:10px;">
                             <label class="form-label" style="font-size:11px;">รูปแบบรายงาน</label>
                             <select id="export-report-type" class="form-select" style="font-size:13px;padding:6px 10px;" onchange="onExportReportTypeChange()">
-                                <option value="summary">รายงานแบบสรุป</option>
+                                <option value="summary">รายงานแบบสรุป (ไม่แทรกหลักฐาน)</option>
                                 <option value="detailed">รายงานแบบละเอียด</option>
-                                <option value="with_attachments">รายงานพร้อมหลักฐานแนบ</option>
+                                <option value="with_attachments" selected>รายงานพร้อมหลักฐานแนบ (ค่าเริ่มต้น)</option>
                                 <option value="only_attachments">รายงานเฉพาะหลักฐาน</option>
                                 <option value="audit">รายงานรับตรวจบัญชี</option>
                             </select>
@@ -2134,8 +2155,9 @@
                             <div class="form-group" style="margin:0;">
                                 <label class="form-label" style="font-size:11px;">เรียงตาม</label>
                                 <select id="export-sort-by" class="form-select" style="font-size:13px;padding:6px 10px;" onchange="renderExportPreview()">
+                                    <option value="docNo" selected>เลขบิล / ใบเสร็จ</option>
+                                    <option value="sequence">ลำดับรายการ</option>
                                     <option value="date">วันที่</option>
-                                    <option value="docNo">เลขที่</option>
                                     <option value="project">โครงการ</option>
                                     <option value="category">หมวดหมู่</option>
                                     <option value="amount">จำนวนเงิน</option>
@@ -2156,6 +2178,27 @@
                                 <option value="landscape">A4 แนวนอน</option>
                             </select>
                         </div>
+                        <fieldset style="border:1px solid var(--border-color);border-radius:8px;padding:10px 12px;margin:0 0 10px;">
+                            <legend style="font-size:11px;font-weight:700;padding:0 5px;color:var(--text-secondary);">ระยะขอบหน้ารายงาน (มม.)</legend>
+                            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;">
+                                <label class="form-label" style="font-size:11px;margin:0;">ด้านบน
+                                    <input id="export-margin-top" class="form-input" type="number" min="18" max="40" step="1" value="22" inputmode="decimal" style="margin-top:4px;font-size:12px;padding:6px 8px;" oninput="onExportPageMarginChange()">
+                                </label>
+                                <label class="form-label" style="font-size:11px;margin:0;">ด้านล่าง
+                                    <input id="export-margin-bottom" class="form-input" type="number" min="8" max="40" step="1" value="18" inputmode="decimal" style="margin-top:4px;font-size:12px;padding:6px 8px;" oninput="onExportPageMarginChange()">
+                                </label>
+                                <label class="form-label" style="font-size:11px;margin:0;">ด้านซ้าย
+                                    <input id="export-margin-left" class="form-input" type="number" min="8" max="40" step="1" value="16" inputmode="decimal" style="margin-top:4px;font-size:12px;padding:6px 8px;" oninput="onExportPageMarginChange()">
+                                </label>
+                                <label class="form-label" style="font-size:11px;margin:0;">ด้านขวา
+                                    <input id="export-margin-right" class="form-input" type="number" min="8" max="40" step="1" value="16" inputmode="decimal" style="margin-top:4px;font-size:12px;padding:6px 8px;" oninput="onExportPageMarginChange()">
+                                </label>
+                            </div>
+                            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;">
+                                <small style="font-size:10px;line-height:1.4;color:var(--text-muted);">ด้านบนควบคุมช่องว่างหัวกระดาษตั้งแต่หน้าที่ 2</small>
+                                <button type="button" class="btn btn-sm btn-secondary" onclick="resetExportPageMargins()">ค่าเริ่มต้น</button>
+                            </div>
+                        </fieldset>
                         <div style="display:flex; flex-direction:column; gap:8px; border:1px solid var(--border-color); border-radius:8px; padding:10px 12px; background:var(--bg-main);">
                             <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_img" checked onchange="renderExportPreview()"> แสดงรูปหลักฐาน</label>
                             <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;"><input type="checkbox" class="att-chk" value="show_pdf" checked onchange="renderExportPreview()"> แสดงลิงก์ PDF / ไฟล์อ้างอิง</label>
@@ -2172,14 +2215,36 @@
                         <i data-lucide="chevron-down" style="width:16px;height:16px;" class="acc-chevron"></i>
                     </div>
                     <div class="export-acc-body" style="padding:0 20px 16px;">
-                        <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; margin-bottom:12px;">
-                            <input type="checkbox" id="pdf-include-signature" checked style="accent-color:var(--primary); width:15px; height:15px;" onchange="renderExportPreview()">
+                        <label class="export-signature-enabled">
+                            <input type="checkbox" id="pdf-include-signature" checked onchange="handleSignatureEnabledChange()">
                             แสดงพื้นที่ลงนาม
                         </label>
-                        <div id="pdf-signature-fields" style="display:flex; flex-direction:column; gap:8px;">
-                            <div>
-                                <label class="form-label" style="font-size:11px; margin-bottom:3px;">ผู้จัดทำ</label>
-                                <input type="text" id="pdf-preparer-name" class="form-input" style="font-size:13px;padding:6px 10px;" placeholder="ชื่อ-สกุล / ตำแหน่ง" oninput="renderExportPreview()">
+                        <fieldset id="pdf-signature-placement-fields" class="export-signature-placement">
+                            <legend>ตำแหน่งที่แสดงในเอกสาร</legend>
+                            <label><input type="checkbox" id="pdf-signature-first-page" onchange="handleSignaturePlacementChange('first')"> 4.1 หน้าแรก</label>
+                            <label><input type="checkbox" id="pdf-signature-last-page" checked onchange="handleSignaturePlacementChange('last')"> 4.2 หน้าสุดท้าย</label>
+                            <label><input type="checkbox" id="pdf-signature-every-page" onchange="handleSignaturePlacementChange('every')"> 4.3 ทุกหน้า</label>
+                            <small id="pdf-signature-placement-hint">เลือกหน้าแรกและหน้าสุดท้ายพร้อมกันได้ หากเลือกทุกหน้า ระบบจะปิดสองตัวเลือกแรกอัตโนมัติ</small>
+                        </fieldset>
+                        <fieldset id="pdf-signature-section-fields" class="export-signature-section-picker">
+                            <legend>4.4 ลงนามใต้หัวข้อรายการหลัก</legend>
+                            <div id="pdf-signature-section-options"></div>
+                            <small>เลือกได้หลายหัวข้อ ระบบจะแสดงลายเซ็นหลังเนื้อหาและหลักฐานของหัวข้อนั้น โครงการที่มีรายการในเดือนรายงานจะแสดงเพิ่มโดยอัตโนมัติ</small>
+                        </fieldset>
+                        <div id="pdf-signature-fields" class="export-signature-list">
+                            <div class="export-signer-card" data-export-signer data-signature-role="prepared">
+                                <div class="export-signer-card-heading"><strong>ผู้ลงนาม 1</strong></div>
+                                <div class="export-signer-identity-grid">
+                                    <label class="form-label">ชื่อ-สกุล
+                                        <input type="text" id="pdf-preparer-name" class="form-input" data-signer-name placeholder="ชื่อ-สกุล" oninput="renderExportPreview()">
+                                    </label>
+                                    <label class="form-label">ตำแหน่ง
+                                        <input type="text" id="pdf-preparer-position" class="form-input" data-signer-position placeholder="เช่น เจ้าหน้าที่การเงิน" oninput="renderExportPreview()">
+                                    </label>
+                                    <label class="form-label">หน้าที่ลงนาม
+                                        <input type="text" id="pdf-preparer-role-label" class="form-input" data-signer-label value="ผู้จัดทำ" placeholder="เช่น ผู้จัดทำ" oninput="renderExportPreview()">
+                                    </label>
+                                </div>
                                 <div class="signature-source-row">
                                     <select id="pdf-preparer-signature-select" class="form-select" style="font-size:12px;padding:6px 8px;" onchange="selectSignatureForRole('prepared', this.value)"><option value="">เว้นพื้นที่สำหรับเซ็นด้วยปากกา</option></select>
                                     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:5px;">
@@ -2190,9 +2255,19 @@
                                     <span id="pdf-preparer-signature-status" style="font-size:11px;color:var(--text-muted);">ยังไม่เลือกลายเซ็น — จะเว้นช่องให้เซ็นด้วยปากกา</span>
                                 </div>
                             </div>
-                            <div>
-                                <label class="form-label" style="font-size:11px; margin-bottom:3px;">ผู้ตรวจสอบ</label>
-                                <input type="text" id="pdf-reviewer-name" class="form-input" style="font-size:13px;padding:6px 10px;" placeholder="ชื่อ-สกุล / ตำแหน่ง" oninput="renderExportPreview()">
+                            <div class="export-signer-card" data-export-signer data-signature-role="checked">
+                                <div class="export-signer-card-heading"><strong>ผู้ลงนาม 2</strong></div>
+                                <div class="export-signer-identity-grid">
+                                    <label class="form-label">ชื่อ-สกุล
+                                        <input type="text" id="pdf-reviewer-name" class="form-input" data-signer-name placeholder="ชื่อ-สกุล" oninput="renderExportPreview()">
+                                    </label>
+                                    <label class="form-label">ตำแหน่ง
+                                        <input type="text" id="pdf-reviewer-position" class="form-input" data-signer-position placeholder="เช่น หัวหน้างาน" oninput="renderExportPreview()">
+                                    </label>
+                                    <label class="form-label">หน้าที่ลงนาม
+                                        <input type="text" id="pdf-reviewer-role-label" class="form-input" data-signer-label value="ผู้ตรวจสอบ" placeholder="เช่น ผู้ตรวจสอบ" oninput="renderExportPreview()">
+                                    </label>
+                                </div>
                                 <div class="signature-source-row">
                                     <select id="pdf-reviewer-signature-select" class="form-select" style="font-size:12px;padding:6px 8px;" onchange="selectSignatureForRole('checked', this.value)"><option value="">เว้นพื้นที่สำหรับเซ็นด้วยปากกา</option></select>
                                     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:5px;">
@@ -2203,9 +2278,19 @@
                                     <span id="pdf-reviewer-signature-status" style="font-size:11px;color:var(--text-muted);">ยังไม่เลือกลายเซ็น — จะเว้นช่องให้เซ็นด้วยปากกา</span>
                                 </div>
                             </div>
-                            <div>
-                                <label class="form-label" style="font-size:11px; margin-bottom:3px;">ผู้อนุมัติ</label>
-                                <input type="text" id="pdf-approver-name" class="form-input" style="font-size:13px;padding:6px 10px;" placeholder="ชื่อ-สกุล / ตำแหน่ง" oninput="renderExportPreview()">
+                            <div class="export-signer-card" data-export-signer data-signature-role="approved">
+                                <div class="export-signer-card-heading"><strong>ผู้ลงนาม 3</strong></div>
+                                <div class="export-signer-identity-grid">
+                                    <label class="form-label">ชื่อ-สกุล
+                                        <input type="text" id="pdf-approver-name" class="form-input" data-signer-name placeholder="ชื่อ-สกุล" oninput="renderExportPreview()">
+                                    </label>
+                                    <label class="form-label">ตำแหน่ง
+                                        <input type="text" id="pdf-approver-position" class="form-input" data-signer-position placeholder="เช่น ผู้อำนวยการ" oninput="renderExportPreview()">
+                                    </label>
+                                    <label class="form-label">หน้าที่ลงนาม
+                                        <input type="text" id="pdf-approver-role-label" class="form-input" data-signer-label value="ผู้อนุมัติ" placeholder="เช่น ผู้อนุมัติ" oninput="renderExportPreview()">
+                                    </label>
+                                </div>
                                 <div class="signature-source-row">
                                     <select id="pdf-approver-signature-select" class="form-select" style="font-size:12px;padding:6px 8px;" onchange="selectSignatureForRole('approved', this.value)"><option value="">เว้นพื้นที่สำหรับเซ็นด้วยปากกา</option></select>
                                     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:5px;">
@@ -2216,6 +2301,13 @@
                                     <span id="pdf-approver-signature-status" style="font-size:11px;color:var(--text-muted);">ยังไม่เลือกลายเซ็น — จะเว้นช่องให้เซ็นด้วยปากกา</span>
                                 </div>
                             </div>
+                            <div id="pdf-additional-signers" class="export-signature-list"></div>
+                        </div>
+                        <div class="export-signature-actions">
+                            <button type="button" id="pdf-add-signer" class="btn btn-outline btn-sm" onclick="addExportSigner()">
+                                <i data-lucide="plus" style="width:13px;height:13px;"></i> เพิ่มการลงชื่อใต้เอกสาร
+                            </button>
+                            <small>เพิ่มได้สูงสุด 9 คน · ใน PDF จัดแถวละ 3 คน และแถวสุดท้ายชิดขวา</small>
                         </div>
                     </div>
                 </div>
@@ -2238,27 +2330,47 @@
                 <iframe id="export-preview-frame" title="ตัวอย่างรายงาน" style="background:white; width:210mm; min-height:297mm; box-shadow:0 10px 30px rgba(0,0,0,0.15); border:none; border-radius:4px;"></iframe>
                 <div id="export-preview-loading" style="display:none; position:absolute; inset:0; align-items:center; justify-content:center; flex-direction:column; gap:14px; background:rgba(226,232,240,0.9); padding:20px; text-align:center;">
                     <div id="export-preview-spinner" style="width:44px; height:44px; border:4px solid rgba(79,70,229,0.2); border-top-color:var(--primary); border-radius:50%; animation:spin 1s linear infinite;"></div>
-                    <div id="export-preview-loading-text" style="font-weight:600; font-size:13px; color:var(--text-secondary); max-width:320px;">กำลังสร้างตัวอย่าง PDF...</div>
+                    <div id="export-preview-loading-text" aria-live="polite" style="font-weight:600; font-size:13px; color:var(--text-secondary); max-width:420px;">กำลังสร้างตัวอย่าง PDF...</div>
+                    <div id="export-preview-progress" class="export-preview-progress" role="progressbar" aria-label="ความคืบหน้าการสร้างตัวอย่างรายงาน" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
+                        <div class="export-preview-progress-track">
+                            <div id="export-preview-progress-bar" class="export-preview-progress-bar"></div>
+                        </div>
+                        <div class="export-preview-progress-meta">
+                            <span id="export-preview-progress-stage">เริ่มเตรียมตัวอย่างรายงาน</span>
+                            <strong id="export-preview-progress-count">0%</strong>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
 
         <!-- Footer -->
         <footer class="modal-footer" style="flex-shrink:0; border-top:1px solid var(--border-color); padding:14px 20px; display:flex; justify-content:space-between; align-items:center;">
-            <div style="display:flex; gap:8px; align-items:center;">
-                <button type="button" class="btn btn-outline btn-sm" onclick="toggleAllExportCheckboxes(true)">เลือกทั้งหมด</button>
-                <button type="button" class="btn btn-outline btn-sm" onclick="toggleAllExportCheckboxes(false)">ยกเลิกทั้งหมด</button>
+            <div class="export-footer-tools">
+                <button type="button" class="btn btn-sm export-new-version-button export-archive-action" id="btn-export-new-version" onclick="confirmCreateNewExportArchive()" hidden title="สร้าง PDF และ QR ฉบับใหม่ โดยเก็บฉบับเดิมไว้">
+                    <i data-lucide="file-plus-2" style="width:14px;height:14px;"></i> ใหม่
+                </button>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <button type="button" class="btn btn-outline btn-sm" onclick="toggleAllExportCheckboxes(true)">เลือกทั้งหมด</button>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="toggleAllExportCheckboxes(false)">ยกเลิกทั้งหมด</button>
+                </div>
+                <span id="export-operation-status" class="export-operation-status is-ready" role="status" aria-live="polite">พร้อมส่งออก</span>
+                <span id="export-archive-status" class="export-archive-status" role="status">ยังไม่มีฉบับที่บันทึก</span>
             </div>
             <div style="display:flex; gap:8px;">
+                <button type="button" class="btn btn-outline btn-sm export-archive-action" id="btn-export-history" onclick="showExportArchiveHistory()" hidden>ฉบับที่บันทึก 0</button>
+                <button type="button" class="btn btn-outline export-archive-action" id="btn-export-share" onclick="shareCurrentExportArchive()" hidden title="แชร์ลิงก์ไฟล์ Drive โดยคงสิทธิ์การเข้าถึงเดิม">
+                    <i data-lucide="share-2" style="width:15px;height:15px;"></i> แชร์ลิงก์
+                </button>
                 <button type="button" class="btn btn-secondary" id="btn-export-pdf-cancel">ปิดหน้าต่าง</button>
-                <button type="button" class="btn btn-outline" onclick="executeDynamicExport('csv')" title="ส่งออกข้อมูลตารางเท่านั้น — ไม่ฝังรูปหลักฐานหรือ QR" style="color:#0ea5e9;border-color:#0ea5e9; display:flex; align-items:center; gap:6px;">
+                <button type="button" class="btn btn-action-view export-execute-button" onclick="executeDynamicExport('csv')" title="ส่งออกข้อมูลตารางเท่านั้น — ไม่ฝังรูปหลักฐานหรือ QR">
                     <i data-lucide="file-text" style="width:15px;height:15px;"></i> CSV
                 </button>
-                <button type="button" class="btn btn-outline" onclick="executeDynamicExport('excel')" title="ส่งออกข้อมูลตารางเท่านั้น — ไม่ฝังรูปหลักฐานหรือ QR" style="color:#10b981;border-color:#10b981; display:flex; align-items:center; gap:6px;">
+                <button type="button" class="btn btn-action-save export-execute-button" onclick="executeDynamicExport('excel')" title="ส่งออกข้อมูลตารางเท่านั้น — ไม่ฝังรูปหลักฐานหรือ QR">
                     <i data-lucide="file-spreadsheet" style="width:15px;height:15px;"></i> Excel
                 </button>
-                <button type="button" class="btn btn-primary" onclick="executeDynamicExport('pdf')" title="PDF A4 เป็นรูปแบบเดียวที่ฝังหลักฐานและ QR ได้" style="display:flex; align-items:center; gap:6px;">
-                    <i data-lucide="printer" style="width:15px;height:15px;"></i> PDF A4 / พิมพ์
+                <button type="button" class="btn btn-action-view export-execute-button" id="btn-export-pdf-primary" onclick="executeDynamicExport('pdf')" title="PDF A4 เป็นรูปแบบเดียวที่ฝังหลักฐานและ QR ได้">
+                    <i data-lucide="printer" id="btn-export-pdf-primary-icon" style="width:15px;height:15px;"></i> <span id="btn-export-pdf-primary-label">PDF A4 / พิมพ์</span>
                 </button>
             </div>
         </footer>
@@ -2410,7 +2522,7 @@
                     </tbody>
                 </table>
             </div>
-            <button type="button" class="btn btn-outline btn-sm" onclick="addMultiItemRow()" style="margin-top:12px; display:inline-flex; align-items:center; gap:4px; border-radius:6px; padding:6px 12px; font-weight:600;">
+            <button type="button" class="btn btn-action-create btn-sm multi-item-add-button" onclick="addMultiItemRow()">
                 <i data-lucide="plus"></i> เพิ่มรายการสินค้าย่อย
             </button>
         </div>
@@ -2418,8 +2530,8 @@
             <div style="flex:1; font-weight:700; font-size:14px; color:var(--primary);" id="multi-items-grand-total">
                 ยอดรวมสุทธิ: 0.00
             </div>
-            <button type="button" class="btn btn-secondary" onclick="closeMultiItemsModal()" style="border-radius:6px; padding:6px 16px;">ยกเลิก</button>
-            <button type="button" class="btn btn-primary" onclick="saveMultiItems()" style="border-radius:6px; padding:6px 16px;">ตกลงและบันทึก</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="closeMultiItemsModal()">ยกเลิก</button>
+            <button type="button" class="btn btn-action-save btn-sm" onclick="saveMultiItems()">ตกลงและบันทึก</button>
         </footer>
     </div>
 </div>
@@ -2437,7 +2549,7 @@
 
 <!-- Application Scripts -->
 <script src="thai-baht.js"></script>
-<script src="app.js?v=20261005-02"></script>
+    <script src="app.js?v=20261013-07"></script>
 <script>
     // Wire up Master Data modal buttons
     (document.getElementById('modal-master-close') || {}).addEventListener?.('click', closeMasterModal);
@@ -2491,11 +2603,24 @@
                     <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:12px;text-transform:uppercase;letter-spacing:0.5px;">เปลี่ยนรหัสผ่าน</div>
                     <div class="form-group" style="margin-bottom:10px;">
                         <label class="form-label">รหัสผ่านปัจจุบัน</label>
-                        <input type="password" id="profile-current-password" class="form-input" placeholder="รหัสผ่านปัจจุบัน">
+                        <input type="password" id="profile-current-password" class="form-input" placeholder="รหัสผ่านปัจจุบัน" autocomplete="current-password" oninput="validateProfilePassword()">
                     </div>
                     <div class="form-group" style="margin-bottom:10px;">
                         <label class="form-label">รหัสผ่านใหม่</label>
-                        <input type="password" id="profile-new-password" class="form-input" placeholder="อย่างน้อย 8 ตัว มี A-Z, a-z, 0-9">
+                        <input type="password" id="profile-new-password" class="form-input" placeholder="12–128 ตัวอักษร" minlength="12" maxlength="128" autocomplete="new-password" oninput="validateProfilePassword()">
+                    </div>
+                    <div class="form-group" style="margin-bottom:10px;">
+                        <label class="form-label">ยืนยันรหัสผ่านใหม่</label>
+                        <input type="password" id="profile-confirm-password" class="form-input" placeholder="กรอกรหัสผ่านใหม่อีกครั้ง" minlength="12" maxlength="128" autocomplete="new-password" oninput="validateProfilePassword()">
+                    </div>
+                    <div class="password-policy" id="profile-password-policy" aria-live="polite" hidden>
+                        <div data-password-rule="length">อย่างน้อย 12 ตัว และไม่เกิน 128 ตัว</div>
+                        <div data-password-rule="uppercase">มีตัวพิมพ์ใหญ่ A–Z</div>
+                        <div data-password-rule="lowercase">มีตัวพิมพ์เล็ก a–z</div>
+                        <div data-password-rule="number">มีตัวเลข 0–9</div>
+                        <div data-password-rule="symbol">มีอักขระพิเศษ เช่น ! @ # $ %</div>
+                        <div data-password-rule="identity">ไม่ซ้ำข้อมูลบัญชี/รหัสเดิม และไม่ใช่รหัสผ่านที่พบบ่อย</div>
+                        <div data-password-rule="match">รหัสผ่านใหม่ทั้งสองช่องตรงกัน</div>
                     </div>
                 </div>
             </div>
@@ -2517,7 +2642,7 @@
                 <input type="hidden" id="admin-user-mode" value="create">
                 <div class="form-group" style="margin-bottom:14px;">
                     <label class="form-label">Username <span style="color:var(--danger);">*</span></label>
-                    <input type="text" id="admin-user-username" class="form-input" placeholder="ตัวพิมพ์เล็ก ไม่มีเว้นวรรค">
+                    <input type="text" id="admin-user-username" class="form-input" placeholder="ตัวพิมพ์เล็ก ไม่มีเว้นวรรค" autocomplete="username" oninput="validateAdminUserPassword()">
                 </div>
                 <div class="form-group" style="margin-bottom:14px;">
                     <label class="form-label">ชื่อ-สกุล</label>
@@ -2528,15 +2653,29 @@
                 </div>
                 <div class="form-group" style="margin-bottom:14px;">
                     <label class="form-label">อีเมล (สำหรับ Google Login)</label>
-                    <input type="email" id="admin-user-email" class="form-input" placeholder="example@gmail.com">
+                    <input type="email" id="admin-user-email" class="form-input" placeholder="name@gmail.com หรืออีเมล Google Workspace" autocomplete="email" oninput="validateAdminUserEmail(); validateAdminUserPassword()">
+                    <p id="admin-user-email-hint" class="user-field-hint">ต้องตรงกับอีเมลบัญชี Google ทุกตัวอักษร ระบบไม่สร้างบัญชีอัตโนมัติ</p>
                 </div>
                 <div class="form-group" style="margin-bottom:14px;">
                     <label class="form-label">รหัสผ่าน <span id="admin-user-pw-hint" style="font-size:11px;color:var(--text-secondary);">(จำเป็น)</span></label>
-                    <input type="password" id="admin-user-password" class="form-input" placeholder="อย่างน้อย 8 ตัว A-Z a-z 0-9">
+                    <input type="password" id="admin-user-password" class="form-input" placeholder="12–128 ตัวอักษร" minlength="12" maxlength="128" autocomplete="new-password" oninput="validateAdminUserPassword()">
+                </div>
+                <div class="form-group" id="admin-user-password-confirm-wrap" style="margin-bottom:10px;">
+                    <label class="form-label">ยืนยันรหัสผ่าน <span style="color:var(--danger);">*</span></label>
+                    <input type="password" id="admin-user-password-confirm" class="form-input" placeholder="กรอกรหัสผ่านเดิมอีกครั้ง" minlength="12" maxlength="128" autocomplete="new-password" oninput="validateAdminUserPassword()">
+                </div>
+                <div class="password-policy" id="admin-user-password-policy" aria-live="polite">
+                    <div data-password-rule="length">อย่างน้อย 12 ตัว และไม่เกิน 128 ตัว</div>
+                    <div data-password-rule="uppercase">มีตัวพิมพ์ใหญ่ A–Z</div>
+                    <div data-password-rule="lowercase">มีตัวพิมพ์เล็ก a–z</div>
+                    <div data-password-rule="number">มีตัวเลข 0–9</div>
+                    <div data-password-rule="symbol">มีอักขระพิเศษ เช่น ! @ # $ %</div>
+                    <div data-password-rule="identity">ไม่ซ้ำ Username/อีเมล และไม่ใช่รหัสผ่านที่พบบ่อย</div>
+                    <div data-password-rule="match">รหัสผ่านทั้งสองช่องตรงกัน</div>
                 </div>
                 <div class="form-group">
                     <label class="form-label">สิทธิ์การใช้งาน</label>
-                    <select id="admin-user-role" class="form-select" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-card);color:var(--text-primary);font-size:14px;">
+                    <select id="admin-user-role" class="form-select" onchange="onAdminUserRoleChange()" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-card);color:var(--text-primary);font-size:14px;">
                         <option value="viewer">👁 Viewer  ดูอย่างเดียว</option>
                         <option value="staff">👤 Staff  เจ้าหน้าที่ (บันทึกข้อมูล)</option>
                         <option value="manager">💼 Manager  ผู้จัดการ (อนุมัติ-ลบได้)</option>
@@ -2544,9 +2683,10 @@
                     </select>
                     <p id="admin-user-role-warning" style="display:none; font-size:11px; color:var(--danger); margin-top:6px;">⚠ บัญชีนี้มีสิทธิ์เดิมที่ระบบไม่รู้จัก ระบบเลือก "Staff" ให้ชั่วคราว กรุณาตรวจสอบและกดบันทึกเพื่อแก้ไขให้ถูกต้อง</p>
                 </div>
-                <div class="form-group" id="admin-user-org-wrap" style="display:none; margin-top:14px;">
-                    <label class="form-label">สถานศึกษา</label>
+                <div class="form-group" id="admin-user-org-wrap" style="margin-top:14px;">
+                    <label class="form-label">สถาบันที่กำลังบันทึก</label>
                     <select id="admin-user-org" class="form-select" style="width:100%;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-card);color:var(--text-primary);font-size:14px;"></select>
+                    <p id="admin-user-org-hint" style="font-size:11px;color:var(--text-secondary);margin:6px 0 0;">Manager, Staff และ Viewer จะเห็นข้อมูลเฉพาะสถาบันนี้ ส่วน Admin เข้าถึงทุกสถาบันและเลือกสถาบันที่กำลังบันทึกจากส่วนหัวระบบได้</p>
                 </div>
             </div>
             <div class="modal-footer">

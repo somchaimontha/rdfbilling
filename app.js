@@ -38,7 +38,8 @@ const RETRYABLE_READ_API_ACTIONS = new Set([
     'getSignatures',
     'getSignatureDataUrl',
     'getSystemConfig',
-    'getUsers'
+    'getUsers',
+    'getReportArchiveStatus'
 ]);
 const MUTATING_API_ACTIONS = new Set([
     'logout',
@@ -85,17 +86,26 @@ const MUTATING_API_ACTIONS = new Set([
     'deleteFoodAttachment',
     'saveFundReceipt',
     'deleteFundReceipt',
+    'reserveReportArchive',
+    'saveReportArchiveFile',
+]);
+const EXPORT_CACHE_NEUTRAL_WRITE_ACTIONS = new Set([
+    'reserveReportArchive',
+    'saveReportArchiveFile',
 ]);
 let lastApiDiagnostic = null;
+// ปิดการส่งคำสั่งเขียนซ้ำไว้ก่อนจนกว่า backend รุ่นที่รองรับ requestId
+// จะประกาศความสามารถนี้ ป้องกัน deployment รุ่นเก่าสร้างข้อมูลซ้ำเมื่อ timeout
+let apiIdempotencySupported = false;
+let organizationSyncInFlight = false;
+let organizationLastForceRefreshAt = 0;
 
 function isApiWriteAction(action) {
     return MUTATING_API_ACTIONS.has(action);
 }
 
 function canSafelyRetryWrite(action) {
-    // Every mutation carries one operation ID. The Apps Script router caches the
-    // completed response for that ID, so a retry cannot create a duplicate row/file.
-    return MUTATING_API_ACTIONS.has(action);
+    return apiIdempotencySupported && MUTATING_API_ACTIONS.has(action);
 }
 
 function getApiActionDisplayName(action) {
@@ -105,7 +115,10 @@ function getApiActionDisplayName(action) {
         uploadAttachment: 'อัปโหลดหลักฐาน', uploadFoodAttachment: 'อัปโหลดหลักฐานค่าอาหาร', deleteFoodAttachment: 'ลบหลักฐานค่าอาหาร',
         saveFundReceipt: 'บันทึกเอกสารรับเงินทุน', updateSystemConfig: 'บันทึกการตั้งค่า',
         createClaim: 'สร้างชุดส่งเบิก', cancelClaimDraft: 'ยกเลิกชุดส่งเบิก',
-        createProject: 'เพิ่มโครงการ', createUser: 'เพิ่มผู้ใช้', updateUser: 'แก้ไขผู้ใช้'
+        createProject: 'เพิ่มโครงการ', createOrganization: 'เพิ่มสถาบัน / สถานที่',
+        updateOrganization: 'แก้ไขสถาบัน / สถานที่', disableOrganization: 'ปิดสถาบัน / สถานที่',
+        createUser: 'เพิ่มผู้ใช้', updateUser: 'แก้ไขผู้ใช้',
+        reserveReportArchive: 'สร้างฉบับรายงาน', saveReportArchiveFile: 'บันทึกไฟล์รายงาน'
     };
     return labels[action] || action;
 }
@@ -287,6 +300,10 @@ async function apiCall(action, data = null, filters = null, pagination = null, o
                 });
             }
             reportApiRequestStatus(options, { action, isWrite, requestId: statusRequestId, status: 'success', attempt, maxAttempts });
+            // ข้อมูลรายงานต้องไม่ใช้แคชเดิมหลังมีการแก้ไขฐานข้อมูลสำเร็จ
+            // function declaration ถูก hoist จึงเรียกได้แม้ส่วน Export จะประกาศไว้ด้านล่างไฟล์
+            if (isWrite && !EXPORT_CACHE_NEUTRAL_WRITE_ACTIONS.has(action)
+                && typeof invalidateExportReportCache === 'function') invalidateExportReportCache();
             return result.data || result;
         } catch (err) {
             if (options.signal && options.signal.aborted) throw err;
@@ -464,14 +481,18 @@ function escapeHTML(str) {
         .replace(/'/g, '&#039;');
 }
 
-// Language-aware wrapping for generated documents. Thai has no spaces between
-// words, so add invisible break opportunities after browser-native word
-// segmentation. English, numbers, file references, and URLs remain unchanged.
+// Language-aware wrapping for generated documents. Browser HTML ใช้ U+200B
+// ช่วยตัดคำได้ แต่ PDF ต้องรักษาข้อความต้นฉบับเพื่อให้คัดลอกภาษาไทยและ
+// วรรณยุกต์ได้ถูกต้อง จึงไม่แทรกอักขระล่องหนเป็นค่าเริ่มต้นใน PDF.
+// เฉพาะ node ที่ยาวมากและยอมรับผลต่อการคัดลอกจึงตั้ง allowPdfSoftBreaks=true.
 const DOCUMENT_ZWSP = '\u200B';
+const DOCUMENT_PDF_SOFT_BREAK = '\u00AD';
+const DOCUMENT_UNSUPPORTED_INVISIBLE_PATTERN = /[\u200B\u200C\u2060\uFEFF]/g;
+const DOCUMENT_COPY_UNSAFE_PATTERN = /[\u00AD\u200B\u200C\u2060\uFEFF]/g;
 let thaiDocumentSegmenter = null;
 
-function addDocumentBreakOpportunities(value) {
-    const text = String(value ?? '');
+function addDocumentBreakOpportunities(value, breakCharacter = DOCUMENT_ZWSP) {
+    const text = String(value ?? '').replace(DOCUMENT_UNSUPPORTED_INVISIBLE_PATTERN, '');
     if (!/[\u0E00-\u0E7F]/.test(text) || typeof Intl === 'undefined' || typeof Intl.Segmenter !== 'function') {
         return text;
     }
@@ -482,23 +503,30 @@ function addDocumentBreakOpportunities(value) {
     return text.split(preserveUrls).map(part => {
         if (/^(?:https?:\/\/|www\.|mailto:)/iu.test(part)) return part;
         return part.replace(/[\u0E00-\u0E7F]+/g, thaiRun =>
-            Array.from(thaiDocumentSegmenter.segment(thaiRun), segment => segment.segment).join(DOCUMENT_ZWSP)
+            Array.from(thaiDocumentSegmenter.segment(thaiRun), segment => segment.segment).join(breakCharacter)
         );
     }).join('');
 }
 
-function preparePdfDocumentText(value, seen = new WeakSet()) {
+function preparePdfDocumentText(value, seen = new WeakSet(), preserveCopyText = false, allowPdfSoftBreaks = false) {
     if (!value || typeof value !== 'object' || seen.has(value)) return value;
     seen.add(value);
     if (Array.isArray(value)) {
-        value.forEach(item => preparePdfDocumentText(item, seen));
+        value.forEach(item => preparePdfDocumentText(item, seen, preserveCopyText, allowPdfSoftBreaks));
         return value;
     }
+    const preserveCurrent = preserveCopyText || value.preservePdfText === true;
+    const allowBreaksCurrent = !preserveCurrent && (allowPdfSoftBreaks || value.allowPdfSoftBreaks === true);
+    if (Object.prototype.hasOwnProperty.call(value, 'preservePdfText')) delete value.preservePdfText;
+    if (Object.prototype.hasOwnProperty.call(value, 'allowPdfSoftBreaks')) delete value.allowPdfSoftBreaks;
     Object.entries(value).forEach(([key, child]) => {
         if (key === 'text' && typeof child === 'string') {
-            value[key] = addDocumentBreakOpportunities(child);
+            const cleanText = child.replace(DOCUMENT_COPY_UNSAFE_PATTERN, '');
+            value[key] = allowBreaksCurrent
+                ? addDocumentBreakOpportunities(cleanText, DOCUMENT_PDF_SOFT_BREAK)
+                : cleanText;
         } else if (key !== 'images') {
-            preparePdfDocumentText(child, seen);
+            preparePdfDocumentText(child, seen, preserveCurrent, allowBreaksCurrent);
         }
     });
     return value;
@@ -893,6 +921,94 @@ function isAdminUser(user = getCurrentUser()) {
     return !!(user && user.role && user.role.toLowerCase() === 'admin');
 }
 
+const INSTITUTION_CODE_ALIASES = Object.freeze({
+    MIS: 'VC', VC: 'VC',
+    BS: 'MBS', MBS: 'MBS',
+    OF: 'OFFICE', OFFICE: 'OFFICE',
+});
+
+function normalizeInstitutionCode(value) {
+    const code = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    return INSTITUTION_CODE_ALIASES[code] || code;
+}
+
+function getActiveOrganizationStorageKey(user = getCurrentUser()) {
+    return `rdf_active_organization_${(user && (user.id || user.username)) || 'anonymous'}`;
+}
+
+function getActiveOrganizationId() {
+    const user = getCurrentUser() || {};
+    if (!isAdminUser(user)) return String(user.organizationId || '');
+    const organizations = (state.organizations || []).filter(org => org && org.id && org.active !== false);
+    const stored = localStorage.getItem(getActiveOrganizationStorageKey(user));
+    const fallback = String(user.organizationId || '');
+    if (organizations.some(org => String(org.id) === String(stored))) return String(stored);
+    if (organizations.some(org => String(org.id) === fallback)) return fallback;
+    return organizations.length ? String(organizations[0].id) : fallback;
+}
+
+function renderOrganizationContextControl() {
+    const wrap = document.getElementById('organization-context');
+    const select = document.getElementById('active-organization-select');
+    const lock = document.getElementById('active-organization-lock');
+    const user = getCurrentUser() || {};
+    if (!wrap || !select || !user.id) return;
+    const organizations = (state.organizations || []).filter(org => org && org.id && org.active !== false);
+    if (!organizations.length) {
+        wrap.hidden = true;
+        return;
+    }
+    const allowed = isAdminUser(user)
+        ? organizations
+        : organizations.filter(org => String(org.id) === String(user.organizationId || ''));
+    wrap.hidden = false;
+    select.innerHTML = allowed.map(org => {
+        const code = getOrganizationShortName(org.id);
+        return `<option value="${escapeHTML(org.id)}">${escapeHTML(code)} — ${escapeHTML(org.name || org.nameTh || org.id)}</option>`;
+    }).join('');
+    const activeId = getActiveOrganizationId();
+    if (allowed.some(org => String(org.id) === activeId)) select.value = activeId;
+    select.disabled = !isAdminUser(user);
+    if (lock) lock.hidden = isAdminUser(user);
+}
+
+window.onActiveOrganizationChange = function(organizationId) {
+    const user = getCurrentUser() || {};
+    if (!isAdminUser(user)) {
+        renderOrganizationContextControl();
+        return false;
+    }
+    const organization = (state.organizations || []).find(org => String(org.id) === String(organizationId) && org.active !== false);
+    if (!organization) {
+        appAlert('ไม่พบสถาบันที่เลือกหรือสถาบันถูกปิดใช้งาน', 'error');
+        renderOrganizationContextControl();
+        return false;
+    }
+    localStorage.setItem(getActiveOrganizationStorageKey(user), String(organization.id));
+    const billingSelect = document.getElementById('inline-exp-billing-profile');
+    if (billingSelect) {
+        const code = getOrganizationShortName(organization.id);
+        if ([...billingSelect.options].some(option => option.value === code)) billingSelect.value = code;
+    }
+    const exportOrg = document.getElementById('export-org-filter');
+    if (exportOrg && [...exportOrg.options].some(option => option.value === String(organization.id))) {
+        exportOrg.value = String(organization.id);
+        if (document.getElementById('modal-export-pdf')?.classList.contains('active')) onExportOrganizationFilterChange();
+    }
+    const summaryOrg = document.getElementById('summary-org-filter');
+    if (summaryOrg && [...summaryOrg.options].some(option => option.value === String(organization.id))) {
+        summaryOrg.value = String(organization.id);
+    }
+    expenseModalOrganizationId = String(organization.id);
+    renderOrganizationContextControl();
+    renderProjectFilterDropdown();
+    if (document.getElementById('inline-exp-project')) populateQuickExpenseProjectOptions();
+    updateFundReceiptWidget();
+    if (state.activeTab === 'summary-view') renderSummaryView();
+    appAlert(`เปลี่ยนสถาบันที่กำลังบันทึกเป็น ${getOrganizationShortName(organization.id)} — ${organization.name || organization.nameTh || organization.id}`, 'success');
+    return true;
+};
+
 function isConfigEnabled(value) {
     return value === true || String(value).toLowerCase() === 'true';
 }
@@ -940,6 +1056,7 @@ function showUserProfile(user) {
     if (!isAdmin && (state.activeTab === 'settings-view' || state.activeTab === 'user-management')) {
         switchTab('dashboard');
     }
+    renderOrganizationContextControl();
 }
 
 // Month names in Thai
@@ -987,9 +1104,9 @@ const QUICK_EXPENSE_DRAFT_STORAGE_VERSION = 1;
 const QUICK_EXPENSE_DRAFT_STORAGE_PREFIX = 'rdf_quick_expense_draft';
 
 const QUICK_EXPENSE_BILLING_PROFILES = Object.freeze([
-    { code: 'OF', name: 'office' },
-    { code: 'BS', name: 'Boribhat Suksa' },
-    { code: 'VC', name: 'Vocational College' },
+    { code: 'VC', name: 'วิทยาลัยการอาชีพแม่สะเรียง' },
+    { code: 'MBS', name: 'โรงเรียนแม่สะเรียงบริพัตร์' },
+    { code: 'OFFICE', name: 'สำนักงาน' },
     { code: 'P', name: 'โปรเจกต์อื่นๆ' }
 ]);
 
@@ -1494,6 +1611,7 @@ async function initAppWithAPI({ retryFailed = false, automaticRetry = false } = 
     // delay the monthly bill tables, nor discard results that already arrived.
     load.tasks = [
         { key: 'runtime', label: 'การตั้งค่า', fetch: () => read('getRuntimeConfig'), apply: value => {
+            apiIdempotencySupported = value.idempotencySupported === true;
             state.maxUploadSizeMb = parseFloat(value.maxUploadSizeMb) || 2;
             state.requireAttachment = isConfigEnabled(value.requireAttachment);
             state.dateFormat = normalizeSystemDateFormat(value.dateFormat);
@@ -1562,14 +1680,11 @@ async function initAppWithAPI({ retryFailed = false, automaticRetry = false } = 
         load.coreRendered = true;
         renderSafely('core', () => {
             const { master, expenses } = load.results;
-            state.projects = (master.projects || []).map(p => ({ ...p, name: p.projectName || p.name }));
-            state.categories = (master.categories || []).map(c => ({ ...c, name: c.categoryName || c.name }));
-            state.vendors = (master.vendors || []).map(v => ({ ...v, name: v.vendorName || v.name }));
-            state.fundSources = (master.fundSources || []).map(f => ({ ...f, name: f.name || f.fundSourceName }));
-            state.organizations = (master.organizations || []).map(o => ({ ...o, name: o.nameTh || o.name }));
+            applyMasterDataToState(master);
             state.expenses = expenses.filter(e => e.id && e.id.startsWith('EXP'));
             state.attachments = expenses.filter(e => e.id && e.id.startsWith('ATT'));
             state.foodExpenses = load.results.food || [];
+            renderOrganizationContextControl();
             loadAttachments();
             renderAll();
         });
@@ -2216,6 +2331,9 @@ async function renderSummaryView() {
                 orgFilterSel.innerHTML = '<option value="">ทั้งหมด (รวมทุกสถานศึกษา)</option>' +
                     (state.organizations || []).map(o => `<option value="${o.id}">${escapeHTML(o.name)}</option>`).join('');
             }
+            if (!orgFilterSel.value && getActiveOrganizationId()) {
+                orgFilterSel.value = getActiveOrganizationId();
+            }
             orgFilter = orgFilterSel.value;
         } else {
             orgFilterWrap.style.display = 'none';
@@ -2384,7 +2502,9 @@ function getFundReceiptByMonth(monthKey) {
     const matches = (state.fundReceipts || []).filter(record => normalizeFundReceiptMonth(record.month) === normalizedMonth);
     if (matches.length <= 1) return matches[0];
     const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
-    const organizationId = currentUser && (currentUser.organizationId || currentUser.organization_id);
+    const organizationId = isAdminUser(currentUser)
+        ? getActiveOrganizationId()
+        : currentUser && (currentUser.organizationId || currentUser.organization_id);
     return matches.find(record => String(record.organizationId || record.organization_id || '') === String(organizationId || '')) || matches[0];
 }
 
@@ -2545,8 +2665,8 @@ function renderFundReceiptFilePreview(existingRec) {
                     <div class="att-date">${isPending ? 'ไฟล์ใหม่ · รอการบันทึก' : 'ไฟล์ที่บันทึกอยู่ใน Google Drive'}</div>
                 </div>
                 <div class="att-item-actions">
-                    ${openUrl ? `<a class="btn-icon" href="${escapeHTML(openUrl)}" target="_blank" rel="noopener" title="เปิดไฟล์"><i data-lucide="external-link"></i></a>` : ''}
-                    ${isPending ? `<button type="button" class="btn-icon btn-icon-delete" onclick="clearFundReceiptFile()" title="นำไฟล์ที่เลือกออก"><i data-lucide="trash-2"></i></button>` : ''}
+                    ${openUrl ? `<a class="btn-icon btn-icon-view" href="${escapeHTML(openUrl)}" target="_blank" rel="noopener" title="เปิดไฟล์" aria-label="เปิดไฟล์เอกสารรับเงินทุน"><i data-lucide="external-link"></i></a>` : ''}
+                    ${isPending ? `<button type="button" class="btn-icon btn-icon-delete" onclick="clearFundReceiptFile()" title="นำไฟล์ที่เลือกออก" aria-label="นำไฟล์เอกสารรับเงินทุนที่เลือกออก"><i data-lucide="trash-2"></i></button>` : ''}
                 </div>
             </div>
         </div>`;
@@ -2632,7 +2752,11 @@ async function saveFundReceipt() {
         return;
     }
 
-    const payload = { month, amount, note };
+    const currentUser = getCurrentUser() || {};
+    const organizationId = isAdminUser(currentUser)
+        ? getActiveOrganizationId()
+        : currentUser.organizationId;
+    const payload = { month, amount, note, organizationId };
     if (fundReceiptFile) {
         payload.fileData = {
             base64: (fundReceiptFile.base64 || '').split(',')[1] || fundReceiptFile.base64,
@@ -2743,8 +2867,8 @@ function renderFundReceiptsOverview() {
                     ? `<a href="${rec.fileUrl}" target="_blank"><i data-lucide="paperclip" style="width:14px;height:14px;vertical-align:middle;"></i> ${escapeHTML(rec.fileName || 'ไฟล์')}</a>`
                     : '<span style="color:var(--text-muted);">ไม่มีเอกสาร</span>'}</td>
                 <td class="text-center">${rec
-                    ? `<button class="btn btn-icon btn-sm" title="แก้ไข" onclick="openFundReceiptModal('${monthKey}')"><i data-lucide="edit" style="width:14px;height:14px;"></i></button> <button class="btn btn-icon btn-sm text-danger" title="ลบ" onclick="deleteFundReceipt('${rec.id}')"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>`
-                    : `<button class="btn btn-icon btn-sm" title="เพิ่ม" onclick="openFundReceiptModal('${monthKey}')"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>`}</td>
+                    ? `<button class="btn btn-icon btn-sm btn-icon-edit" title="แก้ไข" aria-label="แก้ไขเอกสารรับเงินทุนเดือน${name}" onclick="openFundReceiptModal('${monthKey}')"><i data-lucide="edit"></i></button> <button class="btn btn-icon btn-sm btn-icon-delete" title="ลบ" aria-label="ลบเอกสารรับเงินทุนเดือน${name}" onclick="deleteFundReceipt('${rec.id}')"><i data-lucide="trash-2"></i></button>`
+                    : `<button class="btn btn-icon btn-sm btn-icon-save" title="เพิ่ม" aria-label="เพิ่มเอกสารรับเงินทุนเดือน${name}" onclick="openFundReceiptModal('${monthKey}')"><i data-lucide="plus"></i></button>`}</td>
             </tr>`;
     }).join('');
 
@@ -2864,6 +2988,10 @@ function switchSettingsTab(tabKey) {
     document.querySelectorAll('#tab-settings-view .settings-tab-panel').forEach(panel => {
         panel.style.display = (panel.id === `settings-panel-${tabKey}`) ? '' : 'none';
     });
+    if (tabKey === 'organizations' && !organizationSyncInFlight
+        && Date.now() - organizationLastForceRefreshAt > 5000) {
+        refreshOrganizationsAcrossSystem(false);
+    }
 }
 window.switchSettingsTab = switchSettingsTab;
 
@@ -3187,7 +3315,7 @@ function renderProjectFilterDropdown() {
     if (!sel) return;
     const curVal = sel.value;
     if(sel) sel.innerHTML = '<option value="all">ทั้งหมด</option>';
-    state.projects.filter(p => p.active).forEach(p => {
+    getActiveProjects().forEach(p => {
         const opt = document.createElement('option');
         opt.value = p.id;
         opt.textContent = p.name;
@@ -3809,6 +3937,88 @@ function renderMasterData() {
     initializeLucide();
 }
 
+function applyMasterDataToState(master = {}) {
+    state.projects = (master.projects || []).map(p => ({ ...p, name: p.projectName || p.name }));
+    state.categories = (master.categories || []).map(c => ({ ...c, name: c.categoryName || c.name }));
+    state.vendors = (master.vendors || []).map(v => ({ ...v, name: v.vendorName || v.name }));
+    state.fundSources = (master.fundSources || []).map(f => ({ ...f, name: f.name || f.fundSourceName }));
+    state.organizations = (master.organizations || []).map(o => ({ ...o, name: o.nameTh || o.name }));
+}
+
+function rebuildOrganizationFilter(selectId, allLabel) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    const previous = select.value;
+    const organizations = (state.organizations || []).filter(org => org && org.id && org.active !== false);
+    select.innerHTML = `<option value="">${escapeHTML(allLabel)}</option>` + organizations.map(org =>
+        `<option value="${escapeHTML(org.id)}">${escapeHTML(getOrganizationShortName(org.id))} — ${escapeHTML(org.name || org.nameTh || org.id)}</option>`
+    ).join('');
+    const preferred = organizations.some(org => String(org.id) === String(previous))
+        ? String(previous)
+        : getActiveOrganizationId();
+    if ([...select.options].some(option => option.value === preferred)) select.value = preferred;
+}
+
+function setOrganizationSyncStatus(message, mode = 'ready') {
+    const status = document.getElementById('organization-sync-status');
+    if (!status) return;
+    status.dataset.status = mode;
+    const icon = mode === 'loading' ? 'loader-circle' : (mode === 'error' ? 'circle-alert' : 'check-circle-2');
+    status.innerHTML = `<i data-lucide="${icon}" ${mode === 'loading' ? 'class="spin"' : ''}></i> ${escapeHTML(message)}`;
+    initializeLucide();
+}
+
+async function refreshOrganizationsAcrossSystem(showNotice = false) {
+    if (organizationSyncInFlight) return false;
+    organizationSyncInFlight = true;
+    setOrganizationSyncStatus('กำลังซิงก์ข้อมูล...', 'loading');
+    try {
+        const master = await apiCall('getMasterData', { forceRefresh: true });
+        if (master.masterDataFresh !== true) {
+            throw new Error('Apps Script ที่เชื่อมต่อยังไม่รองรับการข้าม Cache กรุณา Deploy backend รุ่นล่าสุด');
+        }
+        applyMasterDataToState(master);
+
+        const activeOrganizationId = getActiveOrganizationId();
+        const currentUser = getCurrentUser();
+        if (isAdminUser(currentUser) && activeOrganizationId) {
+            localStorage.setItem(getActiveOrganizationStorageKey(currentUser), activeOrganizationId);
+        }
+        if (!(state.organizations || []).some(org => String(org.id) === String(expenseModalOrganizationId) && org.active !== false)) {
+            expenseModalOrganizationId = activeOrganizationId;
+        }
+
+        renderOrganizationContextControl();
+        renderMasterData();
+        renderProjectFilterDropdown();
+        if (document.getElementById('inline-exp-project')) populateQuickExpenseProjectOptions();
+        rebuildOrganizationFilter('summary-org-filter', 'ทั้งหมด (รวมทุกสถาบัน / สถานที่)');
+        rebuildOrganizationFilter('export-org-filter', 'ทั้งหมด (รวมทุกสถาบัน / สถานที่)');
+        if (document.getElementById('admin-user-org')) {
+            const currentSelection = document.getElementById('admin-user-org').value;
+            setupAdminUserOrgSelect(currentSelection);
+        }
+        if (adminUserList.length) renderUserManagementRows();
+        updateFundReceiptWidget();
+        clearExportPreviewCache();
+        if (document.getElementById('modal-export-pdf')?.classList.contains('active')) renderExportPreview();
+        if (state.activeTab === 'summary-view') renderSummaryView();
+
+        const syncedAt = new Intl.DateTimeFormat('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date());
+        organizationLastForceRefreshAt = Date.now();
+        setOrganizationSyncStatus(`ซิงก์ล่าสุด ${syncedAt} น.`, 'ready');
+        if (showNotice) appAlert('ซิงก์ข้อมูลสถาบัน / สถานที่กับทุกส่วนของระบบแล้ว', 'success');
+        return true;
+    } catch (error) {
+        setOrganizationSyncStatus('ซิงก์ไม่สำเร็จ', 'error');
+        appAlert('ซิงก์ข้อมูลสถาบัน / สถานที่ไม่สำเร็จ: ' + error.message, 'error');
+        return false;
+    } finally {
+        organizationSyncInFlight = false;
+    }
+}
+window.refreshOrganizationsAcrossSystem = refreshOrganizationsAcrossSystem;
+
 function renderMasterProjects() {
     const tbody = document.querySelector('#master-projects-table tbody');
     if (!tbody) return;
@@ -3920,18 +4130,42 @@ function renderMasterOrganizations() {
     const countEl = document.getElementById('master-organizations-count');
     if (countEl) countEl.textContent = (state.organizations || []).length;
     tbody.innerHTML = '';
+    const activeOrganizationId = getActiveOrganizationId();
+    const identityCounts = new Map();
+    (state.organizations || []).forEach(org => {
+        [String(org.id || '').toUpperCase(), String(org.shortName || '').toUpperCase()].filter(Boolean).forEach(identity => {
+            identityCounts.set(identity, (identityCounts.get(identity) || 0) + 1);
+        });
+    });
     (state.organizations || []).forEach((o, idx) => {
         const tr = document.createElement('tr');
-        const meta = [o.id, o.shortName ? `รหัส ${o.shortName}` : null].filter(Boolean).join(' · ');
+        const assignedUsers = adminUserList.filter(user => user.active !== false && String(user.organizationId) === String(o.id)).length;
+        const isCurrent = String(o.id) === String(activeOrganizationId);
+        const hasDuplicateIdentity = (identityCounts.get(String(o.id || '').toUpperCase()) || 0) > 1
+            || (identityCounts.get(String(o.shortName || '').toUpperCase()) || 0) > 1;
+        if (hasDuplicateIdentity) tr.classList.add('organization-row-duplicate');
         tr.innerHTML = `
-            <td>
-                <div style="font-weight:600;">${o.name}</div>
-                <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${meta}</div>
+            <td data-label="รหัส">
+                <div class="organization-code">${escapeHTML(o.shortName || o.id)}</div>
+                <div class="organization-id">${escapeHTML(o.id)}</div>
             </td>
-            <td class="text-center">
+            <td data-label="สถาบัน / สถานที่">
+                <div class="organization-name">${escapeHTML(o.name || o.nameTh || o.id)}</div>
+                <div class="organization-row-badges">
+                    ${isCurrent ? '<span class="badge badge-claimable">กำลังบันทึก</span>' : ''}
+                    ${hasDuplicateIdentity ? '<span class="badge organization-duplicate-badge">รหัสข้อมูลซ้ำ</span>' : ''}
+                    <span class="organization-user-count">ผู้ใช้งาน ${assignedUsers} คน</span>
+                </div>
+            </td>
+            <td data-label="ที่อยู่ / ติดต่อ">
+                <div>${escapeHTML(o.addressTh || '-')}</div>
+                <div class="organization-contact">${escapeHTML(o.phone || '-')}</div>
+            </td>
+            <td data-label="ผู้บริหาร">${escapeHTML(o.directorName || '-')}</td>
+            <td class="text-center" data-label="จัดการ">
                 <div class="action-buttons" style="justify-content:center;">
-                    <button class="btn-icon btn-icon-edit" data-master="organization" data-idx="${idx}"><i data-lucide="edit"></i></button>
-                    <button class="btn-icon btn-icon-delete" data-master="organization" data-idx="${idx}"><i data-lucide="trash-2"></i></button>
+                    <button class="btn-icon btn-icon-edit" data-master="organization" data-idx="${idx}" title="แก้ไข ${escapeHTML(o.name || o.id)}"><i data-lucide="edit"></i></button>
+                    <button class="btn-icon btn-icon-delete" data-master="organization" data-idx="${idx}" title="ปิดใช้งาน ${escapeHTML(o.name || o.id)}"><i data-lucide="archive"></i></button>
                 </div>
             </td>
         `;
@@ -3993,7 +4227,13 @@ function masterFieldValue(item, key, fallback = '') {
 async function handleMasterDelete(master, idx) {
     const item = getMasterCollection(master)[idx];
     if (!item || !item.id) return;
-    const confirmed = await appConfirm('ยืนยันการปิดใช้งานรายการนี้? รายการเดิมในประวัติจะยังคงอยู่ แต่จะไม่แสดงให้เลือกในรายการใหม่', 'ปิดใช้งานข้อมูลหลัก');
+    const assignedUsers = master === 'organization'
+        ? adminUserList.filter(user => user.active !== false && String(user.organizationId) === String(item.id)).length
+        : 0;
+    const message = master === 'organization'
+        ? `ต้องการปิดใช้งาน “${item.name || item.nameTh || item.id}” หรือไม่? รายการเดิมจะยังอยู่ในประวัติ แต่จะไม่แสดงให้เลือกในรายการใหม่${assignedUsers ? ` ขณะนี้มีผู้ใช้งาน ${assignedUsers} คนที่ผูกกับรายการนี้ จึงต้องย้ายผู้ใช้ก่อน` : ''}`
+        : 'ยืนยันการปิดใช้งานรายการนี้? รายการเดิมในประวัติจะยังคงอยู่ แต่จะไม่แสดงให้เลือกในรายการใหม่';
+    const confirmed = await appConfirm(message, master === 'organization' ? 'ปิดใช้งานสถาบัน / สถานที่' : 'ปิดใช้งานข้อมูลหลัก');
     if (!confirmed) return;
     const action = getMasterAction(master, 'disable');
     if (!action) return appAlert('ยังไม่รองรับการปิดใช้งานรายการนี้', 'error');
@@ -4001,7 +4241,8 @@ async function handleMasterDelete(master, idx) {
     try {
         await apiCall(action, { id: item.id });
         appAlert('ปิดใช้งานข้อมูลหลักเรียบร้อยแล้ว', 'success');
-        await initAppWithAPI();
+        if (master === 'organization') await refreshOrganizationsAcrossSystem(false);
+        else await initAppWithAPI();
     } catch (err) {
         appAlert('ปิดใช้งานไม่สำเร็จ: ' + err.message, 'error');
     } finally {
@@ -4016,7 +4257,7 @@ function openMasterModal(master, editIdx = null) {
     modal.setAttribute('data-master', master);
     modal.setAttribute('data-edit-idx', editIdx !== null ? editIdx : '');
 
-    const titles = { project: 'โครงการ', category: 'หมวดหมู่', vendor: 'ผู้ขาย/ร้านค้า', fundsource: 'แหล่งเงิน', organization: 'สถานศึกษา' };
+    const titles = { project: 'โครงการ', category: 'หมวดหมู่', vendor: 'ผู้ขาย/ร้านค้า', fundsource: 'แหล่งเงิน', organization: 'สถาบัน / สถานที่' };
     title.textContent = (editIdx !== null ? 'แก้ไข' : 'เพิ่ม') + titles[master];
 
     body.innerHTML = '';
@@ -4048,8 +4289,8 @@ function openMasterModal(master, editIdx = null) {
     } else if (master === 'organization') {
         const item = editIdx !== null ? state.organizations[editIdx] : null;
         body.innerHTML = `
-            <div class="form-group"><label class="form-label">ชื่อสถานศึกษา</label><input type="text" id="mf-name" class="form-input" value="${masterFieldValue(item, 'name')}" required></div>
-            <div class="form-group"><label class="form-label">รหัสย่อ (ใช้ขึ้นต้นเลขที่เอกสาร เช่น MSB)</label><input type="text" id="mf-shortname" class="form-input" value="${masterFieldValue(item, 'shortName')}" required></div>
+            <div class="form-group"><label class="form-label">ชื่อสถาบัน / สถานที่</label><input type="text" id="mf-name" class="form-input" value="${masterFieldValue(item, 'name')}" required maxlength="160"></div>
+            <div class="form-group"><label class="form-label">รหัสย่อ (ใช้ขึ้นต้นเลขที่เอกสาร เช่น VC, MBS, OFFICE)</label><input type="text" id="mf-shortname" class="form-input" value="${masterFieldValue(item, 'shortName')}" required maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" style="text-transform:uppercase;"><small class="form-help">ใช้ A–Z, 0–9, ขีดกลาง หรือขีดล่าง จำนวน 2–12 ตัว และห้ามซ้ำ</small></div>
             <div class="form-group"><label class="form-label">ที่อยู่</label><input type="text" id="mf-address" class="form-input" value="${masterFieldValue(item, 'addressTh')}"></div>
             <div class="form-group"><label class="form-label">เบอร์โทรศัพท์</label><input type="text" id="mf-phone" class="form-input" value="${masterFieldValue(item, 'phone')}"></div>
             <div class="form-group"><label class="form-label">ชื่อผู้อำนวยการ/ผู้บริหาร</label><input type="text" id="mf-director" class="form-input" value="${masterFieldValue(item, 'directorName')}"></div>
@@ -4066,8 +4307,12 @@ function closeMasterModal() {
 // ==========================================================================
 // Expense Modal (Bill Form)
 // ==========================================================================
+let masterSaveInFlight = false;
+
 async function handleMasterSubmit(e) {
     e.preventDefault();
+    e.stopPropagation();
+    if (masterSaveInFlight) return false;
     const modal = document.getElementById('modal-master');
     const master = modal.getAttribute('data-master');
     const editIdx = modal.getAttribute('data-edit-idx');
@@ -4076,14 +4321,24 @@ async function handleMasterSubmit(e) {
     const name = document.getElementById('mf-name').value.trim();
     if (!name) return;
 
+    const saveButton = document.getElementById('btn-master-save');
+    const originalButtonHtml = saveButton ? saveButton.innerHTML : '';
+    masterSaveInFlight = true;
+    if (saveButton) {
+        saveButton.disabled = true;
+        saveButton.innerHTML = '<i data-lucide="loader-circle" class="spin"></i> กำลังบันทึก...';
+        initializeLucide();
+    }
     showLoading(true);
     try {
+        let saveResult = null;
         if (master === 'project') {
             const budget = parseFloat(document.getElementById('mf-budget').value) || 0;
             await apiCall(idx !== null ? 'updateProject' : 'createProject', {
                 id: currentItem && currentItem.id,
                 projectName: name,
-                budget
+                budget,
+                organizationId: getActiveOrganizationId()
             });
         } else if (master === 'category') {
             await apiCall(idx !== null ? 'updateCategory' : 'createCategory', {
@@ -4100,18 +4355,22 @@ async function handleMasterSubmit(e) {
         } else if (master === 'fundsource') {
             await apiCall(idx !== null ? 'updateFundSource' : 'createFundSource', {
                 id: currentItem && currentItem.id,
-                fundSourceName: name
+                fundSourceName: name,
+                organizationId: getActiveOrganizationId()
             });
         } else if (master === 'organization') {
-            const shortName = (document.getElementById('mf-shortname') || {}).value.trim();
-            if (!shortName) {
+            const shortName = (document.getElementById('mf-shortname') || {}).value.trim().toUpperCase();
+            if (!/^[A-Z0-9_-]{2,12}$/.test(shortName)) {
                 showLoading(false);
-                return appAlert('กรุณาระบุรหัสย่อ', 'error');
+                return appAlert('รหัสย่อต้องเป็น A–Z, 0–9, ขีดกลาง หรือขีดล่าง จำนวน 2–12 ตัว', 'error');
+            }
+            if (idx === null && !apiIdempotencySupported) {
+                return appAlert('ยังไม่ส่งข้อมูล: Apps Script ที่เชื่อมต่อเป็นรุ่นเก่าและอาจสร้างรหัส ORG ซ้ำ กรุณา Deploy backend รุ่นล่าสุด แล้วรีเฟรชหน้าเว็บก่อนเพิ่มสถาบัน / สถานที่', 'error');
             }
             const addressTh = (document.getElementById('mf-address') || {}).value.trim();
             const phone = (document.getElementById('mf-phone') || {}).value.trim();
             const directorName = (document.getElementById('mf-director') || {}).value.trim();
-            await apiCall(idx !== null ? 'updateOrganization' : 'createOrganization', {
+            saveResult = await apiCall(idx !== null ? 'updateOrganization' : 'createOrganization', {
                 id: currentItem && currentItem.id,
                 nameTh: name,
                 shortName,
@@ -4120,14 +4379,29 @@ async function handleMasterSubmit(e) {
                 directorName
             });
         }
-        appAlert(idx !== null ? 'บันทึกการแก้ไขข้อมูลหลักสำเร็จ' : 'เพิ่มข้อมูลหลักสำเร็จ!', 'success');
+        const savedId = saveResult && saveResult.id ? ` (${saveResult.id})` : '';
+        const wasExisting = saveResult && saveResult.existing;
+        appAlert(wasExisting
+            ? `พบข้อมูลสถาบัน / สถานที่นี้อยู่แล้ว ระบบใช้รายการเดิม${savedId} โดยไม่สร้างซ้ำ`
+            : (idx !== null ? `บันทึกการแก้ไขข้อมูลหลักสำเร็จ${savedId}` : `เพิ่มข้อมูลหลักสำเร็จ${savedId}`), 'success');
         closeMasterModal();
-        await initAppWithAPI();
+        if (master === 'organization') {
+            await refreshOrganizationsAcrossSystem(false);
+            switchSettingsTab('organizations');
+        }
+        else await initAppWithAPI();
     } catch (err) {
         appAlert('บันทึกข้อมูลหลักไม่สำเร็จ: ' + err.message, 'error');
     } finally {
         showLoading(false);
+        masterSaveInFlight = false;
+        if (saveButton) {
+            saveButton.disabled = false;
+            saveButton.innerHTML = originalButtonHtml;
+            initializeLucide();
+        }
     }
+    return false;
 }
 
 function populateDropdown(selectId, items, valueKey, labelKey, selectedVal = null) {
@@ -4145,6 +4419,15 @@ function populateDropdown(selectId, items, valueKey, labelKey, selectedVal = nul
 
 function normalizeMasterName(name) {
     return String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function isMasterItemInActiveOrganization(item, targetOrganizationId = getActiveOrganizationId()) {
+    const itemOrganizationId = item && (item.organizationId || item.organization_id);
+    return !itemOrganizationId || String(itemOrganizationId) === String(targetOrganizationId || '');
+}
+
+function getActiveProjects(organizationId = getActiveOrganizationId()) {
+    return (state.projects || []).filter(item => item.active && isMasterItemInActiveOrganization(item, organizationId));
 }
 
 function getExpenseMasterConfig(type) {
@@ -4178,6 +4461,23 @@ function getExpenseMasterConfig(type) {
         }
     };
     return map[type];
+}
+
+function getMasterContextOrganizationId(context = 'bill') {
+    if (context === 'bill' && expenseModalOrganizationId) return expenseModalOrganizationId;
+    if (context === 'attach') {
+        const editIndex = Number((document.getElementById('attachment-edit-index') || {}).value);
+        const record = Number.isInteger(editIndex) ? state.attachments[editIndex] : null;
+        if (record && record.organizationId) return record.organizationId;
+    }
+    return getActiveOrganizationId();
+}
+
+function getExpenseMasterItems(type, organizationId = getActiveOrganizationId()) {
+    const cfg = getExpenseMasterConfig(type);
+    if (!cfg) return [];
+    return (state[cfg.stateKey] || []).filter(item =>
+        type !== 'fundSource' || isMasterItemInActiveOrganization(item, organizationId));
 }
 
 function findMasterByName(items, name) {
@@ -4219,7 +4519,7 @@ function setupExpenseMasterInput(type, selectedId = '', context = 'bill') {
     const input = document.getElementById(ids.inputId);
     const hidden = document.getElementById(ids.hiddenId);
     const list = document.getElementById(ids.listId);
-    const items = state[cfg.stateKey] || [];
+    const items = getExpenseMasterItems(type, getMasterContextOrganizationId(context));
     if (!input || !hidden || !list) return;
 
     list.innerHTML = items
@@ -4243,24 +4543,27 @@ function appendLocalMasterItem(type, item) {
     if (!cfg || !item || !item.id) return;
     const list = state[cfg.stateKey] || [];
     if (!list.some(existing => existing.id === item.id)) {
-        list.push({ ...item, active: true });
+        list.push({ ...item, active: true, organizationId: item.organizationId || getActiveOrganizationId() });
         state[cfg.stateKey] = list;
     }
 }
 
-async function resolveExpenseMasterName(type, rawName) {
+async function resolveExpenseMasterName(type, rawName, organizationId = getActiveOrganizationId()) {
     const cfg = getExpenseMasterConfig(type);
     if (!cfg) return '';
     const name = String(rawName || '').trim().replace(/\s+/g, ' ');
     if (!name) throw new Error(`กรุณาระบุ${cfg.label}`);
 
-    const existing = findMasterByName(state[cfg.stateKey] || [], name);
+    const existing = findMasterByName(getExpenseMasterItems(type, organizationId), name);
     if (existing) return existing.id;
 
-    const result = await apiCall(cfg.createAction, { [cfg.createField]: name });
+    const result = await apiCall(cfg.createAction, {
+        [cfg.createField]: name,
+        organizationId
+    });
     const id = result && result.id;
     if (!id) throw new Error(`เพิ่ม${cfg.label}ใหม่ไม่สำเร็จ`);
-    appendLocalMasterItem(type, { id, name });
+    appendLocalMasterItem(type, { id, name, organizationId });
     if (type === 'vendor') populateQuickExpenseVendorOptions();
     return id;
 }
@@ -4272,7 +4575,7 @@ async function resolveExpenseMasterSelection(type, context = 'bill') {
     const input = document.getElementById(ids.inputId);
     const hidden = document.getElementById(ids.hiddenId);
     const name = input ? input.value.trim().replace(/\s+/g, ' ') : '';
-    const items = state[cfg.stateKey] || [];
+    const items = getExpenseMasterItems(type, getMasterContextOrganizationId(context));
 
     if (!name) {
         throw new Error(`กรุณาระบุ${cfg.label}`);
@@ -4285,7 +4588,7 @@ async function resolveExpenseMasterSelection(type, context = 'bill') {
         return selectedById.id;
     }
 
-    const id = await resolveExpenseMasterName(type, name);
+    const id = await resolveExpenseMasterName(type, name, getMasterContextOrganizationId(context));
     setupExpenseMasterInput(type, id, context);
     return id;
 }
@@ -4299,22 +4602,26 @@ async function quickAddProject(target) {
     const nameTrimmed = name.trim();
     if (!nameTrimmed) return;
     
-    const existing = (state.projects || []).find(project => normalizeMasterName(project.name) === normalizeMasterName(nameTrimmed));
+    const existing = getActiveProjects().find(project => normalizeMasterName(project.name) === normalizeMasterName(nameTrimmed));
     if (existing) {
-        if (target === 'bill') populateDropdown('bill-project', state.projects.filter(p => p.active), 'id', 'name', existing.id);
-        else if (target === 'attach') populateDropdown('attach-project', state.projects.filter(p => p.active), 'id', 'name', existing.id);
+        if (target === 'bill') populateDropdown('bill-project', getActiveProjects(), 'id', 'name', existing.id);
+        else if (target === 'attach') populateDropdown('attach-project', getActiveProjects(), 'id', 'name', existing.id);
         else if (target === 'inline-exp') populateQuickExpenseProjectOptions(existing.id);
         return;
     }
 
     showLoading(true);
     try {
-        const result = await apiCall('createProject', { projectName: nameTrimmed, budget: 0 });
+        const result = await apiCall('createProject', {
+            projectName: nameTrimmed,
+            budget: 0,
+            organizationId: getActiveOrganizationId()
+        });
         if (!result || !result.id) throw new Error('ระบบไม่ส่งรหัสโครงการใหม่กลับมา');
         const newProj = { id: result.id, name: nameTrimmed, active: true };
         state.projects.push(newProj);
         appAlert('เพิ่มโครงการสำเร็จ!');
-        const activeProjects = state.projects.filter(p => p.active);
+        const activeProjects = getActiveProjects();
         const selectedVal = newProj.id;
         
         if (target === 'bill') {
@@ -4334,7 +4641,7 @@ window.quickAddProject = quickAddProject;
 
 function openExpenseModal(editIdx = null, isNewProject = false) {
     expenseModalSource = null;
-    expenseModalOrganizationId = '';
+    expenseModalOrganizationId = editIdx === null ? getActiveOrganizationId() : '';
     expenseModalDocumentPrefix = '';
     expenseCreateRequestId = editIdx === null ? createClientRequestId('expense') : '';
     expenseModalNoteMetadata = { customFields: {}, multiItems: [] };
@@ -4375,7 +4682,11 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
     (document.getElementById('bill-edit-index') || {}).value = editIdx !== null ? editIdx : '';
     tempBillAttachments = [];
 
-    const activeProjects = state.projects.filter(p => p.active);
+    if (editIdx !== null) {
+        const editingExpense = state.expenses[editIdx];
+        expenseModalOrganizationId = editingExpense && editingExpense.organizationId || '';
+    }
+    const activeProjects = getActiveProjects(expenseModalOrganizationId || getActiveOrganizationId());
     populateDropdown('bill-project', activeProjects, 'id', 'name');
     setupExpenseMasterInput('category');
     setupExpenseMasterInput('vendor');
@@ -4383,7 +4694,6 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
 
     if (editIdx !== null) {
         const exp = state.expenses[editIdx];
-        expenseModalOrganizationId = exp.organizationId || '';
         expenseModalDocumentPrefix = exp.documentPrefix || '';
         const parsedNote = parseNoteData(exp.note);
         expenseModalNoteMetadata = {
@@ -4450,8 +4760,8 @@ async function handleExpenseSubmit(e) {
     const unitPrice = Math.max(0, parseFloat(document.getElementById('bill-price').value) || 0);
 
     const user = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
-    const orgId = isAdminUser(user) && expenseModalOrganizationId
-        ? expenseModalOrganizationId
+    const orgId = isAdminUser(user)
+        ? (expenseModalOrganizationId || getActiveOrganizationId())
         : user.organizationId;
     if (state.requireAttachment && editIdx === '' && tempBillAttachments.length === 0) {
         appAlert('ระบบกำหนดให้แนบหลักฐานอย่างน้อย 1 ไฟล์ก่อนบันทึกรายการใหม่', 'error');
@@ -4473,11 +4783,15 @@ async function handleExpenseSubmit(e) {
                 throw new Error('กรุณาระบุชื่อโครงการใหม่');
             }
             // Create the new project first
-            await apiCall('createProject', { projectName: newProjName, budget: 0 });
+            await apiCall('createProject', {
+                projectName: newProjName,
+                budget: 0,
+                organizationId: orgId
+            });
             // Refresh main application state to fetch the new project list
             await initAppWithAPI();
             // Find the newly created project ID from the state
-            const newProj = state.projects.find(p => p.name === newProjName);
+            const newProj = getActiveProjects().find(p => p.name === newProjName);
             if (!newProj) {
                 throw new Error('ไม่พบรหัสโครงการใหม่ที่เพิ่งสร้างขึ้น');
             }
@@ -5010,8 +5324,8 @@ function renderTempBillAttachmentsPreview(expId) {
         
         div.innerHTML = `
             ${content}
-            <button type="button" onclick="removeTempBillAttachment(${idx})" style="position:absolute; top:2px; right:2px; background:var(--danger); color:white; border:none; border-radius:50%; width:16px; height:16px; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:10px;">
-                <i data-lucide="x" style="width:10px; height:10px;"></i>
+            <button type="button" class="attachment-temp-remove" onclick="removeTempBillAttachment(${idx})" title="นำไฟล์ออก" aria-label="นำไฟล์ ${escapeHTML(item.file.name || '')} ออก">
+                <i data-lucide="x"></i>
             </button>
         `;
         if(container) container.appendChild(div);
@@ -5034,13 +5348,15 @@ function openAttachmentModal(editIdx = null) {
     // updates the selected attachment instead of silently creating a new one.
     (document.getElementById('attachment-edit-index') || {}).value = editIdx !== null ? editIdx : '';
 
-    const activeProjects = state.projects.filter(p => p.active);
+    const editingAttachment = editIdx !== null ? state.attachments[editIdx] : null;
+    const activeProjects = getActiveProjects(
+        editingAttachment && editingAttachment.organizationId || getActiveOrganizationId());
     populateDropdown('attach-project', activeProjects, 'id', 'name');
     setupExpenseMasterInput('category', '', 'attach');
     setupExpenseMasterInput('fundSource', '', 'attach');
 
     if (editIdx !== null) {
-        const a = state.attachments[editIdx];
+        const a = editingAttachment;
         (document.getElementById('attach-date') || {}).value = a.expenseDate;
         (document.getElementById('attach-posting-month') || {}).value = getExpensePostingMonth(a);
         (document.getElementById('attach-project') || {}).value = a.projectId;
@@ -5075,7 +5391,10 @@ async function handleAttachmentSubmit(e) {
     const amount = Math.max(0, parseFloat(document.getElementById('attach-amount').value) || 0);
 
     const user = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
-    const orgId = user.organizationId;
+    const editingAttachment = editIdx !== '' ? state.attachments[parseInt(editIdx, 10)] : null;
+    const orgId = editingAttachment
+        ? editingAttachment.organizationId
+        : isAdminUser(user) ? getActiveOrganizationId() : user.organizationId;
     const expenseDate = document.getElementById('attach-date').value;
     const postingMonth = document.getElementById('attach-posting-month').value;
     const projectId = document.getElementById('attach-project').value;
@@ -5094,7 +5413,6 @@ async function handleAttachmentSubmit(e) {
     try {
         const categoryId = await resolveExpenseMasterSelection('category', 'attach');
         const fundSourceId = await resolveExpenseMasterSelection('fundSource', 'attach');
-        const editingAttachment = editIdx !== '' ? state.attachments[parseInt(editIdx, 10)] : null;
         const sourceRow = attachmentModalSourceRowId ? getQuickExpenseRowElement(attachmentModalSourceRowId) : null;
         const sourceDraft = sourceRow ? getQuickExpenseRowDraft(attachmentModalSourceRowId) : null;
         const preserveSourceCalculation = sourceDraft && Math.abs(sourceDraft.amount - amount) < 0.001;
@@ -5528,8 +5846,8 @@ function renderLocalAttachmentManager() {
             <div class="att-preview">${isImage ? `<img src="${escapeHTML(preview)}" class="att-thumb" alt="${escapeHTML(name)}">` : `<div class="att-icon-file"><i data-lucide="file-text"></i><span>${escapeHTML((name.split('.').pop() || 'FILE').toUpperCase())}</span></div>`}</div>
             <div class="att-info"><div class="att-name" title="${escapeHTML(name)}">${escapeHTML(name)}</div><div class="att-date">${entry.saved ? 'ไฟล์ที่บันทึกแล้ว' : 'รอบันทึกพร้อมรายการ'}</div></div>
             <div class="att-item-actions">
-                ${openUrl ? `<button type="button" class="btn-icon" onclick="window.open('${escapeHTML(openUrl)}','_blank')" title="เปิดไฟล์"><i data-lucide="external-link"></i></button>` : ''}
-                ${entry.saved ? '' : `<button type="button" class="btn-icon btn-icon-delete" onclick="removeLocalAttachmentManagerFile(${index})" title="นำออก"><i data-lucide="trash-2"></i></button>`}
+                ${openUrl ? `<button type="button" class="btn-icon btn-icon-view" onclick="window.open('${escapeHTML(openUrl)}','_blank')" title="เปิดไฟล์" aria-label="เปิดไฟล์ ${escapeHTML(name)}"><i data-lucide="external-link"></i></button>` : ''}
+                ${entry.saved ? '' : `<button type="button" class="btn-icon btn-icon-delete" onclick="removeLocalAttachmentManagerFile(${index})" title="นำออก" aria-label="นำไฟล์ ${escapeHTML(name)} ออก"><i data-lucide="trash-2"></i></button>`}
             </div>
         </div>`;
     }).join('')}</div>`;
@@ -5551,7 +5869,7 @@ function renderFoodAttachmentManager() {
         return `<div class="att-item">
             <div class="att-preview" onclick="previewFoodAttachment(${index})">${mime.startsWith('image/') ? `<img src="${ATTACHMENT_PREVIEW_PLACEHOLDER}" class="att-thumb is-loading" data-food-att-preview-index="${index}" alt="${escapeHTML(name)}">` : `<div class="att-icon-file"><i data-lucide="file-text"></i><span>${escapeHTML((name.split('.').pop() || 'FILE').toUpperCase())}</span></div>`}</div>
             <div class="att-info"><div class="att-name" title="${escapeHTML(name)}">${escapeHTML(name)}</div><div class="att-date">${att.uploadedAt ? formatThaiDate(att.uploadedAt) : ''}</div></div>
-            <div class="att-item-actions"><button type="button" class="btn-icon" onclick="previewFoodAttachment(${index})" title="เปิดไฟล์"><i data-lucide="external-link"></i></button><button type="button" class="btn-icon btn-icon-delete" onclick="deleteFoodAttachment(${index})" title="ลบ"><i data-lucide="trash-2"></i></button></div>
+            <div class="att-item-actions"><button type="button" class="btn-icon btn-icon-view" onclick="previewFoodAttachment(${index})" title="เปิดไฟล์" aria-label="เปิดหลักฐานค่าอาหาร ${escapeHTML(name)}"><i data-lucide="external-link"></i></button><button type="button" class="btn-icon btn-icon-delete" onclick="deleteFoodAttachment(${index})" title="ลบ" aria-label="ลบหลักฐานค่าอาหาร ${escapeHTML(name)}"><i data-lucide="trash-2"></i></button></div>
         </div>`;
     }).join('')}</div>`;
     initializeLucide();
@@ -5800,10 +6118,10 @@ function renderExpenseAttachmentModal(expId) {
                 <div class="att-date">${att.uploadedAt ? formatThaiDate(att.uploadedAt) : ''}</div>
             </div>
             <div class="att-item-actions">
-                <button class="btn-icon" onclick="previewAttachmentFile('${expId}',${i})" title="เปิดใน Google Drive">
+                <button type="button" class="btn-icon btn-icon-view" onclick="previewAttachmentFile('${expId}',${i})" title="เปิดใน Google Drive" aria-label="เปิดไฟล์หลักฐาน ${escapeHTML(fileName)}">
                     <i data-lucide="external-link"></i>
                 </button>
-                <button class="btn-icon btn-icon-delete" onclick="deleteExpenseAttachment('${expId}',${i})" title="ลบ">
+                <button type="button" class="btn-icon btn-icon-delete" onclick="deleteExpenseAttachment('${expId}',${i})" title="ลบ" aria-label="ลบไฟล์หลักฐาน ${escapeHTML(fileName)}">
                     <i data-lucide="trash-2"></i>
                 </button>
             </div>
@@ -6618,14 +6936,18 @@ function populateQuickExpenseProjectOptions(selectedId = '') {
 function getOrganizationShortName(organizationId) {
     const organization = (state.organizations || []).find(item => String(item.id) === String(organizationId));
     const shortName = organization && (organization.shortName || organization.short_name);
-    return String(shortName || 'MIS').trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || 'MIS';
+    if (shortName) return normalizeInstitutionCode(shortName) || 'VC';
+    const name = String(organization && (organization.name || organization.nameTh || organization.nameEn) || '').toLowerCase();
+    if (/บริพัตร์|boribhat/.test(name)) return 'MBS';
+    if (/สำนักงาน|office/.test(name)) return 'OFFICE';
+    return 'VC';
 }
 
 function getQuickExpenseSharedBillingCode() {
     const currentUser = getCurrentUser() || {};
     const select = document.getElementById('inline-exp-billing-profile');
     if (isAdminUser(currentUser) && select) {
-        return String(select.value || QUICK_EXPENSE_BILLING_PROFILES[0].code).trim().toUpperCase();
+        return normalizeInstitutionCode(select.value || getOrganizationShortName(getActiveOrganizationId()));
     }
     return getOrganizationShortName(currentUser.organizationId);
 }
@@ -6633,16 +6955,18 @@ function getQuickExpenseSharedBillingCode() {
 function getQuickExpenseOrganizationId(billingCode) {
     const currentUser = getCurrentUser() || {};
     if (!isAdminUser(currentUser)) return String(currentUser.organizationId || '');
+    const normalizedCode = normalizeInstitutionCode(billingCode);
     const matchingOrganization = (state.organizations || []).find(item =>
-        item && item.id && item.active !== false && getOrganizationShortName(item.id) === String(billingCode || '').toUpperCase()
+        item && item.id && item.active !== false && getOrganizationShortName(item.id) === normalizedCode
     );
-    return String((matchingOrganization && matchingOrganization.id) || currentUser.organizationId || '');
+    return String((matchingOrganization && matchingOrganization.id) || getActiveOrganizationId() || currentUser.organizationId || '');
 }
 
 function getQuickExpenseBillingProfileOptions(selectedCode = '', compact = false) {
+    const normalizedSelectedCode = normalizeInstitutionCode(selectedCode);
     return QUICK_EXPENSE_BILLING_PROFILES
         .map(profile => {
-            const selected = profile.code === String(selectedCode).toUpperCase() ? ' selected' : '';
+            const selected = profile.code === normalizedSelectedCode ? ' selected' : '';
             const label = compact ? profile.code : `${profile.code} — ${profile.name}`;
             return `<option value="${escapeHTML(profile.code)}"${selected}>${escapeHTML(label)}</option>`;
         })
@@ -7293,9 +7617,9 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
             </td>
             <td>
                 <div class="quick-expense-row-actions">
-                    <button type="button" class="btn btn-icon quick-expense-open-full" onclick="openExpenseModalFromQuickExpenseRow('${rowId}')" title="เปิดรายการแบบป๊อปอัป" aria-label="เปิดรายการแบบป๊อปอัป"><i data-lucide="square-pen"></i></button>
-                    <button type="button" class="btn btn-icon quick-expense-retry-attachments" data-row-retry-attachments onclick="retryQuickExpenseRowAttachments('${rowId}')" title="ลองอัปโหลดหลักฐานอีกครั้ง" hidden disabled><i data-lucide="refresh-cw"></i></button>
-                    <button type="button" class="btn btn-icon quick-expense-remove-row" data-row-remove onclick="removeQuickExpenseRow('${rowId}')" title="ลบแถว" aria-label="ลบแถว"><i data-lucide="trash-2"></i></button>
+                <button type="button" class="btn btn-icon btn-icon-view quick-expense-open-full" onclick="openExpenseModalFromQuickExpenseRow('${rowId}')" title="เปิดรายการแบบป๊อปอัป" aria-label="เปิดรายการแบบป๊อปอัป"><i data-lucide="square-pen"></i></button>
+                <button type="button" class="btn btn-icon btn-icon-retry quick-expense-retry-attachments" data-row-retry-attachments onclick="retryQuickExpenseRowAttachments('${rowId}')" title="ลองอัปโหลดหลักฐานอีกครั้ง" aria-label="ลองอัปโหลดหลักฐานอีกครั้ง" hidden disabled><i data-lucide="refresh-cw"></i></button>
+                <button type="button" class="btn btn-icon btn-icon-delete quick-expense-remove-row" data-row-remove onclick="removeQuickExpenseRow('${rowId}')" title="ลบแถว" aria-label="ลบแถว"><i data-lucide="trash-2"></i></button>
                 </div>
                 <span class="quick-expense-row-status" data-role="row-status">รอบันทึก</span>
             </td>
@@ -9033,6 +9357,9 @@ async function submitQuickFoodEntry(event) {
             try {
                 const payload = {
                     requestId: item.draft.requestId,
+                    organizationId: isAdminUser(currentUser)
+                        ? getActiveOrganizationId()
+                        : currentUser.organizationId,
                     month,
                     year,
                     dormitory: '',
@@ -9156,7 +9483,7 @@ function renderExpenseInlineAddRow(tbody) {
                 td.innerHTML = `<input type="date" id="inline-exp-date" class="form-input" style="font-size:12px; padding:4px 8px; width:100%;" value="${getSelectedMonthDefaultDateStr()}">`;
                 break;
             case 'projectId':
-                let projOptions = state.projects.filter(p => p.active).map(p => 
+                let projOptions = getActiveProjects().map(p =>
                     `<option value="${p.id}" ${p.id === defaultProjId ? 'selected' : ''}>${p.name}</option>`
                 ).join('');
                 td.innerHTML = `<select id="inline-exp-project" class="form-select" style="font-size:12px; padding:4px 8px; width:100%;">${projOptions}</select>`;
@@ -9174,7 +9501,7 @@ function renderExpenseInlineAddRow(tbody) {
                 td.innerHTML = `
                     <div style="display:flex; flex-direction:column; gap:4px; min-width:140px;">
                         <input type="text" id="inline-exp-desc" class="form-input" style="font-size:12px; padding:4px 8px; width:100%;" placeholder="รายละเอียด...">
-                        <button type="button" class="btn btn-outline btn-sm" onclick="openMultiItemsModal('EXP')" style="padding:2px 6px; font-size:11px; display:inline-flex; align-items:center; gap:4px; border-radius:4px; align-self:start; border-color:var(--primary); color:var(--primary);">
+                        <button type="button" class="btn btn-outline btn-sm btn-compact-subaction" onclick="openMultiItemsModal('EXP')">
                             <i data-lucide="list-plus" style="width:12px; height:12px;"></i> รายการย่อย
                         </button>
                     </div>
@@ -9215,7 +9542,7 @@ function renderExpenseInlineAddRow(tbody) {
     toolsTd.className = 'text-center';
     toolsTd.dataset.label = 'เครื่องมือ';
     toolsTd.innerHTML = `
-        <button type="button" class="btn btn-primary btn-sm" onclick="saveInlineRow('EXP')" style="padding:4px 10px; border-radius:6px; font-weight:600; display:flex; align-items:center; gap:4px; margin: 0 auto;">
+        <button type="button" class="btn btn-action-save btn-sm btn-inline-save" onclick="saveInlineRow('EXP')">
             <i data-lucide="check" style="width:14px; height:14px;"></i> บันทึก
         </button>
     `;
@@ -9247,7 +9574,7 @@ function renderAttachmentInlineAddRow(tbody) {
                 td.innerHTML = `<input type="date" id="inline-att-date" class="form-input" style="font-size:12px; padding:4px 8px; width:100%;" value="${getSelectedMonthDefaultDateStr()}">`;
                 break;
             case 'projectId':
-                let projOptions = state.projects.filter(p => p.active).map(p => 
+                let projOptions = getActiveProjects().map(p =>
                     `<option value="${p.id}" ${p.id === defaultProjId ? 'selected' : ''}>${p.name}</option>`
                 ).join('');
                 td.innerHTML = `<select id="inline-att-project" class="form-select" style="font-size:12px; padding:4px 8px; width:100%;">${projOptions}</select>`;
@@ -9265,7 +9592,7 @@ function renderAttachmentInlineAddRow(tbody) {
                 td.innerHTML = `
                     <div style="display:flex; flex-direction:column; gap:4px; min-width:140px;">
                         <input type="text" id="inline-att-desc" class="form-input" style="font-size:12px; padding:4px 8px; width:100%;" placeholder="รายละเอียด...">
-                        <button type="button" class="btn btn-outline btn-sm" onclick="openMultiItemsModal('ATT')" style="padding:2px 6px; font-size:11px; display:inline-flex; align-items:center; gap:4px; border-radius:4px; align-self:start; border-color:var(--primary); color:var(--primary);">
+                        <button type="button" class="btn btn-outline btn-sm btn-compact-subaction" onclick="openMultiItemsModal('ATT')">
                             <i data-lucide="list-plus" style="width:12px; height:12px;"></i> รายการย่อย
                         </button>
                     </div>
@@ -9305,7 +9632,7 @@ function renderAttachmentInlineAddRow(tbody) {
     toolsTd.className = 'text-center';
     toolsTd.dataset.label = 'เครื่องมือ';
     toolsTd.innerHTML = `
-        <button type="button" class="btn btn-primary btn-sm" onclick="saveInlineRow('ATT')" style="padding:4px 10px; border-radius:6px; font-weight:600; display:flex; align-items:center; gap:4px; margin: 0 auto;">
+        <button type="button" class="btn btn-action-save btn-sm btn-inline-save" onclick="saveInlineRow('ATT')">
             <i data-lucide="check" style="width:14px; height:14px;"></i> บันทึก
         </button>
     `;
@@ -9376,7 +9703,10 @@ async function saveInlineRow(prefix) {
     const noteStr = formatNoteData('', customFields, multiItems);
 
     const inlineUser = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
-    if (!inlineUser.organizationId) {
+    const inlineOrganizationId = isAdminUser(inlineUser)
+        ? getActiveOrganizationId()
+        : inlineUser.organizationId;
+    if (!inlineOrganizationId) {
         appAlert('ไม่พบข้อมูลหน่วยงานของผู้ใช้ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่', 'error');
         return;
     }
@@ -9387,7 +9717,7 @@ async function saveInlineRow(prefix) {
         const vendorId = await resolveExpenseMasterSelection('vendor', inlineContext);
         const payload = {
             expenseDate: dateVal,
-            organizationId: inlineUser.organizationId,
+            organizationId: inlineOrganizationId,
             projectId: projId,
             categoryId: catId,
             fundSourceId: fundId,
@@ -9507,7 +9837,7 @@ function renderMultiItemsInModal() {
                 ฿${(item.qty * item.price).toFixed(2)}
             </td>
             <td class="text-center" style="width:80px;">
-                <button type="button" class="btn btn-icon btn-danger" onclick="removeMultiItemRow(${index})" style="padding:4px; margin: 0 auto;"><i data-lucide="trash-2" style="width:14px; height:14px;"></i></button>
+                <button type="button" class="btn btn-icon btn-icon-delete" onclick="removeMultiItemRow(${index})" title="ลบรายการย่อย" aria-label="ลบรายการย่อยลำดับ ${index + 1}" style="margin:0 auto;"><i data-lucide="trash-2"></i></button>
             </td>
         `;
         tbody.appendChild(tr);
@@ -9833,17 +10163,319 @@ function renderSignaturePreviews() {
 // legacy canvas-only helpers so existing saved data remains compatible.
 const SIGNATURE_ROLES = ['prepared', 'checked', 'approved'];
 const SIGNATURE_ROLE_LABELS = { prepared: 'ผู้จัดทำ', checked: 'ผู้ตรวจสอบ', approved: 'ผู้อนุมัติ' };
+const MAX_EXPORT_SIGNERS = 9;
 let signatureLibraryLoadPromise = null;
+let exportSignerSequence = 0;
+
+function isExportSignatureRole(role) {
+    return SIGNATURE_ROLES.includes(role) || /^signer-[a-z0-9-]+$/i.test(String(role || ''));
+}
+
+function getSignatureStorageRole(role) {
+    return SIGNATURE_ROLES.includes(role) ? role : 'prepared';
+}
+
+function getExportSignerCards() {
+    return Array.from(document.querySelectorAll('[data-export-signer][data-signature-role]'));
+}
+
+function getExportSignerRoleIds() {
+    return Array.from(new Set(SIGNATURE_ROLES.concat(
+        getExportSignerCards().map(card => card.dataset.signatureRole).filter(Boolean)
+    )));
+}
+
+function updateExportSignerCardNumbers() {
+    getExportSignerCards().forEach((card, index) => {
+        const heading = card.querySelector('.export-signer-card-heading strong');
+        if (heading) heading.textContent = `ผู้ลงนาม ${index + 1}`;
+    });
+    const addButton = document.getElementById('pdf-add-signer');
+    if (addButton) addButton.disabled = getExportSignerCards().length >= MAX_EXPORT_SIGNERS;
+}
+
+function createExportSignerRoleId() {
+    exportSignerSequence += 1;
+    return `signer-${Date.now().toString(36)}-${exportSignerSequence.toString(36)}`;
+}
+
+function addExportSigner(initial = {}, options = {}) {
+    const host = document.getElementById('pdf-additional-signers');
+    if (!host) return '';
+    if (getExportSignerCards().length >= MAX_EXPORT_SIGNERS) {
+        appAlert(`เพิ่มผู้ลงนามได้สูงสุด ${MAX_EXPORT_SIGNERS} คนต่อรายงาน`, 'warning');
+        return '';
+    }
+    let role = String(initial.role || '').trim();
+    if (!/^signer-[a-z0-9-]+$/i.test(role) || document.querySelector(`[data-signature-role="${role}"]`)) {
+        role = createExportSignerRoleId();
+    }
+    ensureSignatureState();
+    state.signatureSelection[role] = String(initial.signatureId || '');
+    if (state.signatures[role] === undefined) state.signatures[role] = null;
+
+    const card = document.createElement('div');
+    card.className = 'export-signer-card';
+    card.dataset.exportSigner = '';
+    card.dataset.signatureRole = role;
+    card.innerHTML = `
+        <div class="export-signer-card-heading">
+            <strong>ผู้ลงนาม</strong>
+            <button type="button" class="btn btn-outline btn-sm" onclick="removeExportSigner('${role}')" aria-label="ลบผู้ลงนามนี้">ลบผู้ลงนาม</button>
+        </div>
+        <div class="export-signer-identity-grid">
+            <label class="form-label">ชื่อ-สกุล
+                <input type="text" class="form-input" data-signer-name placeholder="ชื่อ-สกุล" value="${escapeHTML(initial.name || '')}" oninput="renderExportPreview()">
+            </label>
+            <label class="form-label">ตำแหน่ง
+                <input type="text" class="form-input" data-signer-position placeholder="เช่น เจ้าหน้าที่การเงิน" value="${escapeHTML(initial.position || '')}" oninput="renderExportPreview()">
+            </label>
+            <label class="form-label">หน้าที่ลงนาม
+                <input type="text" class="form-input" data-signer-label placeholder="เช่น ผู้จัดทำ" value="${escapeHTML(initial.label || 'ผู้ลงนาม')}" oninput="renderExportPreview()">
+            </label>
+        </div>
+        <div class="signature-source-row">
+            <select id="${getSignatureControlRoleId(role, 'select')}" class="form-select" style="font-size:12px;padding:6px 8px;" onchange="selectSignatureForRole('${role}', this.value)"><option value="">เว้นพื้นที่สำหรับเซ็นด้วยปากกา</option></select>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:5px;">
+                <button type="button" class="btn btn-outline btn-sm" onclick="openSignatureModal('${role}')">เซ็นผ่านจอ</button>
+                <label class="btn btn-outline btn-sm" style="cursor:pointer;">อัปโหลด<input type="file" accept="image/png,image/jpeg,image/webp" hidden onchange="handleSignatureUpload('${role}', event)"></label>
+                <button type="button" class="btn btn-outline btn-sm" onclick="removeSelectedSignature('${role}')">ล้าง</button>
+            </div>
+            <span id="${getSignatureControlRoleId(role, 'status')}" style="font-size:11px;color:var(--text-muted);">ยังไม่เลือกลายเซ็น — จะเว้นช่องให้เซ็นด้วยปากกา</span>
+        </div>`;
+    host.appendChild(card);
+    updateExportSignerCardNumbers();
+    renderSignatureControls();
+    initializeLucide();
+    if (!options.silent) renderExportPreview();
+    return role;
+}
+window.addExportSigner = addExportSigner;
+
+function removeExportSigner(role) {
+    if (SIGNATURE_ROLES.includes(role)) return;
+    const card = document.querySelector(`[data-export-signer][data-signature-role="${role}"]`);
+    if (card) card.remove();
+    if (state.signatureSelection) delete state.signatureSelection[role];
+    if (state.signatures) delete state.signatures[role];
+    updateExportSignerCardNumbers();
+    saveState();
+    renderExportPreview();
+}
+window.removeExportSigner = removeExportSigner;
+
+function getExportSignerRows() {
+    ensureSignatureState();
+    return getExportSignerCards().map(card => {
+        const role = card.dataset.signatureRole;
+        return {
+            role,
+            name: (card.querySelector('[data-signer-name]') || {}).value || '',
+            position: (card.querySelector('[data-signer-position]') || {}).value || '',
+            label: (card.querySelector('[data-signer-label]') || {}).value || SIGNATURE_ROLE_LABELS[role] || 'ผู้ลงนาม',
+            signatureId: state.signatureSelection[role] || '',
+            image: getActiveSignatureDataUrl(role),
+        };
+    });
+}
+
+function applyExportSignerRows(rows) {
+    if (!Array.isArray(rows) || !rows.length) return;
+    getExportSignerCards().filter(card => !SIGNATURE_ROLES.includes(card.dataset.signatureRole)).forEach(card => {
+        const previousRole = card.dataset.signatureRole;
+        if (state.signatureSelection) delete state.signatureSelection[previousRole];
+        if (state.signatures) delete state.signatures[previousRole];
+    });
+    const additionalHost = document.getElementById('pdf-additional-signers');
+    if (additionalHost) additionalHost.innerHTML = '';
+    const byRole = Object.fromEntries(rows.filter(row => SIGNATURE_ROLES.includes(row.role)).map(row => [row.role, row]));
+    const hasFixedRoleIds = Object.keys(byRole).length > 0;
+    SIGNATURE_ROLES.forEach(role => {
+        const row = byRole[role] || (!hasFixedRoleIds ? rows[SIGNATURE_ROLES.indexOf(role)] : null) || {};
+        const card = document.querySelector(`[data-export-signer][data-signature-role="${role}"]`);
+        if (!card) return;
+        const name = card.querySelector('[data-signer-name]');
+        const position = card.querySelector('[data-signer-position]');
+        const label = card.querySelector('[data-signer-label]');
+        if (name) name.value = row.name || '';
+        if (position) position.value = row.position || '';
+        if (label) label.value = row.label || SIGNATURE_ROLE_LABELS[role];
+        state.signatureSelection[role] = row.signatureId || '';
+    });
+    rows.filter(row => !SIGNATURE_ROLES.includes(row.role)).slice(0, MAX_EXPORT_SIGNERS - SIGNATURE_ROLES.length).forEach(row => {
+        addExportSigner(row, { silent: true });
+    });
+    updateExportSignerCardNumbers();
+    renderSignatureControls();
+}
+
+function getExportSignaturePlacements() {
+    const every = !!(document.getElementById('pdf-signature-every-page') || {}).checked;
+    return {
+        first: !every && !!(document.getElementById('pdf-signature-first-page') || {}).checked,
+        last: !every && !!(document.getElementById('pdf-signature-last-page') || {}).checked,
+        every,
+    };
+}
+
+function getExportSignatureProjectTargets() {
+    const reportMonth = (document.getElementById('export-report-month') || {}).value || '';
+    const contextReady = exportReportData.month === reportMonth && !exportReportData.loading;
+    const source = contextReady ? exportReportData.expenses : (state.expenses || []);
+    const orgFilterSelect = document.getElementById('export-org-filter');
+    const orgFilter = orgFilterSelect && getCurrentUserRole() === 'admin' ? orgFilterSelect.value : '';
+    const projectsById = new Map();
+    source.forEach(expense => {
+        if (!expense || expense.status === 'cancelled') return;
+        if (reportMonth && getExpensePostingMonth(expense) !== reportMonth) return;
+        if (orgFilter && expense.organizationId !== orgFilter) return;
+        const projectId = String(expense.projectId || '').trim();
+        if (!projectId || projectsById.has(projectId)) return;
+        projectsById.set(projectId, {
+            key: `project:${projectId}`,
+            type: 'project',
+            sectionKey: 'bills',
+            projectId,
+            label: getProjectName(projectId) || projectId,
+        });
+    });
+    return Array.from(projectsById.values()).sort((a, b) => a.label.localeCompare(b.label, 'th', { numeric: true }));
+}
+
+function getExportSignatureTargetDefinitions() {
+    const sectionTargets = getExportSectionDefinitions().map(section => ({
+        key: `section:${section.key}`,
+        type: 'section',
+        sectionKey: section.key,
+        projectId: '',
+        label: section.label,
+    }));
+    return sectionTargets.concat(getExportSignatureProjectTargets());
+}
+
+function renderExportSignatureSectionTargets(force = false) {
+    const host = document.getElementById('pdf-signature-section-options');
+    if (!host || (host.dataset.rendered === 'true' && !force)) return;
+    const selectedBefore = new Set(Array.from(host.querySelectorAll('.export-signature-target:checked')).map(input => input.dataset.signatureTargetKey));
+    const definitions = getExportSignatureTargetDefinitions();
+    const renderGroup = (title, items) => {
+        if (!items.length) return '';
+        return `<div class="export-signature-target-group">
+            <div class="export-signature-target-group-title">${escapeHTML(title)}</div>
+            <div class="export-signature-target-options">${items.map((target, index) => `
+                <label>
+                    <input type="checkbox" class="export-signature-target" id="pdf-signature-target-${escapeHTML(target.type)}-${index}" data-signature-target-key="${escapeHTML(target.key)}"${selectedBefore.has(target.key) ? ' checked' : ''} onchange="handleExportSignatureTargetChange()">
+                    <span>${escapeHTML(target.label)}</span>
+                </label>`).join('')}
+            </div>
+        </div>`;
+    };
+    host.innerHTML = renderGroup('หัวข้อรายการหลัก', definitions.filter(target => target.type === 'section'))
+        + renderGroup('โครงการเพิ่มเติม / โครงการที่มีรายการในเดือนรายงาน', definitions.filter(target => target.type === 'project'));
+    host.dataset.rendered = 'true';
+    syncExportSignatureTargetAvailability();
+}
+
+function getExportSignatureTargets() {
+    if (getExportSignaturePlacements().every) return [];
+    const definitions = new Map(getExportSignatureTargetDefinitions().map(target => [target.key, target]));
+    return Array.from(document.querySelectorAll('.export-signature-target:checked'))
+        .map(input => definitions.get(input.dataset.signatureTargetKey))
+        .filter(Boolean);
+}
+
+function applyExportSignatureTargets(targets) {
+    const targetKeys = new Set((Array.isArray(targets) ? targets : []).map(target => typeof target === 'string' ? target : target && target.key).filter(Boolean));
+    renderExportSignatureSectionTargets(true);
+    document.querySelectorAll('.export-signature-target').forEach(input => {
+        input.checked = targetKeys.has(input.dataset.signatureTargetKey);
+    });
+    syncExportSignatureTargetAvailability();
+}
+
+function syncExportSignatureTargetAvailability() {
+    const includeSignature = !!(document.getElementById('pdf-include-signature') || {}).checked;
+    const everyPage = !!(document.getElementById('pdf-signature-every-page') || {}).checked;
+    const definitionMap = new Map(getExportSignatureTargetDefinitions().map(target => [target.key, target]));
+    document.querySelectorAll('.export-signature-target').forEach(input => {
+        const target = definitionMap.get(input.dataset.signatureTargetKey);
+        const section = target && getExportSectionDefinition(target.sectionKey);
+        const sectionCheckbox = section && document.getElementById(section.checkboxId);
+        const sectionEnabled = !sectionCheckbox || sectionCheckbox.checked;
+        input.disabled = !includeSignature || everyPage || !sectionEnabled;
+        if (everyPage || !sectionEnabled) input.checked = false;
+    });
+    const fieldset = document.getElementById('pdf-signature-section-fields');
+    if (fieldset) fieldset.classList.toggle('is-disabled', !includeSignature || everyPage);
+}
+
+function handleExportSignatureTargetChange() {
+    updateSignaturePlacementUI();
+    renderExportPreview();
+}
+window.handleExportSignatureTargetChange = handleExportSignatureTargetChange;
+
+function handleExportReportSectionToggle() {
+    syncExportSignatureTargetAvailability();
+    renderExportPreview();
+}
+window.handleExportReportSectionToggle = handleExportReportSectionToggle;
+
+function updateSignaturePlacementUI() {
+    const enabled = !!(document.getElementById('pdf-include-signature') || {}).checked;
+    const first = document.getElementById('pdf-signature-first-page');
+    const last = document.getElementById('pdf-signature-last-page');
+    const every = document.getElementById('pdf-signature-every-page');
+    if (!first || !last || !every) return;
+    if (every.checked) {
+        first.checked = false;
+        last.checked = false;
+    } else if (!first.checked && !last.checked && !document.querySelector('.export-signature-target:checked')) {
+        last.checked = true;
+    }
+    first.disabled = !enabled || every.checked;
+    last.disabled = !enabled || every.checked;
+    every.disabled = !enabled;
+    const fields = document.getElementById('pdf-signature-fields');
+    const placement = document.getElementById('pdf-signature-placement-fields');
+    if (fields) fields.classList.toggle('is-disabled', !enabled);
+    if (placement) placement.classList.toggle('is-disabled', !enabled);
+    syncExportSignatureTargetAvailability();
+    const addButton = document.getElementById('pdf-add-signer');
+    if (addButton) addButton.disabled = !enabled || getExportSignerCards().length >= MAX_EXPORT_SIGNERS;
+}
+
+function handleSignaturePlacementChange(changed) {
+    const every = document.getElementById('pdf-signature-every-page');
+    if (changed === 'every' && every && every.checked) {
+        const first = document.getElementById('pdf-signature-first-page');
+        const last = document.getElementById('pdf-signature-last-page');
+        if (first) first.checked = false;
+        if (last) last.checked = false;
+    }
+    updateSignaturePlacementUI();
+    renderExportPreview();
+}
+window.handleSignaturePlacementChange = handleSignaturePlacementChange;
+
+function handleSignatureEnabledChange() {
+    updateSignaturePlacementUI();
+    renderExportPreview();
+}
+window.handleSignatureEnabledChange = handleSignatureEnabledChange;
 
 function ensureSignatureState() {
     if (!state.signatures) state.signatures = { prepared: null, checked: null, approved: null };
     if (!Array.isArray(state.signatureLibrary)) state.signatureLibrary = [];
     if (!state.signatureSelection) state.signatureSelection = { prepared: '', checked: '', approved: '' };
-    SIGNATURE_ROLES.forEach(role => { if (state.signatureSelection[role] === undefined) state.signatureSelection[role] = ''; });
+    getExportSignerRoleIds().forEach(role => {
+        if (state.signatureSelection[role] === undefined) state.signatureSelection[role] = '';
+        if (state.signatures[role] === undefined) state.signatures[role] = null;
+    });
 }
 
 function getSignatureControlRoleId(role, suffix) {
-    const prefix = role === 'prepared' ? 'preparer' : role === 'checked' ? 'reviewer' : 'approver';
+    const prefix = role === 'prepared' ? 'preparer' : role === 'checked' ? 'reviewer' : role === 'approved' ? 'approver' : role;
     return `pdf-${prefix}-signature-${suffix}`;
 }
 
@@ -9883,7 +10515,7 @@ async function loadSignatureLibrary(force = false) {
 async function ensureActiveSignaturesLoaded() {
     ensureSignatureState();
     await loadSignatureLibrary();
-    for (const role of SIGNATURE_ROLES) {
+    for (const role of getExportSignerRoleIds()) {
         const id = state.signatureSelection[role];
         const item = id ? state.signatureLibrary.find(entry => entry.id === id) : null;
         if (!item || item.dataUrl || !String(id).startsWith('SIG')) continue;
@@ -9898,7 +10530,7 @@ async function ensureActiveSignaturesLoaded() {
 
 async function selectSignatureForRole(role, id) {
     ensureSignatureState();
-    if (!SIGNATURE_ROLES.includes(role)) return;
+    if (!isExportSignatureRole(role)) return;
     state.signatureSelection[role] = id || '';
     if (!id) state.signatures[role] = null;
     else {
@@ -9922,19 +10554,20 @@ async function selectSignatureForRole(role, id) {
 window.selectSignatureForRole = selectSignatureForRole;
 
 async function uploadSignatureFile(role, file, source = 'uploaded') {
-    if (!file || !SIGNATURE_ROLES.includes(role)) return;
+    if (!file || !isExportSignatureRole(role)) return;
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return appAlert('กรุณาเลือกไฟล์ PNG, JPG หรือ WEBP', 'warning');
     if (file.size > 2 * 1024 * 1024) return appAlert('ไฟล์ลายเซ็นต้องมีขนาดไม่เกิน 2 MB', 'warning');
     const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
     ensureSignatureState();
-    const localItem = { id: `local-${createClientRequestId('signature')}`, roleInDoc: role, name: file.name, fileName: file.name, mimeType: file.type, source, dataUrl, createdAt: new Date().toISOString() };
+    const storageRole = getSignatureStorageRole(role);
+    const localItem = { id: `local-${createClientRequestId('signature')}`, roleInDoc: storageRole, name: file.name, fileName: file.name, mimeType: file.type, source, dataUrl, createdAt: new Date().toISOString() };
     state.signatureLibrary.push(localItem);
     state.signatureSelection[role] = localItem.id;
     state.signatures[role] = dataUrl;
     saveState(); renderSignatureControls(); renderExportPreview();
     try {
         const parts = signatureDataParts(dataUrl);
-        const result = await apiCall('uploadSignature', { roleInDoc: role, fileName: file.name, mimeType: file.type, base64Data: parts && parts.base64Data, source });
+        const result = await apiCall('uploadSignature', { roleInDoc: storageRole, fileName: file.name, mimeType: file.type, base64Data: parts && parts.base64Data, source });
         if (result && result.id) { Object.assign(localItem, result, { name: result.fileName || file.name, dataUrl }); state.signatureSelection[role] = result.id; saveState(); renderSignatureControls(); }
         appAlert('บันทึกลายเซ็นไว้ในระบบแล้ว', 'success');
     } catch (error) { appAlert('บันทึกไว้ในเครื่องแล้ว แต่ส่งขึ้นฐานข้อมูลไม่สำเร็จ', 'warning'); }
@@ -9961,13 +10594,13 @@ window.removeSelectedSignature = removeSelectedSignature;
 
 function renderSignatureControls() {
     ensureSignatureState();
-    SIGNATURE_ROLES.forEach(role => {
+    getExportSignerRoleIds().forEach(role => {
         const select = document.getElementById(getSignatureControlRoleId(role, 'select'));
         const status = document.getElementById(getSignatureControlRoleId(role, 'status'));
         const preview = document.getElementById(`pdf-${role}-signature-preview`);
         if (select) {
             const current = state.signatureSelection[role] || '';
-            select.innerHTML = '<option value="">เว้นพื้นที่สำหรับเซ็นด้วยปากกา</option>' + state.signatureLibrary.filter(item => !item.roleInDoc || item.roleInDoc === role).map(item => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.name || item.fileName || 'ลายเซ็นที่บันทึกไว้')}</option>`).join('');
+            select.innerHTML = '<option value="">เว้นพื้นที่สำหรับเซ็นด้วยปากกา</option>' + state.signatureLibrary.filter(item => !item.roleInDoc || !SIGNATURE_ROLES.includes(role) || item.roleInDoc === role).map(item => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.name || item.fileName || 'ลายเซ็นที่บันทึกไว้')}</option>`).join('');
             select.value = current;
         }
         const dataUrl = getActiveSignatureDataUrl(role);
@@ -9980,10 +10613,11 @@ function renderSignatureControls() {
 
 function openSignatureModal(role) {
     ensureSignatureState();
-    if (!SIGNATURE_ROLES.includes(role)) return;
+    if (!isExportSignatureRole(role)) return;
     (document.getElementById('sig-role-target') || {}).value = role;
     const titles = { prepared: 'ลายเซ็น: ผู้จัดทำ / Prepared By', checked: 'ลายเซ็น: ผู้ตรวจสอบ / Checked By', approved: 'ลายเซ็น: ผู้อนุมัติ / Approved By' };
-    (document.getElementById('modal-sig-title') || {}).textContent = titles[role] || 'เขียนลายเซ็นดิจิทัล';
+    const customLabel = ((document.querySelector(`[data-signature-role="${role}"] [data-signer-label]`) || {}).value || 'ผู้ลงนาม').trim();
+    (document.getElementById('modal-sig-title') || {}).textContent = titles[role] || `ลายเซ็น: ${customLabel}`;
     const modal = document.getElementById('modal-signature'); if (modal) modal.classList.add('active');
     initSignatureCanvas(); clearSignatureCanvas();
 }
@@ -9992,14 +10626,16 @@ async function saveSignatureCanvas() {
     const canvas = document.getElementById('sig-canvas'); if (!canvas) return;
     const blank = document.createElement('canvas'); blank.width = canvas.width; blank.height = canvas.height;
     if (canvas.toDataURL() === blank.toDataURL()) return appAlert('กรุณาวาดลายเซ็นก่อนบันทึก', 'warning');
-    const role = (document.getElementById('sig-role-target') || {}).value; if (!SIGNATURE_ROLES.includes(role)) return;
+    const role = (document.getElementById('sig-role-target') || {}).value; if (!isExportSignatureRole(role)) return;
     const dataUrl = canvas.toDataURL('image/png'); ensureSignatureState();
-    const localItem = { id: `local-${createClientRequestId('signature')}`, roleInDoc: role, name: `ลายเซ็น${SIGNATURE_ROLE_LABELS[role] || ''} ${formatSystemDate(new Date())}`, fileName: `signature-${role}.png`, mimeType: 'image/png', source: 'drawn', dataUrl, createdAt: new Date().toISOString() };
+    const storageRole = getSignatureStorageRole(role);
+    const signerLabel = ((document.querySelector(`[data-signature-role="${role}"] [data-signer-label]`) || {}).value || SIGNATURE_ROLE_LABELS[role] || 'ผู้ลงนาม').trim();
+    const localItem = { id: `local-${createClientRequestId('signature')}`, roleInDoc: storageRole, name: `ลายเซ็น${signerLabel} ${formatSystemDate(new Date())}`, fileName: `signature-${role}.png`, mimeType: 'image/png', source: 'drawn', dataUrl, createdAt: new Date().toISOString() };
     state.signatureLibrary.push(localItem); state.signatureSelection[role] = localItem.id; state.signatures[role] = dataUrl;
     saveState(); renderSignatureControls(); closeSignatureModal(); renderExportPreview();
     try {
         const parts = signatureDataParts(dataUrl);
-        const result = await apiCall('uploadSignature', { roleInDoc: role, fileName: localItem.fileName, mimeType: 'image/png', base64Data: parts && parts.base64Data, source: 'drawn' });
+        const result = await apiCall('uploadSignature', { roleInDoc: storageRole, fileName: localItem.fileName, mimeType: 'image/png', base64Data: parts && parts.base64Data, source: 'drawn' });
         if (result && result.id) { Object.assign(localItem, result, { dataUrl }); state.signatureSelection[role] = result.id; saveState(); renderSignatureControls(); }
         appAlert('บันทึกลายเซ็นเรียบร้อยแล้ว', 'success');
     } catch (error) { appAlert('บันทึกลายเซ็นไว้ในเครื่องแล้ว แต่ซิงก์ฐานข้อมูลไม่สำเร็จ', 'warning'); }
@@ -10134,18 +10770,18 @@ function parseClaimMonth(claimMonth) {
 function claimToolsButtons(claim, role) {
     const canManage = role === 'admin' || role === 'manager';
     const canStaff = canManage || role === 'staff';
-    let html = `<button class="btn btn-icon btn-sm" title="พิมพ์ใบเบิก" onclick="exportClaimPDF('${claim.id}')"><i data-lucide="printer" style="width:14px;height:14px;"></i></button> `;
+    let html = `<button class="btn btn-icon btn-sm btn-icon-print" title="พิมพ์ใบเบิก" aria-label="พิมพ์ใบเบิก ${claim.id}" onclick="exportClaimPDF('${claim.id}')"><i data-lucide="printer"></i></button> `;
 
     if (claim.status === 'draft') {
-        if (canStaff) html += `<button class="btn btn-outline btn-sm" onclick="openClaimActionModal('${claim.id}','submit')">ส่งอนุมัติ</button> `;
-        if (canStaff) html += `<button class="btn btn-icon btn-sm text-danger" title="ยกเลิกชุดนี้" onclick="deleteClaimPackage('${claim.id}')"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>`;
+        if (canStaff) html += `<button class="btn btn-action-create btn-sm" onclick="openClaimActionModal('${claim.id}','submit')">ส่งอนุมัติ</button> `;
+        if (canStaff) html += `<button class="btn btn-icon btn-sm btn-icon-delete" title="ยกเลิกชุดนี้" aria-label="ยกเลิกชุดส่งเบิก ${claim.id}" onclick="deleteClaimPackage('${claim.id}')"><i data-lucide="trash-2"></i></button>`;
     } else if (claim.status === 'submitted') {
         if (canManage) {
-            html += `<button class="btn btn-sm" style="background:var(--success); border-color:var(--success); color:#fff;" onclick="openClaimActionModal('${claim.id}','approve')">อนุมัติ</button> `;
-            html += `<button class="btn btn-outline btn-sm" style="color:var(--danger); border-color:var(--danger);" onclick="openClaimActionModal('${claim.id}','reject')">ปฏิเสธ</button>`;
+            html += `<button class="btn btn-action-create btn-sm" onclick="openClaimActionModal('${claim.id}','approve')">อนุมัติ</button> `;
+            html += `<button class="btn btn-action-delete-outline btn-sm" onclick="openClaimActionModal('${claim.id}','reject')">ปฏิเสธ</button>`;
         }
     } else if (claim.status === 'approved') {
-        if (canManage) html += `<button class="btn btn-primary btn-sm" onclick="openRecordPaymentModal('${claim.id}')">บันทึกรับเงิน</button>`;
+        if (canManage) html += `<button class="btn btn-action-save btn-sm" onclick="openRecordPaymentModal('${claim.id}')">บันทึกรับเงิน</button>`;
     }
     return html;
 }
@@ -10778,13 +11414,252 @@ let currentExportState = {
     context: 'dashboard'
 };
 
+let currentExportArchiveState = {
+    loading: false,
+    current: null,
+    history: [],
+};
+let exportArchiveStatusGeneration = 0;
+
+function getExportArchiveIdentity() {
+    const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
+    const orgFilter = document.getElementById('export-org-filter');
+    return {
+        docNumber: String((document.getElementById('export-doc-number') || {}).value || '').trim(),
+        reportType: currentExportState.context || 'report',
+        title: String((document.getElementById('pdf-report-title') || {}).value || '').trim(),
+        month: String((document.getElementById('export-report-month') || {}).value || '').trim(),
+        orgId: (orgFilter && getCurrentUserRole() === 'admin' && orgFilter.value)
+            ? orgFilter.value
+            : (currentUser.organizationId || ''),
+    };
+}
+
+function getExportArchiveSummaryPayload(model = null) {
+    const identity = getExportArchiveIdentity();
+    const sections = model && Array.isArray(model.sections)
+        ? model.sections
+        : getExportSectionDefinitions()
+            .filter(section => !!(document.getElementById(section.checkboxId) || {}).checked)
+            .map(section => ({ rows: getExportSectionRows(section.key), attachmentCount: 0 }));
+    return {
+        ...identity,
+        itemCount: sections.reduce((sum, section) => sum + (section.rows || []).length, 0),
+        attachmentCount: sections.reduce((sum, section) => sum + (Number(section.attachmentCount) || 0), 0),
+        totalAmount: sections.reduce((sum, section) => sum + (section.rows || []).reduce((rowSum, row) =>
+            rowSum + (parseFloat(row.amount ?? row.foodAmount ?? row.totalAmount) || 0), 0), 0),
+    };
+}
+
+function formatExportArchiveDate(value) {
+    if (!value) return '';
+    try {
+        return new Date(value).toLocaleString('th-TH', {
+            timeZone: 'Asia/Bangkok',
+            day: '2-digit', month: 'short', year: 'numeric',
+            hour: '2-digit', minute: '2-digit',
+        });
+    } catch (_) {
+        return String(value);
+    }
+}
+
+function updateExportArchiveControls() {
+    const current = currentExportArchiveState.current;
+    const saved = !!(current && current.status === 'saved' && current.fileUrl);
+    const primary = document.getElementById('btn-export-pdf-primary');
+    const primaryLabel = document.getElementById('btn-export-pdf-primary-label');
+    const primaryIcon = document.getElementById('btn-export-pdf-primary-icon');
+    const share = document.getElementById('btn-export-share');
+    const history = document.getElementById('btn-export-history');
+    const createNew = document.getElementById('btn-export-new-version');
+    const status = document.getElementById('export-archive-status');
+    if (primaryLabel) primaryLabel.textContent = saved ? 'บันทึกไฟล์เดิม' : 'PDF A4 / พิมพ์';
+    if (primaryIcon) primaryIcon.setAttribute('data-lucide', saved ? 'save' : 'printer');
+    if (primary) primary.title = saved
+        ? 'ใช้ไฟล์ PDF และ QR เดิมโดยไม่สร้างรายงานซ้ำ'
+        : 'สร้าง PDF พร้อม QR และเก็บเป็นฉบับแรก';
+    if (share) share.hidden = !saved;
+    if (history) {
+        history.hidden = currentExportArchiveState.history.length === 0;
+        history.textContent = `ฉบับที่บันทึก ${currentExportArchiveState.history.length}`;
+    }
+    if (createNew) createNew.hidden = !current;
+    if (status) {
+        if (currentExportArchiveState.loading) status.textContent = 'กำลังตรวจสอบฉบับที่บันทึก...';
+        else if (saved) status.textContent = `ฉบับ v${current.version} · QR ${current.verifyCode}`;
+        else if (current) status.textContent = `ฉบับ v${current.version} รอบันทึกไฟล์`;
+        else status.textContent = 'ยังไม่มีฉบับที่บันทึก';
+    }
+    if (typeof initializeLucide === 'function') initializeLucide();
+}
+
+async function refreshExportArchiveStatus() {
+    const identity = getExportArchiveIdentity();
+    const generation = ++exportArchiveStatusGeneration;
+    if (!identity.docNumber) return;
+    currentExportArchiveState.loading = true;
+    updateExportArchiveControls();
+    try {
+        const result = await apiCall('getReportArchiveStatus', identity);
+        if (generation !== exportArchiveStatusGeneration) return;
+        currentExportArchiveState.current = result.current || null;
+        currentExportArchiveState.history = Array.isArray(result.history) ? result.history : [];
+    } catch (error) {
+        if (generation === exportArchiveStatusGeneration) {
+            currentExportArchiveState.current = null;
+            currentExportArchiveState.history = [];
+            console.warn('[report archive] โหลดสถานะไม่สำเร็จ:', error.message);
+        }
+    } finally {
+        if (generation === exportArchiveStatusGeneration) {
+            currentExportArchiveState.loading = false;
+            updateExportArchiveControls();
+        }
+    }
+}
+
+function openStoredReportArchive(archive = currentExportArchiveState.current) {
+    const url = archive && (archive.downloadUrl || archive.fileUrl);
+    if (!url) return false;
+    window.open(url, '_blank', 'noopener,noreferrer');
+    return true;
+}
+
+window.shareCurrentExportArchive = async function() {
+    const archive = currentExportArchiveState.current;
+    if (!archive || !archive.fileUrl) return appAlert('ยังไม่มีไฟล์รายงานสำหรับแชร์', 'warning');
+    const shareData = {
+        title: archive.title || archive.docNumber || 'รายงาน RDF',
+        text: `${archive.docNumber || 'รายงาน'} ฉบับ v${archive.version || 1}`,
+        url: archive.fileUrl,
+    };
+    try {
+        if (navigator.share) await navigator.share(shareData);
+        else {
+            await navigator.clipboard.writeText(archive.fileUrl);
+            appAlert('คัดลอกลิงก์ไฟล์แล้ว ผู้รับต้องมีสิทธิ์เข้าถึงไฟล์หรือโฟลเดอร์ Drive', 'success');
+        }
+    } catch (error) {
+        if (error && error.name !== 'AbortError') appAlert('แชร์ลิงก์ไม่สำเร็จ: ' + error.message, 'error');
+    }
+};
+
+window.showExportArchiveHistory = async function() {
+    const history = currentExportArchiveState.history || [];
+    if (!history.length) return appAlert('ยังไม่มีฉบับรายงานที่บันทึก', 'info');
+    const rows = history.map(item => `
+        <tr>
+            <td>v${Number(item.version) || 1}</td>
+            <td><strong>${escapeHTML(item.verifyCode || '-')}</strong><br><small>${escapeHTML(item.savedAt ? formatExportArchiveDate(item.savedAt) : 'รอบันทึกไฟล์')}</small></td>
+            <td>${escapeHTML(item.fileName || '-')}</td>
+            <td>${item.fileUrl ? `<a href="${escapeHTML(item.fileUrl)}" target="_blank" rel="noopener">เปิดไฟล์</a>` : 'ยังไม่มีไฟล์'}</td>
+        </tr>`).join('');
+    await Swal.fire({
+        title: 'ฉบับรายงานที่บันทึก',
+        html: `<div class="export-archive-history-wrap"><table class="export-archive-history"><thead><tr><th>ฉบับ</th><th>QR / เวลา</th><th>ไฟล์</th><th>ลิงก์</th></tr></thead><tbody>${rows}</tbody></table><p class="export-archive-access-note">ไฟล์เดิมและ QR เดิมจะไม่ถูกลบ ผู้เปิดลิงก์ต้องมีสิทธิ์ใน Google Drive</p></div>`,
+        width: 760,
+        confirmButtonText: 'ปิด',
+    });
+};
+
+window.confirmCreateNewExportArchive = async function() {
+    const current = currentExportArchiveState.current;
+    if (!current) return executeDynamicExport('pdf');
+    const nextSummary = getExportArchiveSummaryPayload();
+    const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
+    const result = await Swal.fire({
+        title: 'สร้างรายงานฉบับใหม่',
+        html: `<div class="export-new-version-summary">
+            <p><strong>เลขที่เอกสาร:</strong> ${escapeHTML(current.docNumber || '-')}</p>
+            <p><strong>ฉบับปัจจุบัน:</strong> v${Number(current.version) || 1}</p>
+            <p><strong>QR เดิม:</strong> ${escapeHTML(current.verifyCode || '-')}</p>
+            <p><strong>หัวข้อรายงาน:</strong> ${escapeHTML(nextSummary.title || '-')}</p>
+            <p><strong>เดือนรายงาน:</strong> ${escapeHTML(nextSummary.month || '-')}</p>
+            <p><strong>ข้อมูลฉบับใหม่:</strong> ${Number(nextSummary.itemCount) || 0} รายการ · ${formatCurrency(Number(nextSummary.totalAmount) || 0)}</p>
+            <p><strong>ผู้ยืนยัน:</strong> ${escapeHTML(currentUser.name || currentUser.username || currentUser.id || '-')}</p>
+            <p><strong>การดำเนินการ:</strong> สร้าง PDF และ QR ใหม่ โดยเก็บฉบับเดิมไว้</p>
+        </div>`,
+        icon: 'warning',
+        input: 'password',
+        inputLabel: 'ยืนยันรหัสผ่านของผู้ใช้ที่เข้าสู่ระบบอยู่',
+        inputPlaceholder: 'กรอกรหัสผ่าน',
+        inputAttributes: { autocomplete: 'current-password' },
+        showCancelButton: true,
+        confirmButtonText: 'ยืนยันสร้างฉบับใหม่',
+        cancelButtonText: 'ยกเลิก',
+        confirmButtonColor: '#d97706',
+        inputValidator: value => !String(value || '').trim() ? 'กรุณากรอกรหัสผ่าน' : undefined,
+    });
+    if (!result.isConfirmed) return false;
+    return executeDynamicExport('pdf', {
+        forceNew: true,
+        passwordHash: await sha256(String(result.value || '')),
+    });
+};
+
 let exportReportData = {
     month: '',
     expenses: [],
     attachments: [],
     foodExpenses: [],
     loading: null,
+    fetchedAt: 0,
+    revision: 0,
 };
+
+const EXPORT_REPORT_CACHE_TTL_MS = 2 * 60 * 1000;
+const exportReportDataCache = new Map();
+let exportReportDataRevision = 0;
+let exportReportCacheEpoch = 0;
+
+function formatExportDataTime(timestamp) {
+    if (!timestamp) return '';
+    try {
+        return new Date(timestamp).toLocaleTimeString('th-TH', {
+            timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit'
+        });
+    } catch (_) {
+        return '';
+    }
+}
+
+function updateExportDataStatus(status, timestamp = 0, message = '') {
+    const el = document.getElementById('export-data-status');
+    if (!el) return;
+    const labels = {
+        loading: 'กำลังโหลดข้อมูลรายงาน...',
+        ready: `ข้อมูลล่าสุด ${formatExportDataTime(timestamp) || 'พร้อมใช้งาน'} น.`,
+        cached: `ใช้ข้อมูลล่าสุด ${formatExportDataTime(timestamp) || 'พร้อมใช้งาน'} น.`,
+        stale: 'ข้อมูลมีการเปลี่ยนแปลง กรุณารีเฟรช',
+        error: message || 'โหลดข้อมูลรายงานไม่สำเร็จ',
+    };
+    el.className = `export-data-status is-${status}`;
+    el.textContent = labels[status] || message || '';
+}
+
+function applyExportReportData(entry, cacheStatus = 'ready') {
+    exportReportData.month = entry.month;
+    exportReportData.expenses = entry.expenses;
+    exportReportData.attachments = entry.attachments;
+    exportReportData.foodExpenses = entry.foodExpenses;
+    exportReportData.loading = null;
+    exportReportData.fetchedAt = entry.fetchedAt;
+    exportReportData.revision = entry.revision;
+    updateExportDataStatus(cacheStatus, entry.fetchedAt);
+    return exportReportData;
+}
+
+function invalidateExportReportCache(month = '') {
+    if (/^\d{4}-\d{2}$/.test(String(month || ''))) exportReportDataCache.delete(String(month));
+    else exportReportDataCache.clear();
+    exportReportData.fetchedAt = 0;
+    exportReportData.revision = ++exportReportDataRevision;
+    exportReportCacheEpoch++;
+    if (typeof clearExportPreviewCache === 'function') clearExportPreviewCache();
+    const modal = document.getElementById('modal-export-pdf');
+    if (modal && modal.classList.contains('active')) updateExportDataStatus('stale');
+}
 
 // Preview อาจถูกสร้างหลายรอบระหว่างผู้ใช้กำลังพิมพ์หัวข้อรายงาน.
 // QR เดิมต้องใช้ได้กับเลขเอกสาร/เดือน/ยอดชุดเดิม จึงเก็บ Promise ไว้ใน memory
@@ -10824,25 +11699,54 @@ async function fetchAllFoodExpensesForReportMonth(month) {
 
 async function ensureExportReportData(month, force = false) {
     const reportMonth = /^\d{4}-\d{2}$/.test(String(month || '')) ? String(month) : getSelectedPostingMonth();
-    if (!force && exportReportData.month === reportMonth && !exportReportData.loading) return exportReportData;
-    if (!force && exportReportData.month === reportMonth && exportReportData.loading) return exportReportData.loading;
+    const now = Date.now();
+    const cached = exportReportDataCache.get(reportMonth);
+
+    // แม้กด force ซ้ำก็ใช้ Promise เดิมระหว่างกำลังโหลด เพื่อไม่ยิง Apps Script ซ้อนกัน
+    if (cached && cached.loading) return cached.loading;
+    if (exportReportData.month === reportMonth && exportReportData.loading) return exportReportData.loading;
+    if (!force && cached && cached.fetchedAt && now - cached.fetchedAt < EXPORT_REPORT_CACHE_TTL_MS) {
+        return applyExportReportData(cached, 'cached');
+    }
+
+    updateExportDataStatus('loading');
+    const requestEpoch = exportReportCacheEpoch;
 
     const request = Promise.all([
         fetchAllExpensesForReportMonth(reportMonth),
         fetchAllFoodExpensesForReportMonth(reportMonth),
     ]).then(([expenses, foodExpenses]) => {
-        exportReportData.month = reportMonth;
-        exportReportData.expenses = expenses.filter(x => x.id && x.id.startsWith('EXP'));
-        exportReportData.attachments = expenses.filter(x => x.id && x.id.startsWith('ATT'));
-        exportReportData.foodExpenses = foodExpenses;
-        exportReportData.loading = null;
-        return exportReportData;
+        // หากมีการบันทึกข้อมูลระหว่างที่คำขอนี้ทำงาน ผลเก่าอาจไม่รวมรายการล่าสุด
+        // จึงดึงใหม่หนึ่งครั้งแทนการนำ response เก่ากลับเข้า cache
+        if (requestEpoch !== exportReportCacheEpoch) {
+            exportReportDataCache.delete(reportMonth);
+            if (exportReportData.month === reportMonth) exportReportData.loading = null;
+            return ensureExportReportData(reportMonth, true);
+        }
+        const entry = {
+            month: reportMonth,
+            expenses: expenses.filter(x => x.id && x.id.startsWith('EXP')),
+            attachments: expenses.filter(x => x.id && x.id.startsWith('ATT')),
+            foodExpenses,
+            fetchedAt: Date.now(),
+            revision: ++exportReportDataRevision,
+            loading: null,
+        };
+        exportReportDataCache.set(reportMonth, entry);
+        if (typeof clearExportPreviewCache === 'function') clearExportPreviewCache();
+        if (exportReportData.month === reportMonth) return applyExportReportData(entry, 'ready');
+        return entry;
     }).catch(err => {
-        exportReportData.loading = null;
+        exportReportDataCache.delete(reportMonth);
+        if (exportReportData.month === reportMonth) {
+            exportReportData.loading = null;
+            updateExportDataStatus('error', 0, err.message);
+        }
         throw err;
     });
     exportReportData.month = reportMonth;
     exportReportData.loading = request;
+    exportReportDataCache.set(reportMonth, { month: reportMonth, loading: request, fetchedAt: 0 });
     return request;
 }
 
@@ -11016,10 +11920,17 @@ function buildDynamicExportDictionary(context) {
 }
 
 async function openExportModal(context) {
+    renderExportSectionControls();
+    loadExportEvidenceLayoutSettings();
+    renderExportSignatureSectionTargets(true);
+    loadExportPageMarginSettings();
+    updateExportSignerCardNumbers();
+    updateSignaturePlacementUI();
     currentExportState.context = context || 'dashboard';
     (document.getElementById('pdf-export-mode') || {}).value = currentExportState.context;
     const reportMonthInput = document.getElementById('export-report-month');
     if (reportMonthInput && !reportMonthInput.value) reportMonthInput.value = getSelectedPostingMonth();
+    autoFillExportDocNumber();
 
     // Auto titles
     const titleInput = document.getElementById('pdf-report-title');
@@ -11042,6 +11953,9 @@ async function openExportModal(context) {
                 orgFilterSel.innerHTML = '<option value="">ทั้งหมด (รวมทุกสถานศึกษา)</option>' +
                     (state.organizations || []).map(o => `<option value="${o.id}">${escapeHTML(o.name)}</option>`).join('');
             }
+            if (!orgFilterSel.value && getActiveOrganizationId()) {
+                orgFilterSel.value = getActiveOrganizationId();
+            }
         } else {
             orgFilterWrap.style.display = 'none';
         }
@@ -11055,14 +11969,19 @@ async function openExportModal(context) {
 
     loadExportTemplatesList();
     const reportMonth = (document.getElementById('export-report-month') || {}).value || getSelectedPostingMonth();
-    try {
-        await ensureExportReportData(reportMonth, true);
+    const [reportResult] = await Promise.allSettled([
+        ensureExportReportData(reportMonth),
+        loadSignatureLibrary(),
+    ]);
+    if (reportResult.status === 'fulfilled') {
         updateExportSectionBadges();
-    } catch (err) {
-        appAlert('โหลดข้อมูลสำหรับรายงานไม่สำเร็จ: ' + err.message, 'error');
+        renderExportSignatureSectionTargets(true);
+    } else {
+        appAlert('โหลดข้อมูลสำหรับรายงานไม่สำเร็จ: ' + reportResult.reason.message, 'error');
     }
-    await loadSignatureLibrary();
     renderSignatureControls();
+    updateSignaturePlacementUI();
+    await refreshExportArchiveStatus();
     renderExportPreview();
 }
 
@@ -11070,18 +11989,47 @@ function closeExportModal() {
     const modal = document.getElementById('modal-export-pdf');
     modal.style.display = 'none';
     modal.classList.remove('active');
+    clearTimeout(_previewDebounceTimer);
+    _previewGeneration++;
+    const loading = document.getElementById('export-preview-loading');
+    if (loading) loading.style.display = 'none';
 }
 
 window.onExportReportMonthChange = async function() {
     autoFillExportDocNumber();
     const reportMonth = (document.getElementById('export-report-month') || {}).value || getSelectedPostingMonth();
     try {
-        await ensureExportReportData(reportMonth, true);
+        await ensureExportReportData(reportMonth);
         updateExportSectionBadges();
+        renderExportSignatureSectionTargets(true);
+        await refreshExportArchiveStatus();
         renderExportPreview();
     } catch (err) {
         appAlert('โหลดข้อมูลของเดือนที่เลือกไม่สำเร็จ: ' + err.message, 'error');
     }
+};
+
+window.refreshExportReportData = async function() {
+    const button = document.getElementById('btn-refresh-export-data');
+    const reportMonth = (document.getElementById('export-report-month') || {}).value || getSelectedPostingMonth();
+    if (button) button.disabled = true;
+    try {
+        await ensureExportReportData(reportMonth, true);
+        updateExportSectionBadges();
+        renderExportSignatureSectionTargets(true);
+        renderExportPreview();
+    } catch (err) {
+        appAlert('รีเฟรชข้อมูลรายงานไม่สำเร็จ: ' + err.message, 'error');
+    } finally {
+        if (button) button.disabled = false;
+    }
+};
+
+window.onExportOrganizationFilterChange = async function() {
+    renderExportSignatureSectionTargets(true);
+    autoFillExportDocNumber();
+    await refreshExportArchiveStatus();
+    renderExportPreview();
 };
 
 // ==========================================================================
@@ -11090,6 +12038,32 @@ window.onExportReportMonthChange = async function() {
 // month picked in #export-report-month), never from the DOM, so it can't pick
 // up stray rows like the always-present inline quick-add row.
 // ==========================================================================
+function sortExportRows(rows, section, sortBy, sortOrder) {
+    const key = sortBy || 'docNo';
+    const direction = sortOrder === 'desc' ? -1 : 1;
+    const collator = new Intl.Collator('th', { numeric: true, sensitivity: 'base' });
+    const valueFor = row => {
+        if (key === 'sequence') return Number(row.sequence) || 0;
+        if (key === 'amount') return Number(row.amount ?? row.foodAmount) || 0;
+        if (key === 'docNo') {
+            if (section === 'food') return row.foodDate || '';
+            return `${row.docNo || row.receiptNo || ''}\u0000${row.receiptNo || ''}`;
+        }
+        if (key === 'date') return section === 'food' ? (row.foodDate || '') : (row.date || '');
+        return row[key] || '';
+    };
+
+    return rows.sort((a, b) => {
+        const va = valueFor(a);
+        const vb = valueFor(b);
+        let compared = 0;
+        if (typeof va === 'number' && typeof vb === 'number') compared = va - vb;
+        else compared = collator.compare(String(va), String(vb));
+        if (compared !== 0) return compared * direction;
+        return ((Number(a.sequence) || 0) - (Number(b.sequence) || 0)) * direction;
+    });
+}
+
 function buildExportSectionData(section) {
     const reportMonth = (document.getElementById('export-report-month') || {}).value || '';
     const contextReady = exportReportData.month === reportMonth && !exportReportData.loading;
@@ -11105,8 +12079,9 @@ function buildExportSectionData(section) {
             : (section === 'bills' ? (state.expenses || []) : (state.attachments || []));
         const rows = source
             .filter(x => (!reportMonth || getExpensePostingMonth(x) === reportMonth) && inOrg(x))
-            .map(x => ({
+            .map((x, sourceIndex) => ({
                 id: x.id,
+                sequence: Number(x.sequence || x.sortOrder) || sourceIndex + 1,
                 docNo: x.documentNo || '',
                 receiptNo: x.receiptNo || '',
                 date: x.expenseDate || '',
@@ -11114,39 +12089,33 @@ function buildExportSectionData(section) {
                 project: getProjectName(x.projectId),
                 category: getCategoryName(x.categoryId),
                 vendor: getVendorName(x.vendorId),
+                description: x.description || x.detail || '',
                 amount: parseFloat(x.amount) || 0,
                 claimType: x.claimable ? 'เบิกมูลนิธิ' : 'ไม่เบิก',
                 attachmentsCount: (attachmentStore[x.id] || []).length
             }));
 
-        if (section === 'bills') {
-            const sortBy = (document.getElementById('export-sort-by') || {}).value || 'date';
-            const sortOrder = (document.getElementById('export-sort-order') || {}).value || 'asc';
-            rows.sort((a, b) => {
-                let va = a[sortBy], vb = b[sortBy];
-                if (sortBy === 'amount') { va = va || 0; vb = vb || 0; }
-                else { va = String(va || ''); vb = String(vb || ''); }
-                if (va < vb) return sortOrder === 'asc' ? -1 : 1;
-                if (va > vb) return sortOrder === 'asc' ? 1 : -1;
-                return 0;
-            });
-        }
-        return rows;
+        const sortBy = (document.getElementById('export-sort-by') || {}).value || 'docNo';
+        const sortOrder = (document.getElementById('export-sort-order') || {}).value || 'asc';
+        return sortExportRows(rows, section, sortBy, sortOrder);
     }
 
     if (section === 'food') {
         const foodSource = contextReady ? exportReportData.foodExpenses : (state.foodExpenses || []);
-        return foodSource
+        const rows = foodSource
             .filter(x => (!reportMonth || getFoodPostingMonth(x) === reportMonth) && inOrg(x))
-            .map(x => ({
+            .map((x, sourceIndex) => ({
                 id: x.id,
+                sequence: Number(x.sequence || x.sortOrder) || sourceIndex + 1,
                 foodDate: x.date || '',
                 postingMonth: getFoodPostingMonth(x),
                 foodName: x.name || '',
                 foodCategory: x.category || '',
                 foodAmount: parseFloat(x.totalAmount) || 0
-            }))
-            .sort((a, b) => String(a.foodDate || '').localeCompare(String(b.foodDate || '')));
+            }));
+        const sortBy = (document.getElementById('export-sort-by') || {}).value || 'docNo';
+        const sortOrder = (document.getElementById('export-sort-order') || {}).value || 'asc';
+        return sortExportRows(rows, section, sortBy, sortOrder);
     }
 
     return [];
@@ -11155,32 +12124,39 @@ function buildExportSectionData(section) {
 // เติม attachmentStore ให้ครบสำหรับแถวที่จะส่งออก — attachmentStore ปกติจะมีแค่บิลที่ผู้ใช้เคยเปิดมอดัลดูระหว่าง
 // เซสชันนี้เท่านั้น (แคชแบบ lazy) ตอนสร้างรายงานจึงต้องเรียก endpoint เดิม (getAttachments/getFoodExpenseById)
 // เติมของที่ยังไม่มีในแคชก่อนเสมอ ไม่ได้เพิ่ม endpoint ใหม่ แค่เรียกของเดิมเป็นชุด
-async function ensureAttachmentsLoaded(rows, section) {
+async function ensureAttachmentsLoaded(rows, section, onProgress) {
     const missing = rows.filter(r => !attachmentStore[r.id]);
-    if (missing.length === 0) return [];
+    const notifyProgress = (completed, total) => {
+        if (typeof onProgress === 'function') {
+            onProgress({ completed, total, section });
+        }
+    };
+    if (missing.length === 0) {
+        notifyProgress(0, 0);
+        return [];
+    }
     const errors = [];
+    let completed = 0;
+    notifyProgress(0, missing.length);
 
-    if (section === 'food') {
-        await mapWithConcurrency(missing, ATTACHMENT_LOAD_CONCURRENCY, async r => {
-            try {
+    await mapWithConcurrency(missing, ATTACHMENT_LOAD_CONCURRENCY, async r => {
+        try {
+            if (section === 'food') {
                 const res = await apiCall('getFoodExpenseById', { id: r.id });
                 const files = [];
                 (res.items || []).forEach(item => (item.attachments || []).forEach(a => files.push(a)));
                 attachmentStore[r.id] = files;
-            } catch (err) {
-                errors.push({ id: r.id, message: err && err.message ? err.message : 'โหลดหลักฐานไม่สำเร็จ' });
-            }
-        });
-    } else {
-        await mapWithConcurrency(missing, ATTACHMENT_LOAD_CONCURRENCY, async r => {
-            try {
+            } else {
                 const res = await apiCall('getAttachments', { expenseId: r.id });
                 attachmentStore[r.id] = res.attachments || [];
-            } catch (err) {
-                errors.push({ id: r.id, message: err && err.message ? err.message : 'โหลดหลักฐานไม่สำเร็จ' });
             }
-        });
-    }
+        } catch (err) {
+            errors.push({ id: r.id, message: err && err.message ? err.message : 'โหลดหลักฐานไม่สำเร็จ' });
+        } finally {
+            completed += 1;
+            notifyProgress(completed, missing.length);
+        }
+    });
     return errors;
 }
 
@@ -11189,8 +12165,13 @@ async function ensureAttachmentsLoaded(rows, section) {
 // ให้ผู้เรียกใส่ลิงก์อ้างอิงแทนรูปแทน ไม่ทำให้การสร้างรายงานทั้งฉบับล้ม
 async function fetchImageAsDataUrl(url) {
     if (!url) return null;
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timeoutId = controller ? setTimeout(() => controller.abort(), 20000) : null;
     try {
-        const res = await fetch(url, { headers: { Accept: 'image/*' } });
+        const res = await fetch(url, {
+            headers: { Accept: 'image/*' },
+            signal: controller ? controller.signal : undefined,
+        });
         if (!res.ok) return null;
         const blob = await res.blob();
         if (!blob.type || !blob.type.startsWith('image/')) return null;
@@ -11202,6 +12183,8 @@ async function fetchImageAsDataUrl(url) {
         });
     } catch (err) {
         return null;
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
     }
 }
 
@@ -11347,14 +12330,224 @@ const EXPORT_REPORT_TYPE_RULES = Object.freeze({
 });
 
 function getExportReportType() {
-    const value = (document.getElementById('export-report-type') || {}).value || 'summary';
-    return Object.prototype.hasOwnProperty.call(EXPORT_REPORT_TYPE_RULES, value) ? value : 'summary';
+    const value = (document.getElementById('export-report-type') || {}).value || 'with_attachments';
+    return Object.prototype.hasOwnProperty.call(EXPORT_REPORT_TYPE_RULES, value) ? value : 'with_attachments';
 }
 
 function getExportPageOrientation() {
     const value = (document.getElementById('export-page-orientation') || {}).value || 'portrait';
     return value === 'landscape' ? 'landscape' : 'portrait';
 }
+
+const EXPORT_PAGE_MARGIN_STORAGE_KEY = 'rdf_export_page_margins_mm';
+const DEFAULT_EXPORT_PAGE_MARGINS_MM = Object.freeze({ top: 22, bottom: 18, left: 16, right: 16 });
+const EXPORT_PAGE_MARGIN_LIMITS_MM = Object.freeze({
+    top: [18, 40], bottom: [8, 40], left: [8, 40], right: [8, 40],
+});
+
+function normalizeExportPageMarginsMm(value = {}) {
+    return Object.fromEntries(Object.entries(DEFAULT_EXPORT_PAGE_MARGINS_MM).map(([side, fallback]) => {
+        const [minimum, maximum] = EXPORT_PAGE_MARGIN_LIMITS_MM[side];
+        const parsed = Number(value[side]);
+        return [side, Math.min(maximum, Math.max(minimum, Number.isFinite(parsed) ? parsed : fallback))];
+    }));
+}
+
+function getExportPageMarginsMm() {
+    const values = {};
+    Object.keys(DEFAULT_EXPORT_PAGE_MARGINS_MM).forEach(side => {
+        values[side] = (document.getElementById(`export-margin-${side}`) || {}).value;
+    });
+    return normalizeExportPageMarginsMm(values);
+}
+
+function setExportPageMarginInputs(value, persist = false) {
+    const margins = normalizeExportPageMarginsMm(value);
+    Object.entries(margins).forEach(([side, amount]) => {
+        const input = document.getElementById(`export-margin-${side}`);
+        if (input) input.value = String(amount);
+    });
+    if (persist) localStorage.setItem(EXPORT_PAGE_MARGIN_STORAGE_KEY, JSON.stringify(margins));
+    return margins;
+}
+
+function loadExportPageMarginSettings() {
+    let stored = null;
+    try {
+        stored = JSON.parse(localStorage.getItem(EXPORT_PAGE_MARGIN_STORAGE_KEY) || 'null');
+    } catch (error) {
+        stored = null;
+    }
+    return setExportPageMarginInputs(stored || DEFAULT_EXPORT_PAGE_MARGINS_MM);
+}
+
+window.onExportPageMarginChange = function() {
+    const margins = setExportPageMarginInputs(getExportPageMarginsMm(), true);
+    clearExportPreviewCache();
+    renderExportPreview();
+    return margins;
+};
+
+window.resetExportPageMargins = function() {
+    setExportPageMarginInputs(DEFAULT_EXPORT_PAGE_MARGINS_MM, true);
+    clearExportPreviewCache();
+    renderExportPreview();
+};
+
+// รูปแบบหน้าหลักฐานใช้ state ชุดเดียวกันทั้งตัวอย่าง, Template และ PDF จริง.
+// ค่าเริ่มต้นถูกเก็บระดับรายงาน ส่วนแต่ละหัวข้อเลือกสืบทอดหรือกำหนดทับได้เอง.
+const EXPORT_EVIDENCE_LAYOUT_STORAGE_KEY = 'rdf_export_evidence_layout_v1';
+const DEFAULT_EXPORT_EVIDENCE_LAYOUT = Object.freeze({
+    orientation: 'portrait',
+    itemsPerPage: 1,
+    placement: 'vertical',
+});
+
+function normalizeExportEvidenceLayout(value = {}, fallback = DEFAULT_EXPORT_EVIDENCE_LAYOUT) {
+    const base = fallback || DEFAULT_EXPORT_EVIDENCE_LAYOUT;
+    const orientation = value.orientation === 'landscape'
+        ? 'landscape'
+        : (base.orientation === 'landscape' ? 'landscape' : 'portrait');
+    const itemsPerPage = Number(value.itemsPerPage) === 2
+        ? 2
+        : (Number(base.itemsPerPage) === 2 ? 2 : 1);
+    const placement = value.placement === 'horizontal'
+        ? 'horizontal'
+        : (base.placement === 'horizontal' ? 'horizontal' : 'vertical');
+    return { orientation, itemsPerPage, placement };
+}
+
+function readStoredExportEvidenceLayoutState() {
+    try {
+        const stored = JSON.parse(localStorage.getItem(EXPORT_EVIDENCE_LAYOUT_STORAGE_KEY) || 'null');
+        return stored && typeof stored === 'object' ? stored : {};
+    } catch (error) {
+        return {};
+    }
+}
+
+function getExportEvidenceLayoutDefaults() {
+    const stored = readStoredExportEvidenceLayoutState();
+    return normalizeExportEvidenceLayout({
+        orientation: (document.getElementById('export-evidence-orientation') || {}).value,
+        itemsPerPage: (document.getElementById('export-evidence-items-per-page') || {}).value,
+        placement: (document.getElementById('export-evidence-placement') || {}).value,
+    }, normalizeExportEvidenceLayout(stored.defaults || DEFAULT_EXPORT_EVIDENCE_LAYOUT));
+}
+
+function getExportSectionEvidenceLayoutSetting(sectionKey) {
+    const defaults = getExportEvidenceLayoutDefaults();
+    const stored = readStoredExportEvidenceLayoutState();
+    const storedSetting = (stored.sections && stored.sections[sectionKey]) || {};
+    const mode = document.querySelector(`[data-export-evidence-mode="${sectionKey}"]`);
+    const orientation = document.querySelector(`[data-export-evidence-orientation="${sectionKey}"]`);
+    const itemsPerPage = document.querySelector(`[data-export-evidence-items="${sectionKey}"]`);
+    const placement = document.querySelector(`[data-export-evidence-placement="${sectionKey}"]`);
+    const inherit = mode ? mode.value !== 'custom' : storedSetting.inherit !== false;
+    const layout = normalizeExportEvidenceLayout({
+        orientation: orientation ? orientation.value : storedSetting.orientation,
+        itemsPerPage: itemsPerPage ? itemsPerPage.value : storedSetting.itemsPerPage,
+        placement: placement ? placement.value : storedSetting.placement,
+    }, defaults);
+    return { inherit, ...layout };
+}
+
+function getExportSectionEvidenceLayout(sectionKey) {
+    const setting = getExportSectionEvidenceLayoutSetting(sectionKey);
+    return setting.inherit
+        ? getExportEvidenceLayoutDefaults()
+        : normalizeExportEvidenceLayout(setting, getExportEvidenceLayoutDefaults());
+}
+
+function getExportEvidenceLayoutState() {
+    return {
+        defaults: getExportEvidenceLayoutDefaults(),
+        sections: Object.fromEntries(getExportSectionDefinitions()
+            .filter(section => section.supportsAttachments)
+            .map(section => [section.key, getExportSectionEvidenceLayoutSetting(section.key)])),
+    };
+}
+
+function describeExportEvidenceLayout(layout) {
+    const normalized = normalizeExportEvidenceLayout(layout);
+    const orientation = normalized.orientation === 'landscape' ? 'แนวนอน' : 'แนวตั้ง';
+    const arrangement = normalized.itemsPerPage === 1
+        ? '1 รายการ/หน้า'
+        : `2 รายการ/หน้า · ${normalized.placement === 'horizontal' ? 'ซ้าย–ขวา' : 'บน–ล่าง'}`;
+    return `${orientation} · ${arrangement}`;
+}
+
+function renderExportEvidenceLayoutPreview() {
+    const preview = document.getElementById('export-evidence-layout-preview');
+    const layout = getExportEvidenceLayoutDefaults();
+    if (preview) {
+        preview.dataset.orientation = layout.orientation;
+        preview.dataset.items = String(layout.itemsPerPage);
+        preview.dataset.placement = layout.placement;
+        preview.setAttribute('aria-label', `ตัวอย่าง A4 ${describeExportEvidenceLayout(layout)}`);
+    }
+    const placementInput = document.getElementById('export-evidence-placement');
+    if (placementInput) placementInput.disabled = layout.itemsPerPage === 1;
+    getExportSectionDefinitions().filter(section => section.supportsAttachments).forEach(section => {
+        const setting = getExportSectionEvidenceLayoutSetting(section.key);
+        const resolved = getExportSectionEvidenceLayout(section.key);
+        const inputs = [
+            document.querySelector(`[data-export-evidence-orientation="${section.key}"]`),
+            document.querySelector(`[data-export-evidence-items="${section.key}"]`),
+            document.querySelector(`[data-export-evidence-placement="${section.key}"]`),
+        ];
+        inputs.forEach(input => { if (input) input.disabled = setting.inherit; });
+        if (inputs[2] && !setting.inherit) inputs[2].disabled = resolved.itemsPerPage === 1;
+        const summary = document.querySelector(`[data-export-evidence-summary="${section.key}"]`);
+        if (summary) summary.textContent = `${setting.inherit ? 'ใช้ค่ารายงาน' : 'กำหนดเฉพาะหัวข้อ'} · ${describeExportEvidenceLayout(resolved)}`;
+    });
+}
+
+function applyExportEvidenceLayoutState(value = {}, persist = false) {
+    const defaults = normalizeExportEvidenceLayout(value.defaults || value);
+    const defaultInputs = {
+        orientation: document.getElementById('export-evidence-orientation'),
+        itemsPerPage: document.getElementById('export-evidence-items-per-page'),
+        placement: document.getElementById('export-evidence-placement'),
+    };
+    Object.entries(defaultInputs).forEach(([key, input]) => {
+        if (input) input.value = String(defaults[key]);
+    });
+    const sections = value.sections || {};
+    getExportSectionDefinitions().filter(section => section.supportsAttachments).forEach(section => {
+        const saved = sections[section.key] || {};
+        const layout = normalizeExportEvidenceLayout(saved, defaults);
+        const mode = document.querySelector(`[data-export-evidence-mode="${section.key}"]`);
+        const orientation = document.querySelector(`[data-export-evidence-orientation="${section.key}"]`);
+        const items = document.querySelector(`[data-export-evidence-items="${section.key}"]`);
+        const placement = document.querySelector(`[data-export-evidence-placement="${section.key}"]`);
+        if (mode) mode.value = saved.inherit === false ? 'custom' : 'inherit';
+        if (orientation) orientation.value = layout.orientation;
+        if (items) items.value = String(layout.itemsPerPage);
+        if (placement) placement.value = layout.placement;
+    });
+    renderExportEvidenceLayoutPreview();
+    if (persist) localStorage.setItem(EXPORT_EVIDENCE_LAYOUT_STORAGE_KEY, JSON.stringify(getExportEvidenceLayoutState()));
+}
+
+function loadExportEvidenceLayoutSettings() {
+    applyExportEvidenceLayoutState(readStoredExportEvidenceLayoutState());
+}
+
+function persistExportEvidenceLayoutSettings() {
+    const state = getExportEvidenceLayoutState();
+    localStorage.setItem(EXPORT_EVIDENCE_LAYOUT_STORAGE_KEY, JSON.stringify(state));
+    const status = document.getElementById('export-layout-saved-state');
+    if (status) status.textContent = 'บันทึกการตั้งค่าในอุปกรณ์แล้ว';
+    return state;
+}
+
+window.handleExportEvidenceLayoutChange = function() {
+    renderExportEvidenceLayoutPreview();
+    persistExportEvidenceLayoutSettings();
+    clearExportPreviewCache();
+    renderExportPreview();
+};
 
 function getExportReportOptions() {
     const type = getExportReportType();
@@ -11372,6 +12565,8 @@ function getExportReportOptions() {
         showFileLinks: rules.needsEvidence && !!(fileToggle && fileToggle.checked),
         showQr: !!(qrToggle && qrToggle.checked),
         pageOrientation: getExportPageOrientation(),
+        pageMarginsMm: getExportPageMarginsMm(),
+        evidenceLayout: getExportEvidenceLayoutDefaults(),
     };
 }
 
@@ -11431,7 +12626,7 @@ window.onExportPageOrientationChange = function() {
 
 // Footer "เลือกทั้งหมด" / "ยกเลิกทั้งหมด" — toggles every column checkbox in the modal
 function toggleAllExportCheckboxes(check) {
-    document.querySelectorAll('.export-col-chk, .export-food-col, .att-chk').forEach(el => { el.checked = check; });
+    document.querySelectorAll('.export-section-column, .att-chk').forEach(el => { el.checked = check; });
     renderExportPreview();
 }
 
@@ -11447,20 +12642,31 @@ function saveExportTemplate() {
         orgName: (document.getElementById('export-org-name') || {}).value || '',
         docNumber: (document.getElementById('export-doc-number') || {}).value || '',
         headerDetail: (document.getElementById('export-header-detail') || {}).value || '',
-        type: (document.getElementById('export-report-type') || {}).value || 'summary',
+        type: (document.getElementById('export-report-type') || {}).value || 'with_attachments',
         pageOrientation: getExportPageOrientation(),
-        sortBy: (document.getElementById('export-sort-by') || {}).value || 'date',
+        pageMarginsMm: getExportPageMarginsMm(),
+        evidenceLayout: getExportEvidenceLayoutState(),
+        sortBy: (document.getElementById('export-sort-by') || {}).value || 'docNo',
         sortOrder: (document.getElementById('export-sort-order') || {}).value || 'asc',
         inclBills: (document.getElementById('export-chk-bills') || {}).checked,
         inclFood: (document.getElementById('export-chk-food') || {}).checked,
         inclAttach: (document.getElementById('export-chk-attach') || {}).checked,
         billCols: getExportSelectedColumns('.export-col-chk'),
         foodCols: getExportSelectedColumns('.export-food-col'),
+        sectionState: getExportSectionState(),
         att: {
             img: document.querySelector('.att-chk[value="show_img"]') ? document.querySelector('.att-chk[value="show_img"]').checked : false,
             pdf: document.querySelector('.att-chk[value="show_pdf"]') ? document.querySelector('.att-chk[value="show_pdf"]').checked : false,
             qr: document.querySelector('.att-chk[value="show_qr"]') ? document.querySelector('.att-chk[value="show_qr"]').checked : false
-        }
+        },
+        signature: {
+            enabled: !!(document.getElementById('pdf-include-signature') || {}).checked,
+            placements: getExportSignaturePlacements(),
+            targets: getExportSignatureTargets().map(target => target.key),
+            signers: getExportSignerRows().map(({ role, name, position, label, signatureId }) => ({
+                role, name, position, label, signatureId,
+            })),
+        },
     };
     localStorage.setItem('rdf_export_templates', JSON.stringify(templates));
     appAlert('บันทึก Template สำเร็จ!', 'success');
@@ -11482,6 +12688,7 @@ function loadExportTemplate(name) {
     let templates = JSON.parse(localStorage.getItem('rdf_export_templates') || '{}');
     let t = templates[name];
     if (!t) return;
+    renderExportSectionControls();
 
     currentExportState.context = t.context || currentExportState.context;
 
@@ -11489,21 +12696,35 @@ function loadExportTemplate(name) {
     (document.getElementById('export-org-name') || {}).value = t.orgName || '';
     (document.getElementById('export-doc-number') || {}).value = t.docNumber || '';
     (document.getElementById('export-header-detail') || {}).value = t.headerDetail || '';
-    if(document.getElementById('export-report-type')) (document.getElementById('export-report-type') || {}).value = t.type || 'summary';
+    if(document.getElementById('export-report-type')) (document.getElementById('export-report-type') || {}).value = t.type || 'with_attachments';
     if(document.getElementById('export-page-orientation')) (document.getElementById('export-page-orientation') || {}).value = t.pageOrientation === 'landscape' ? 'landscape' : 'portrait';
-    if(document.getElementById('export-sort-by')) (document.getElementById('export-sort-by') || {}).value = t.sortBy || 'date';
+    if (t.pageMarginsMm) setExportPageMarginInputs(t.pageMarginsMm, true);
+    if (t.evidenceLayout) applyExportEvidenceLayoutState(t.evidenceLayout, true);
+    if(document.getElementById('export-sort-by')) (document.getElementById('export-sort-by') || {}).value = t.sortBy || 'docNo';
     if(document.getElementById('export-sort-order')) (document.getElementById('export-sort-order') || {}).value = t.sortOrder || 'asc';
 
-    (document.getElementById('export-chk-bills') || {}).checked = t.inclBills !== false;
-    (document.getElementById('export-chk-food') || {}).checked = t.inclFood !== false;
-    (document.getElementById('export-chk-attach') || {}).checked = t.inclAttach !== false;
-
-    document.querySelectorAll('.export-col-chk').forEach(el => {
-        el.checked = !t.billCols || t.billCols.includes(el.value);
-    });
-    document.querySelectorAll('.export-food-col').forEach(el => {
-        el.checked = !t.foodCols || t.foodCols.includes(el.value);
-    });
+    if (t.sectionState) {
+        getExportSectionDefinitions().forEach(section => {
+            const saved = t.sectionState[section.key];
+            if (!saved) return;
+            const checkbox = document.getElementById(section.checkboxId);
+            if (checkbox) checkbox.checked = saved.enabled !== false;
+            document.querySelectorAll(`.export-section-column[data-export-column-section="${section.key}"]`).forEach(input => {
+                input.checked = !saved.columns || saved.columns.includes(input.value);
+            });
+        });
+    } else {
+        // รองรับ Template รุ่นเดิมก่อนมีทะเบียนหัวข้อรายงาน
+        (document.getElementById('export-chk-bills') || {}).checked = t.inclBills !== false;
+        (document.getElementById('export-chk-food') || {}).checked = t.inclFood !== false;
+        (document.getElementById('export-chk-attach') || {}).checked = t.inclAttach !== false;
+        document.querySelectorAll('.export-col-chk').forEach(el => {
+            el.checked = !t.billCols || t.billCols.includes(el.value);
+        });
+        document.querySelectorAll('.export-food-col').forEach(el => {
+            el.checked = !t.foodCols || t.foodCols.includes(el.value);
+        });
+    }
 
     if (t.att) {
         if(document.querySelector('.att-chk[value="show_img"]')) document.querySelector('.att-chk[value="show_img"]').checked = t.att.img;
@@ -11511,7 +12732,21 @@ function loadExportTemplate(name) {
         if(document.querySelector('.att-chk[value="show_qr"]')) document.querySelector('.att-chk[value="show_qr"]').checked = t.att.qr;
     }
 
+    if (t.signature) {
+        const includeSignature = document.getElementById('pdf-include-signature');
+        const firstPage = document.getElementById('pdf-signature-first-page');
+        const lastPage = document.getElementById('pdf-signature-last-page');
+        const everyPage = document.getElementById('pdf-signature-every-page');
+        if (includeSignature) includeSignature.checked = t.signature.enabled !== false;
+        if (firstPage) firstPage.checked = !!(t.signature.placements && t.signature.placements.first);
+        if (lastPage) lastPage.checked = !t.signature.placements || !!t.signature.placements.last;
+        if (everyPage) everyPage.checked = !!(t.signature.placements && t.signature.placements.every);
+        if (Array.isArray(t.signature.signers)) applyExportSignerRows(t.signature.signers);
+        applyExportSignatureTargets(t.signature.targets || []);
+    }
+
     syncExportReportTypeUI(false);
+    updateSignaturePlacementUI();
     updateExportPreviewPaperSize(getExportPageOrientation());
     renderExportPreview();
 }
@@ -11520,11 +12755,19 @@ function loadExportTemplate(name) {
 // รายงาน (PDF) — Section "หลักฐานแนบ": สำหรับแต่ละแถวที่มีไฟล์แนบจริง สร้างชุด
 // {รายละเอียด 7 ฟิลด์, รูปที่ฝังได้เป็น base64, ไฟล์ที่ฝังไม่ได้ให้ใช้ลิงก์อ้างอิงแทน}
 // ==========================================================================
-async function buildAttachmentItems(rows, section, showImg, showPdf) {
-    if (!showImg && !showPdf) return [];
-    const columnDefs = section === 'food' ? EXPORT_FOOD_COLUMNS : EXPORT_BILL_COLUMNS;
-    const prepared = (rows || []).map(row => ({
-        detail: columnDefs.map(c => ({ label: c.label, value: c.get(row) })),
+async function buildAttachmentItems(rows, section, showImg, showPdf, onProgress) {
+    const notifyProgress = (completed, total) => {
+        if (typeof onProgress === 'function') {
+            onProgress({ completed, total, section });
+        }
+    };
+    if (!showImg && !showPdf) {
+        notifyProgress(0, 0);
+        return [];
+    }
+    const columnDefs = getExportSectionColumnDefinition(section);
+    const prepared = (rows || []).map((row, rowIndex) => ({
+        detail: columnDefs.map(c => ({ label: c.label, value: getExportColumnValue(c, row, rowIndex) })),
         images: [],
         fileRefs: [],
         files: attachmentStore[row.id] || [],
@@ -11543,7 +12786,7 @@ async function buildAttachmentItems(rows, section, showImg, showPdf) {
             if (showPdf) {
                 const note = mime === 'application/pdf'
                     ? 'เปิด PDF หลักฐานจากลิงก์นี้'
-                    : 'ไฟล์อ้างอิง — เปิดจากลิงก์นี้';
+                    : 'ไฟล์อ้างอิง - เปิดจากลิงก์นี้';
                 item.fileRefs.push({ name, url, note });
             }
         });
@@ -11551,16 +12794,26 @@ async function buildAttachmentItems(rows, section, showImg, showPdf) {
 
     // จำกัดจำนวนภาพที่อ่านพร้อมกันทั้งรายงาน ไม่ทำ nested Promise.all()
     // เพราะไฟล์รูปจาก Drive ขนาดมากอาจทำให้ preview ค้างหรือ Apps Script ถูกจำกัด quota.
+    let completedImages = 0;
+    notifyProgress(0, imageJobs.length);
     const imageResults = await mapWithConcurrency(
         imageJobs,
         ATTACHMENT_LOAD_CONCURRENCY,
         async job => {
-            const dataUrl = await getAttachmentImageDataUrl(job.file);
-            if (dataUrl) {
-                const optimized = await optimizeImageDataUrlForPdf(job.file, dataUrl);
-                return Object.assign({}, job, { dataUrl: optimized });
+            try {
+                const dataUrl = await getAttachmentImageDataUrl(job.file);
+                if (dataUrl) {
+                    const optimized = await optimizeImageDataUrlForPdf(job.file, dataUrl);
+                    return Object.assign({}, job, { dataUrl: optimized });
+                }
+                return Object.assign({}, job, { dataUrl: '' });
+            } catch (err) {
+                console.warn('[export] ประมวลผลรูปหลักฐานไม่สำเร็จ:', job.name, err && err.message);
+                return Object.assign({}, job, { dataUrl: '' });
+            } finally {
+                completedImages += 1;
+                notifyProgress(completedImages, imageJobs.length);
             }
-            return Object.assign({}, job, { dataUrl: '' });
         }
     );
 
@@ -11577,7 +12830,7 @@ async function buildAttachmentItems(rows, section, showImg, showPdf) {
                 sizeBytes: parseInt(result.file.fileSize || result.file.compressedSize || 0, 10) || 0,
             });
         } else {
-            item.fileRefs.push({ name: result.name, url: result.url, note: 'ไม่สามารถฝังรูปในเอกสารได้ — เปิดไฟล์ต้นฉบับจากลิงก์นี้' });
+            item.fileRefs.push({ name: result.name, url: result.url, note: 'ไม่สามารถฝังรูปในเอกสารได้ - เปิดไฟล์ต้นฉบับจากลิงก์นี้' });
         }
     });
 
@@ -11595,7 +12848,10 @@ async function buildAttachmentItems(rows, section, showImg, showPdf) {
 // Report Model — ชั้นกลางเดียวที่พรีวิว (PDF จริงในกรอบ) และปุ่มส่งออก PDF ใช้ร่วมกัน
 // เพื่อไม่ให้ข้อมูลที่เห็นในพรีวิวกับไฟล์ที่ดาวน์โหลดจริงเพี้ยนกัน
 // ==========================================================================
-async function buildReportModel() {
+async function buildReportModel(onProgress, buildOptions = {}) {
+    const reportProgress = detail => {
+        if (typeof onProgress === 'function') onProgress(detail);
+    };
     const orgName = (document.getElementById('export-org-name') || {}).value || '';
     const title = (document.getElementById('pdf-report-title') || {}).value || 'รายงานค่าใช้จ่าย';
     const subHeading = (document.getElementById('export-header-detail') || {}).value || '';
@@ -11606,20 +12862,12 @@ async function buildReportModel() {
     const logoSrc = (document.getElementById('export-logo-preview') || {}).dataset?.logoSrc || '';
 
     const inclSig = (document.getElementById('pdf-include-signature') || {}).checked;
-    const preparer = (document.getElementById('pdf-preparer-name') || {}).value || '';
-    const reviewer = (document.getElementById('pdf-reviewer-name') || {}).value || '';
-    const approver = (document.getElementById('pdf-approver-name') || {}).value || '';
     if (inclSig) await ensureActiveSignaturesLoaded();
-    const preparerImage = inclSig ? getActiveSignatureDataUrl('prepared') : '';
-    const reviewerImage = inclSig ? getActiveSignatureDataUrl('checked') : '';
-    const approverImage = inclSig ? getActiveSignatureDataUrl('approved') : '';
-
-    const inclBills = (document.getElementById('export-chk-bills') || {}).checked;
-    const inclFood = (document.getElementById('export-chk-food') || {}).checked;
-    const inclAttach = (document.getElementById('export-chk-attach') || {}).checked;
-
-    const billCols = getExportSelectedColumns('.export-col-chk');
-    const foodCols = getExportSelectedColumns('.export-food-col');
+    const signerRows = inclSig ? getExportSignerRows().filter(signer =>
+        String(signer.name || '').trim() || String(signer.position || '').trim() || signer.image
+    ) : [];
+    const signaturePlacements = getExportSignaturePlacements();
+    const signatureTargets = inclSig ? getExportSignatureTargets() : [];
 
     const showImg = reportOptions.showImages;
     const showPdf = reportOptions.showFileLinks;
@@ -11634,22 +12882,56 @@ async function buildReportModel() {
 
     const sections = [];
     // ไม่ใช้ emoji ในหัวข้อ (ฟอนต์ Sarabun ไม่มี glyph emoji → แสดงเป็นกล่องว่างใน PDF) ใช้แถบสี accent ซ้ายแทน
-    const specs = [
-        { on: inclBills, key: 'bills', label: 'รายการบิล', accent: '#059669', columnDefs: EXPORT_BILL_COLUMNS, selCols: billCols },
-        { on: inclFood, key: 'food', label: 'ค่าอาหารประจำเดือน', accent: '#f59e0b', columnDefs: EXPORT_FOOD_COLUMNS, selCols: foodCols },
-        { on: inclAttach, key: 'attach', label: 'บิลแนบ / ค่าสาธารณูปโภค', accent: '#8b5cf6', columnDefs: EXPORT_BILL_COLUMNS, selCols: billCols },
-    ];
-    for (const spec of specs) {
-        if (!spec.on) continue;
-        const rows = buildExportSectionData(spec.key);
-        const attachmentLoadErrors = reportOptions.needsEvidence && (showImg || showPdf)
-            ? await ensureAttachmentsLoaded(rows, spec.key)
+    const specs = getExportSectionDefinitions().map(section => ({
+        on: !!(document.getElementById(section.checkboxId) || {}).checked,
+        key: section.key,
+        label: section.reportLabel || section.label,
+        accent: section.accent,
+        columnDefs: getExportSectionColumnDefinition(section.key),
+        selCols: getExportSelectedSectionColumns(section.key),
+        appendMonthToLabel: !!section.appendMonthToLabel,
+        supportsAttachments: !!section.supportsAttachments,
+        evidenceLayout: section.supportsAttachments
+            ? getExportSectionEvidenceLayout(section.key)
+            : null,
+    }));
+    const enabledSpecs = specs.filter(spec => spec.on);
+    for (let specIndex = 0; specIndex < enabledSpecs.length; specIndex += 1) {
+        const spec = enabledSpecs[specIndex];
+        const sectionSpan = enabledSpecs.length ? 72 / enabledSpecs.length : 72;
+        const sectionBase = 15 + (sectionSpan * specIndex);
+        const metadataSpan = sectionSpan * 0.45;
+        const imageSpan = sectionSpan - metadataSpan;
+        const label = spec.label;
+        const rows = getExportSectionRows(spec.key);
+        const attachmentLoadErrors = spec.supportsAttachments && reportOptions.needsEvidence && (showImg || showPdf)
+            ? await ensureAttachmentsLoaded(rows, spec.key, progress => {
+                const ratio = progress.total ? progress.completed / progress.total : 1;
+                reportProgress({
+                    percent: sectionBase + (metadataSpan * ratio),
+                    stage: `กำลังโหลดรายการหลักฐาน — ${label}`,
+                    count: progress.total ? `${progress.completed}/${progress.total} รายการ` : 'ใช้ข้อมูลหลักฐานจากแคช',
+                });
+            })
             : [];
-        const attachmentItems = await buildAttachmentItems(rows, spec.key, showImg, showPdf);
+        // buildExportSectionData ถูกสร้างก่อนเรียก API หลักฐาน จึงต้องอัปเดตจำนวน
+        // หลังโหลดอีกครั้ง ไม่เช่นนั้นตารางจะแสดง 0 แม้มีใบเสร็จแนบจริง
+        rows.forEach(row => {
+            row.attachmentsCount = (attachmentStore[row.id] || []).length;
+        });
+        if (spec.supportsAttachments) updateExportSectionEvidenceBadges(spec.key);
+        const attachmentItems = spec.supportsAttachments ? await buildAttachmentItems(rows, spec.key, showImg, showPdf, progress => {
+            const ratio = progress.total ? progress.completed / progress.total : 1;
+            reportProgress({
+                percent: sectionBase + metadataSpan + (imageSpan * ratio),
+                stage: `กำลังประมวลผลรูปหลักฐาน — ${label}`,
+                count: progress.total ? `${progress.completed}/${progress.total} รูป` : 'ไม่มีรูปที่ต้องประมวลผล',
+            });
+        }) : [];
         const attachmentCount = attachmentItems.reduce((sum, item) => sum + (Number(item.fileCount) || 0), 0);
         sections.push({
             key: spec.key,
-            label: spec.label + (spec.key === 'bills' && monthLabel ? ' ประจำเดือน ' + monthLabel : ''),
+            label: spec.label + (spec.appendMonthToLabel && monthLabel ? ' ประจำเดือน ' + monthLabel : ''),
             accent: spec.accent,
             columns: spec.columnDefs.filter(c => spec.selCols.includes(c.id)),
             rows,
@@ -11658,12 +12940,19 @@ async function buildReportModel() {
             attachmentItems,
             attachmentCount,
             attachmentWarnings: attachmentLoadErrors,
+            evidenceLayout: spec.evidenceLayout,
+        });
+        reportProgress({
+            percent: sectionBase + sectionSpan,
+            stage: `จัดเตรียมหัวข้อ ${label} แล้ว`,
+            count: `${rows.length} รายการ`,
         });
     }
 
     let qrDataUrl = '';
     let verifyCode = '';
     if (showQr && docNum) {
+        reportProgress({ percent: 89, stage: 'กำลังสร้าง QR สำหรับตรวจสอบเอกสาร', count: '' });
         try {
             const itemCount = sections.reduce((s, sec) => s + sec.rows.length, 0);
             const attachmentCount = sections.reduce((s, sec) => s + (Number(sec.attachmentCount) || 0), 0);
@@ -11671,21 +12960,38 @@ async function buildReportModel() {
             const orgFilterSel = document.getElementById('export-org-filter');
             const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || '{}');
             const orgId = (orgFilterSel && getCurrentUserRole() === 'admin' && orgFilterSel.value) ? orgFilterSel.value : (currentUser.organizationId || '');
-            const res = await getCachedExportVerifyCode({ docNumber: docNum, month: reportMonth, orgId, itemCount, attachmentCount, totalAmount });
-            verifyCode = res.code || '';
-            qrDataUrl = await generateVerifyQR('export', res.code);
+            if (Object.prototype.hasOwnProperty.call(buildOptions, 'verifyCode')) {
+                verifyCode = String(buildOptions.verifyCode || '').trim();
+            } else if (buildOptions.allowCreateVerifyCode !== false) {
+                const res = await getCachedExportVerifyCode({ docNumber: docNum, month: reportMonth, orgId, itemCount, attachmentCount, totalAmount });
+                verifyCode = res.code || '';
+            }
+            if (verifyCode) qrDataUrl = await generateVerifyQR('export', verifyCode);
         } catch (err) {
             console.warn('[export] สร้าง QR ตรวจสอบไม่สำเร็จ:', err && err.message);
             qrDataUrl = '';
         }
     }
 
+    reportProgress({ percent: 92, stage: 'รวบรวมข้อมูลรายงานเสร็จแล้ว', count: `${sections.length} หัวข้อ` });
+
     return {
         header: {
             orgName, title, subHeading, docNum, monthLabel, logoSrc, qrDataUrl, verifyCode,
             attachmentCount: sections.reduce((sum, section) => sum + (Number(section.attachmentCount) || 0), 0),
         },
-        signature: inclSig ? { preparer, reviewer, approver, preparerImage, reviewerImage, approverImage } : null,
+        signature: inclSig ? {
+            signers: signerRows,
+            placements: signaturePlacements,
+            targets: signatureTargets,
+            // Legacy properties keep old saved report models compatible.
+            preparer: (signerRows.find(signer => signer.role === 'prepared') || {}).name || '',
+            reviewer: (signerRows.find(signer => signer.role === 'checked') || {}).name || '',
+            approver: (signerRows.find(signer => signer.role === 'approved') || {}).name || '',
+            preparerImage: (signerRows.find(signer => signer.role === 'prepared') || {}).image || '',
+            reviewerImage: (signerRows.find(signer => signer.role === 'checked') || {}).image || '',
+            approverImage: (signerRows.find(signer => signer.role === 'approved') || {}).image || '',
+        } : null,
         sections,
         reportOptions,
     };
@@ -11693,30 +12999,98 @@ async function buildReportModel() {
 
 // 5. Exporters — column definitions (EXPORT_BILL_COLUMNS / EXPORT_FOOD_COLUMNS)
 // are the same ones the preview renders from, so Excel/CSV always matches what's shown.
-async function executeDynamicExport(format) {
+let _exportOperationInProgress = false;
+
+function setExportOperationState(busy, message, isError = false) {
+    document.querySelectorAll('.export-execute-button, .export-section-download, .export-archive-action').forEach(button => {
+        button.disabled = !!busy;
+        button.setAttribute('aria-busy', busy ? 'true' : 'false');
+    });
+    const status = document.getElementById('export-operation-status');
+    if (status) {
+        status.textContent = message || (busy ? 'กำลังจัดเตรียมรายงาน...' : 'พร้อมส่งออก');
+        status.className = `export-operation-status${isError ? ' is-error' : busy ? ' is-busy' : ' is-ready'}`;
+    }
+}
+
+async function executeDynamicExport(format, options = {}) {
+    if (_exportOperationInProgress) {
+        setExportOperationState(true, 'กำลังสร้างรายงาน กรุณารอสักครู่...');
+        return false;
+    }
+    _exportOperationInProgress = true;
+    const formatLabel = format === 'pdf' ? 'PDF' : format === 'excel' ? 'Excel' : 'CSV';
+    setExportOperationState(true, `กำลังเตรียมไฟล์ ${formatLabel}...`);
+    try {
+        const succeeded = await executeDynamicExportInternal(format, options);
+        setExportOperationState(false, succeeded ? `ส่งออก ${formatLabel} สำเร็จ` : `ส่งออก ${formatLabel} ไม่สำเร็จ`, !succeeded);
+        return succeeded;
+    } catch (err) {
+        console.error('[export] ส่งออกรายงานไม่สำเร็จ:', err);
+        setExportOperationState(false, `ส่งออก ${formatLabel} ไม่สำเร็จ`, true);
+        appAlert(`ส่งออก ${formatLabel} ไม่สำเร็จ: ${err.message}`, 'error');
+        return false;
+    } finally {
+        _exportOperationInProgress = false;
+        document.querySelectorAll('.export-execute-button, .export-section-download, .export-archive-action').forEach(button => {
+            button.disabled = false;
+            button.setAttribute('aria-busy', 'false');
+        });
+    }
+}
+
+function reportBlobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+        reader.onerror = () => reject(reader.error || new Error('อ่านไฟล์ PDF ไม่สำเร็จ'));
+        reader.readAsDataURL(blob);
+    });
+}
+
+function downloadReportBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function executeDynamicExportInternal(format, options = {}) {
+    if (format === 'pdf' && !options.forceNew) {
+        const archived = currentExportArchiveState.current;
+        if (archived && archived.status === 'saved' && archived.fileUrl) {
+            setExportOperationState(true, `กำลังเปิดฉบับ v${archived.version} โดยใช้ QR เดิม...`);
+            return openStoredReportArchive(archived);
+        }
+    }
     const reportMonth = (document.getElementById('export-report-month') || {}).value || getSelectedPostingMonth();
     try {
         await ensureExportReportData(reportMonth);
     } catch (err) {
         appAlert('โหลดข้อมูลสำหรับส่งออกไม่สำเร็จ: ' + err.message, 'error');
-        return;
+        return false;
     }
-    const inclBills = (document.getElementById('export-chk-bills') || {}).checked;
-    const inclFood = (document.getElementById('export-chk-food') || {}).checked;
-    const inclAttach = (document.getElementById('export-chk-attach') || {}).checked;
-
-    const billCols = getExportSelectedColumns('.export-col-chk');
-    const foodCols = getExportSelectedColumns('.export-food-col');
-
-    const sections = [];
-    if (inclBills) sections.push({ label: 'รายการบิล', rows: buildExportSectionData('bills'), cols: EXPORT_BILL_COLUMNS.filter(c => billCols.includes(c.id)) });
-    if (inclFood) sections.push({ label: 'ค่าอาหารประจำเดือน', rows: buildExportSectionData('food'), cols: EXPORT_FOOD_COLUMNS.filter(c => foodCols.includes(c.id)) });
-    if (inclAttach) sections.push({ label: 'บิลแนบ / ค่าสาธารณูปโภค', rows: buildExportSectionData('attach'), cols: EXPORT_BILL_COLUMNS.filter(c => billCols.includes(c.id)) });
+    const sections = getExportSectionDefinitions()
+        .filter(section => !!(document.getElementById(section.checkboxId) || {}).checked)
+        .map(section => {
+            const selected = getExportSelectedSectionColumns(section.key);
+            return {
+                key: section.key,
+                label: section.reportLabel || section.label,
+                rows: getExportSectionRows(section.key),
+                cols: getExportSectionColumnDefinition(section.key).filter(column => selected.includes(column.id)),
+            };
+        });
 
     const hasAnyData = sections.some(s => s.rows.length > 0 && s.cols.length > 0);
     if (!hasAnyData) {
         appAlert('ระบบไม่สามารถดำเนินการได้: ไม่มีข้อมูลสำหรับส่งออก (Empty Data)');
-        return;
+        return false;
     }
 
     // โหลด xlsx/pdfmake แบบ lazy (ปกติเตรียมไว้เบื้องหลังแล้ว → resolve ทันที)
@@ -11724,16 +13098,16 @@ async function executeDynamicExport(format) {
         await ensureExportLibs();
     } catch (err) {
         appAlert('โหลดเครื่องมือส่งออกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง: ' + err.message, 'error');
-        return;
+        return false;
     }
 
     if (format === 'excel' || format === 'csv') {
         const wb = XLSX.utils.book_new();
         sections.forEach(section => {
             if (section.rows.length === 0 || section.cols.length === 0) return;
-            const exportData = section.rows.map(row => {
+            const exportData = section.rows.map((row, rowIndex) => {
                 let obj = {};
-                section.cols.forEach(c => { obj[c.label] = c.get(row) ?? ''; });
+                section.cols.forEach(c => { obj[c.label] = getExportColumnValue(c, row, rowIndex); });
                 return obj;
             });
             const ws = XLSX.utils.json_to_sheet(exportData);
@@ -11745,26 +13119,65 @@ async function executeDynamicExport(format) {
             const csv = XLSX.utils.sheet_to_csv(wb.Sheets[firstSheet]);
             const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csv], {type: "text/csv;charset=utf-8"});
             const link = document.createElement("a");
-            link.href = URL.createObjectURL(blob);
+            const downloadUrl = URL.createObjectURL(blob);
+            link.href = downloadUrl;
             link.download = `DynamicReport_${new Date().getTime()}.csv`;
+            link.style.display = 'none';
+            document.body.appendChild(link);
             link.click();
+            document.body.removeChild(link);
+            window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0);
         } else {
             XLSX.writeFile(wb, `DynamicReport_${new Date().getTime()}.xlsx`);
         }
     } else if (format === 'pdf') {
         showLoading(true);
         try {
-            const model = await buildReportModel();
+            setExportOperationState(true, options.forceNew
+                ? 'กำลังยืนยันและสำรอง QR สำหรับฉบับใหม่...'
+                : 'กำลังสำรอง QR สำหรับรายงานฉบับแรก...');
+            const reservation = await apiCall('reserveReportArchive', {
+                ...getExportArchiveSummaryPayload(),
+                forceNew: options.forceNew === true,
+                passwordHash: options.passwordHash || '',
+            });
+            const reservedArchive = reservation.archive || {};
+            if (reservedArchive.status === 'saved' && reservedArchive.fileUrl) {
+                currentExportArchiveState.current = reservedArchive;
+                updateExportArchiveControls();
+                return openStoredReportArchive(reservedArchive);
+            }
+            if (!reservedArchive.verifyCode) throw new Error('ระบบไม่ได้รับรหัส QR สำหรับรายงาน');
+
+            setExportOperationState(true, 'กำลังรวบรวมข้อมูลและหลักฐานสำหรับ PDF...');
+            const model = await buildReportModel(undefined, {
+                verifyCode: reservedArchive.verifyCode,
+                allowCreateVerifyCode: false,
+            });
             const docDef = buildPdfDocDefinition(model);
-            const filename = (model.header.docNum || model.header.title || 'DynamicReport').replace(/[\\/:*?"<>|]/g, '_') + '.pdf';
-            // download() เป็น async ใน pdfmake 0.3.x — ต้อง await เพื่อให้ error เข้า catch และ showLoading(false) รอจนเสร็จจริง
-            await pdfMake.createPdf(docDef).download(filename);
+            const filenameBase = (model.header.docNum || model.header.title || 'DynamicReport').replace(/[\\/:*?"<>|]/g, '_');
+            const filename = `${filenameBase}_v${reservedArchive.version || 1}.pdf`;
+            setExportOperationState(true, 'กำลังสร้างและบันทึกไฟล์ PDF ลง Drive...');
+            const pdfBlob = await pdfMake.createPdf(docDef).getBlob();
+            const base64Data = await reportBlobToBase64(pdfBlob);
+            const saved = await apiCall('saveReportArchiveFile', {
+                verifyCode: reservedArchive.verifyCode,
+                base64Data,
+                ...getExportArchiveSummaryPayload(model),
+            });
+            currentExportArchiveState.current = saved.archive || reservedArchive;
+            clearExportPreviewCache();
+            downloadReportBlob(pdfBlob, filename);
+            await refreshExportArchiveStatus();
+            renderExportPreview();
         } catch (err) {
             appAlert('สร้าง PDF ไม่สำเร็จ: ' + err.message, 'error');
+            return false;
         } finally {
             showLoading(false);
         }
     }
+    return true;
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -11791,12 +13204,14 @@ function openUserProfileModal() {
     (document.getElementById('profile-modal-email') || {}).value = user.email || '';
     (document.getElementById('profile-current-password') || {}).value = '';
     (document.getElementById('profile-new-password') || {}).value = '';
+    (document.getElementById('profile-confirm-password') || {}).value = '';
     (document.getElementById('profile-modal-avatar') || {}).value = '';
     (document.getElementById('profile-modal-name') || {}).textContent = user.name || user.username || user.id || '-';
     (document.getElementById('profile-modal-role') || {}).textContent = user.role || '-';
     
     const modal = document.getElementById('modal-user-profile');
     modal.classList.add('active');
+    validateProfilePassword();
 }
 
 function closeUserProfileModal() {
@@ -11825,11 +13240,12 @@ async function saveUserProfile() {
     const email = String((document.getElementById('profile-modal-email') || {}).value || '').trim();
     const currentPassword = String((document.getElementById('profile-current-password') || {}).value || '');
     const newPassword = String((document.getElementById('profile-new-password') || {}).value || '');
-    if ((currentPassword && !newPassword) || (!currentPassword && newPassword)) {
-        return appAlert('หากต้องการเปลี่ยนรหัสผ่าน กรุณากรอกทั้งรหัสผ่านปัจจุบันและรหัสผ่านใหม่', 'warning');
+    const confirmPassword = String((document.getElementById('profile-confirm-password') || {}).value || '');
+    if ((currentPassword || newPassword || confirmPassword) && (!currentPassword || !newPassword || !confirmPassword)) {
+        return appAlert('หากต้องการเปลี่ยนรหัสผ่าน กรุณากรอกรหัสผ่านปัจจุบัน รหัสผ่านใหม่ และยืนยันรหัสผ่านให้ครบ', 'warning');
     }
-    if (newPassword && !/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/.test(newPassword)) {
-        return appAlert('รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัว และมี A-Z, a-z, 0-9', 'warning');
+    if (newPassword && !validateProfilePassword(true)) {
+        return appAlert('รหัสผ่านใหม่ยังไม่ผ่านเงื่อนไขความปลอดภัย หรือการยืนยันรหัสผ่านไม่ตรงกัน', 'warning');
     }
 
     appAlert('กำลังบันทึกข้อมูล...', 'info');
@@ -11857,13 +13273,13 @@ let userMgmtFilters = { search: '', role: '' };
 async function renderUserManagement() {
     const tbody = document.getElementById('user-management-tbody');
     if (!tbody) return;
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>';
     try {
         const res = await apiCall('getUsers');
         adminUserList = res.users || [];
         renderUserManagementRows();
     } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--danger);">โหลดข้อมูลไม่สำเร็จ: ' + escapeHTML(err.message) + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--danger);">โหลดข้อมูลไม่สำเร็จ: ' + escapeHTML(err.message) + '</td></tr>';
     }
 }
 
@@ -11878,7 +13294,7 @@ function renderUserManagementRows() {
     if (!tbody) return;
 
     if (!adminUserList.length) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">ยังไม่มีผู้ใช้งาน</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);">ยังไม่มีผู้ใช้งาน</td></tr>';
         return;
     }
 
@@ -11887,18 +13303,28 @@ function renderUserManagementRows() {
     const filtered = adminUserList.filter(u => {
         if (roleFilter && (u.role || '').toLowerCase() !== roleFilter) return false;
         if (!search) return true;
-        const haystack = `${u.username || ''} ${u.fullName || ''} ${u.email || ''}`.toLowerCase();
+        const organization = (state.organizations || []).find(item => String(item.id) === String(u.organizationId));
+        const haystack = `${u.username || ''} ${u.fullName || ''} ${u.email || ''} ${organization ? organization.name : ''} ${organization ? getOrganizationShortName(organization.id) : ''}`.toLowerCase();
         return haystack.includes(search);
     });
 
     if (!filtered.length) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);">ไม่พบผู้ใช้งานที่ตรงกับเงื่อนไข</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);">ไม่พบผู้ใช้งานที่ตรงกับเงื่อนไข</td></tr>';
         return;
     }
 
     const roleColors = { admin: '#ef4444', manager: '#1d4ed8', staff: '#16a34a', viewer: '#0ea5e9' };
     tbody.innerHTML = filtered.map(u => {
         const color = roleColors[(u.role || '').toLowerCase()] || '#6b7280';
+        const organization = (state.organizations || []).find(item => String(item.id) === String(u.organizationId));
+        const organizationOptions = (state.organizations || [])
+            .filter(item => item && item.id && item.active !== false)
+            .map(item => `<option value="${escapeHTML(item.id)}" ${String(item.id) === String(u.organizationId) ? 'selected' : ''}>${escapeHTML(getOrganizationShortName(item.id))} — ${escapeHTML(item.name || item.nameTh || item.id)}</option>`)
+            .join('');
+        const organizationLabel = organizationOptions
+            ? `<select class="form-select user-recording-organization" data-user-id="${escapeHTML(u.id)}" data-previous-value="${escapeHTML(u.organizationId || '')}" onchange="changeUserRecordingOrganization('${escapeHTML(u.id)}', this.value, this)" aria-label="สถาบันที่กำลังบันทึกของ ${escapeHTML(u.username || '')}">${organizationOptions}</select>
+               ${(u.role || '').toLowerCase() === 'admin' ? '<small class="user-organization-scope">เข้าถึงทุกสถาบัน · ค่านี้เป็นค่าเริ่มต้น</small>' : '<small class="user-organization-scope">จำกัดข้อมูลตามสถาบันนี้</small>'}`
+            : '<span style="color:var(--danger);">ยังไม่มีสถาบันที่เปิดใช้งาน</span>';
         const activeBadge = u.active
             ? '<span style="background:#10b98122;color:#10b981;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">ใช้งาน</span>'
             : '<span style="background:#ef444422;color:#ef4444;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">ปิดใช้งาน</span>';
@@ -11908,10 +13334,11 @@ function renderUserManagementRows() {
                 <td style="font-weight:600;">${escapeHTML(u.username || '-')}</td>
                 <td style="color:var(--text-secondary);font-size:13px;">${escapeHTML(u.email || '-')}</td>
                 <td><span style="background:${color}22;color:${color};padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;">${(u.role || '-').toUpperCase()}</span></td>
+                <td>${organizationLabel}</td>
                 <td style="text-align:center;">${activeBadge}</td>
                 <td style="text-align:center;">
-                    <button class="btn btn-outline" style="padding:4px 10px;font-size:12px;margin-right:4px;" onclick="openEditUserModal('${escapeHTML(u.id)}')"><i data-lucide="edit-2"></i></button>
-                    <button class="btn" style="padding:4px 10px;font-size:12px;background:var(--danger-light);color:var(--danger);border:none;" onclick="confirmToggleUserActive('${escapeHTML(u.id)}', ${!!u.active})" title="${u.active ? 'ปิดการใช้งาน' : 'เปิดการใช้งาน'}">
+                    <button type="button" class="btn btn-icon btn-icon-edit user-action-button" onclick="openEditUserModal('${escapeHTML(u.id)}')" title="แก้ไขผู้ใช้" aria-label="แก้ไขผู้ใช้ ${escapeHTML(u.username || '')}"><i data-lucide="edit-2"></i></button>
+                    <button type="button" class="btn btn-icon ${u.active ? 'btn-icon-delete' : 'btn-icon-save'} user-action-button" onclick="confirmToggleUserActive('${escapeHTML(u.id)}', ${!!u.active})" title="${u.active ? 'ปิดการใช้งาน' : 'เปิดการใช้งาน'}" aria-label="${u.active ? 'ปิดการใช้งาน' : 'เปิดการใช้งาน'}ผู้ใช้ ${escapeHTML(u.username || '')}">
                         <i data-lucide="${u.active ? 'user-x' : 'user-check'}"></i>
                     </button>
                 </td>
@@ -11921,22 +13348,189 @@ function renderUserManagementRows() {
     initializeLucide();
 }
 
-// เติม dropdown เลือกสถานศึกษาในฟอร์มเพิ่ม/แก้ไขผู้ใช้ — ซ่อนไว้ถ้ามีองค์กรเดียว (ไม่มีอะไรให้เลือก)
+async function changeUserRecordingOrganization(userId, organizationId, selectElement) {
+    const user = adminUserList.find(item => String(item.id) === String(userId));
+    const organization = (state.organizations || []).find(item =>
+        String(item.id) === String(organizationId) && item.active !== false);
+    const previousOrganizationId = user && user.organizationId ||
+        (selectElement && selectElement.dataset.previousValue) || '';
+    if (!user || !organization) {
+        if (selectElement) selectElement.value = previousOrganizationId;
+        appAlert('ไม่พบผู้ใช้หรือสถาบันที่เลือก', 'error');
+        return false;
+    }
+    if (String(previousOrganizationId) === String(organizationId)) return true;
+
+    const confirmed = await appConfirm(
+        `ต้องการเปลี่ยนสถาบันที่กำลังบันทึกของ “${user.username || user.fullName || user.id}” เป็น ${getOrganizationShortName(organization.id)} — ${organization.name || organization.nameTh || organization.id} หรือไม่? หากผู้ใช้นี้กำลังเปิดระบบอยู่ ควรรีเฟรชหน้าหลังการเปลี่ยน`,
+        'ยืนยันเปลี่ยนสถาบันของผู้ใช้',
+        { confirmButtonText: 'ยืนยันการเปลี่ยน', cancelButtonText: 'ย้อนกลับ' }
+    );
+    if (!confirmed) {
+        if (selectElement) selectElement.value = previousOrganizationId;
+        return false;
+    }
+
+    if (selectElement) selectElement.disabled = true;
+    try {
+        await apiCall('updateUser', { id: user.id, organizationId: organization.id });
+        user.organizationId = organization.id;
+        if (selectElement) selectElement.dataset.previousValue = organization.id;
+
+        const currentUser = getCurrentUser();
+        if (currentUser && String(currentUser.id) === String(user.id)) {
+            currentUser.organizationId = organization.id;
+            localStorage.setItem('rdf_current_user', JSON.stringify(currentUser));
+            localStorage.setItem(getActiveOrganizationStorageKey(currentUser), String(organization.id));
+            renderOrganizationContextControl();
+            await initAppWithAPI();
+        }
+
+        appAlert(`เปลี่ยนสถาบันที่กำลังบันทึกของ ${user.username || user.fullName || user.id} เป็น ${getOrganizationShortName(organization.id)} เรียบร้อยแล้ว`, 'success');
+        renderUserManagementRows();
+        return true;
+    } catch (error) {
+        if (selectElement) selectElement.value = previousOrganizationId;
+        appAlert('เปลี่ยนสถาบันของผู้ใช้ไม่สำเร็จ: ' + error.message, 'error');
+        return false;
+    } finally {
+        if (selectElement && selectElement.isConnected) selectElement.disabled = false;
+    }
+}
+window.changeUserRecordingOrganization = changeUserRecordingOrganization;
+
+// ผู้ใช้ทุกคนมีสถาบันหลักหนึ่งแห่ง ส่วน Admin ใช้เป็นค่าเริ่มต้นและยังเข้าถึงได้ทุกแห่ง
 function setupAdminUserOrgSelect(selectedOrgId) {
     const wrap = document.getElementById('admin-user-org-wrap');
     const sel = document.getElementById('admin-user-org');
     if (!wrap || !sel) return;
-    const orgs = state.organizations || [];
-    if (orgs.length <= 1) {
-        wrap.style.display = 'none';
+    const orgs = (state.organizations || []).filter(org => org && org.id && org.active !== false);
+    wrap.style.display = '';
+    if (!orgs.length) {
+        sel.innerHTML = '<option value="">ไม่พบสถาบันที่เปิดใช้งาน</option>';
+        sel.disabled = true;
+        const hint = document.getElementById('admin-user-org-hint');
+        if (hint) hint.textContent = 'ไม่พบข้อมูลสถาบัน กรุณาอัปเดต Apps Script และรัน setupInstitutionAccessModel() ก่อนเพิ่มผู้ใช้';
         return;
     }
-    wrap.style.display = '';
+    sel.disabled = false;
     const currentUser = JSON.parse(localStorage.getItem('rdf_current_user') || 'null');
     const defaultOrgId = selectedOrgId || (currentUser && currentUser.organizationId) || orgs[0].id;
-    sel.innerHTML = orgs.map(o => `<option value="${o.id}">${escapeHTML(o.name)}</option>`).join('');
-    sel.value = defaultOrgId;
+    sel.innerHTML = orgs.map(o => `<option value="${escapeHTML(o.id)}">${escapeHTML(getOrganizationShortName(o.id))} — ${escapeHTML(o.name || o.nameTh || o.id)}</option>`).join('');
+    sel.value = orgs.some(org => String(org.id) === String(defaultOrgId)) ? defaultOrgId : orgs[0].id;
+    onAdminUserRoleChange();
 }
+
+const COMMON_PASSWORDS = new Set([
+    'password', 'password123', 'password1234', 'qwerty123', 'qwerty1234',
+    '12345678', '123456789', '1234567890', 'admin123', 'admin1234',
+    'welcome123', 'letmein123', 'changeme123'
+]);
+
+function evaluatePasswordPolicy(password, confirmation, username, email) {
+    const value = String(password || '');
+    const normalized = value.toLowerCase();
+    const usernamePart = String(username || '').trim().toLowerCase();
+    const emailPart = String(email || '').trim().toLowerCase().split('@')[0];
+    const identitySafe = value === value.trim()
+        && !COMMON_PASSWORDS.has(normalized)
+        && !(usernamePart.length >= 3 && normalized.includes(usernamePart))
+        && !(emailPart.length >= 3 && normalized.includes(emailPart));
+    const rules = {
+        length: value.length >= 12 && value.length <= 128,
+        uppercase: /[A-Z]/.test(value),
+        lowercase: /[a-z]/.test(value),
+        number: /\d/.test(value),
+        symbol: /[^A-Za-z0-9\s]/.test(value),
+        identity: identitySafe,
+        match: value.length > 0 && value === String(confirmation || '')
+    };
+    return { rules, valid: Object.values(rules).every(Boolean) };
+}
+
+function renderPasswordPolicy(policy, result, touched) {
+    if (!policy) return;
+    policy.querySelectorAll('[data-password-rule]').forEach(element => {
+        const valid = !!result.rules[element.dataset.passwordRule];
+        element.classList.toggle('is-valid', touched && valid);
+        element.classList.toggle('is-invalid', touched && !valid);
+    });
+}
+
+function validateProfilePassword(showErrors = false) {
+    const currentInput = document.getElementById('profile-current-password');
+    const passwordInput = document.getElementById('profile-new-password');
+    const confirmInput = document.getElementById('profile-confirm-password');
+    const policy = document.getElementById('profile-password-policy');
+    if (!currentInput || !passwordInput || !confirmInput || !policy) return true;
+    const password = passwordInput.value;
+    const confirmation = confirmInput.value;
+    const empty = !currentInput.value && !password && !confirmation;
+    const user = getCurrentUser() || {};
+    const result = evaluatePasswordPolicy(password, confirmation, user.username || user.id, user.email);
+    if (password && password === currentInput.value) result.rules.identity = false;
+    result.valid = Object.values(result.rules).every(Boolean);
+    const touched = showErrors || !empty;
+    policy.hidden = empty;
+    renderPasswordPolicy(policy, result, touched);
+    const valid = empty || result.valid;
+    passwordInput.setAttribute('aria-invalid', String(touched && !valid));
+    confirmInput.setAttribute('aria-invalid', String(touched && !valid));
+    return valid;
+}
+window.validateProfilePassword = validateProfilePassword;
+
+function validateAdminUserPassword(showErrors = false) {
+    const passwordInput = document.getElementById('admin-user-password');
+    const confirmInput = document.getElementById('admin-user-password-confirm');
+    const policy = document.getElementById('admin-user-password-policy');
+    if (!passwordInput || !confirmInput || !policy) return true;
+    const password = passwordInput.value;
+    const confirmation = confirmInput.value;
+    const mode = (document.getElementById('admin-user-mode') || {}).value || 'create';
+    const optionalAndEmpty = mode === 'edit' && !password && !confirmation;
+    const touched = showErrors || !!password || !!confirmation;
+    policy.hidden = optionalAndEmpty;
+    const result = evaluatePasswordPolicy(
+        password,
+        confirmation,
+        (document.getElementById('admin-user-username') || {}).value,
+        (document.getElementById('admin-user-email') || {}).value
+    );
+    renderPasswordPolicy(policy, result, touched);
+    const valid = optionalAndEmpty || result.valid;
+    passwordInput.setAttribute('aria-invalid', String(touched && !valid));
+    confirmInput.setAttribute('aria-invalid', String(touched && !valid));
+    return valid;
+}
+window.validateAdminUserPassword = validateAdminUserPassword;
+
+function validateAdminUserEmail(showErrors = false) {
+    const input = document.getElementById('admin-user-email');
+    const hint = document.getElementById('admin-user-email-hint');
+    if (!input || !hint) return true;
+    const email = input.value.trim().toLowerCase();
+    const valid = !email || /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
+    const touched = showErrors || !!email;
+    hint.classList.toggle('is-valid', touched && valid && !!email);
+    hint.classList.toggle('is-invalid', touched && !valid);
+    hint.textContent = !valid
+        ? 'รูปแบบอีเมลไม่ถูกต้อง กรุณาระบุอีเมล Google หรือ Google Workspace ให้ครบ'
+        : 'ต้องตรงกับอีเมลบัญชี Google ทุกตัวอักษร ระบบไม่สร้างบัญชีอัตโนมัติ';
+    input.setAttribute('aria-invalid', String(touched && !valid));
+    return valid;
+}
+window.validateAdminUserEmail = validateAdminUserEmail;
+
+function onAdminUserRoleChange() {
+    const role = (document.getElementById('admin-user-role') || {}).value || 'staff';
+    const hint = document.getElementById('admin-user-org-hint');
+    if (!hint) return;
+    hint.textContent = role === 'admin'
+        ? 'Admin เข้าถึงทุกสถาบัน ค่านี้ใช้เป็นสถาบันเริ่มต้นเมื่อเข้าสู่ระบบ และเปลี่ยนได้จากส่วนหัวระบบ'
+        : 'ผู้ใช้นี้จะดูและจัดการข้อมูลได้เฉพาะสถาบันที่กำหนด ตามขอบเขตของบทบาท';
+}
+window.onAdminUserRoleChange = onAdminUserRoleChange;
 
 function openCreateUserModal() {
     (document.getElementById('admin-user-modal-title') || {}).textContent = 'เพิ่มผู้ใช้งานใหม่';
@@ -11947,10 +13541,13 @@ function openCreateUserModal() {
     (document.getElementById('admin-user-lastname') || {}).value = '';
     (document.getElementById('admin-user-email') || {}).value = '';
     (document.getElementById('admin-user-password') || {}).value = '';
+    (document.getElementById('admin-user-password-confirm') || {}).value = '';
     (document.getElementById('admin-user-role') || {}).value = 'staff';
     (document.getElementById('admin-user-pw-hint') || {}).textContent = '(จำเป็น)';
     (document.getElementById('admin-user-role-warning') || {}).style.display = 'none';
     setupAdminUserOrgSelect();
+    validateAdminUserEmail();
+    validateAdminUserPassword();
     const modal = document.getElementById('modal-admin-user');
     modal.classList.add('active');
 }
@@ -11968,12 +13565,15 @@ function openEditUserModal(userId) {
     (document.getElementById('admin-user-lastname') || {}).value = '';
     (document.getElementById('admin-user-email') || {}).value = u.email || '';
     (document.getElementById('admin-user-password') || {}).value = '';
+    (document.getElementById('admin-user-password-confirm') || {}).value = '';
     const currentRole = (u.role || '').toLowerCase();
     const isKnownRole = VALID_USER_ROLES.includes(currentRole);
     (document.getElementById('admin-user-role') || {}).value = isKnownRole ? currentRole : 'staff';
     (document.getElementById('admin-user-role-warning') || {}).style.display = isKnownRole ? 'none' : 'block';
     (document.getElementById('admin-user-pw-hint') || {}).textContent = '(เว้นว่างถ้าไม่ต้องการเปลี่ยน)';
     setupAdminUserOrgSelect(u.organizationId);
+    validateAdminUserEmail();
+    validateAdminUserPassword();
     const modal = document.getElementById('modal-admin-user');
     modal.classList.add('active');
 }
@@ -11986,8 +13586,9 @@ function closeAdminUserModal() {
 async function saveAdminUser() {
     const mode      = document.getElementById('admin-user-mode').value;
     const username  = document.getElementById('admin-user-username').value.trim();
-    const password  = document.getElementById('admin-user-password').value.trim();
-    const email     = document.getElementById('admin-user-email').value.trim();
+    const password  = document.getElementById('admin-user-password').value;
+    const passwordConfirmation = document.getElementById('admin-user-password-confirm').value;
+    const email     = document.getElementById('admin-user-email').value.trim().toLowerCase();
     const role      = document.getElementById('admin-user-role').value;
     const firstName = document.getElementById('admin-user-firstname').value.trim();
     const lastName  = document.getElementById('admin-user-lastname').value.trim();
@@ -11996,9 +13597,15 @@ async function saveAdminUser() {
     if (!username) { appAlert('กรุณาระบุ Username', 'error'); return; }
     if (!fullName) { appAlert('กรุณาระบุชื่อ-นามสกุล', 'error'); return; }
     if (mode === 'create' && !password) { appAlert('กรุณาตั้งรหัสผ่านสำหรับผู้ใช้ใหม่', 'error'); return; }
+    if (!validateAdminUserEmail(true)) { appAlert('กรุณาตรวจสอบรูปแบบอีเมลสำหรับ Google Login', 'error'); return; }
+    if ((password || passwordConfirmation || mode === 'create') && !validateAdminUserPassword(true)) {
+        appAlert('รหัสผ่านยังไม่ผ่านเงื่อนไขความปลอดภัย หรือการยืนยันรหัสผ่านไม่ตรงกัน', 'error');
+        return;
+    }
 
     const orgSel = document.getElementById('admin-user-org');
     const selectedOrgId = orgSel && orgSel.value ? orgSel.value : null;
+    if (!selectedOrgId) { appAlert('กรุณาเลือกสถาบันที่กำลังบันทึก', 'error'); return; }
 
     try {
         if (mode === 'create') {
@@ -12470,7 +14077,7 @@ function buildFoodOverviewEditRow(item, sequence) {
             <td data-label="หลักฐาน / เครื่องมือ">
                 <div class="record-tools food-overview-edit-actions">
                     <button type="button" class="btn btn-icon btn-sm btn-icon-save" onclick="saveFoodOverviewInlineEdit('${escapeHTML(id)}')" title="บันทึกการแก้ไข" aria-label="บันทึกการแก้ไข"><i data-lucide="check"></i></button>
-                    <button type="button" class="btn btn-icon btn-sm btn-icon-cancel" onclick="cancelFoodOverviewInlineEdit()" title="ยกเลิก" aria-label="ยกเลิกการแก้ไข"><i data-lucide="x"></i></button>
+                    <button type="button" class="btn btn-icon btn-sm btn-icon-neutral btn-icon-cancel" onclick="cancelFoodOverviewInlineEdit()" title="ยกเลิก" aria-label="ยกเลิกการแก้ไข"><i data-lucide="x"></i></button>
                 </div>
             </td>
         </tr>`;
@@ -12947,6 +14554,9 @@ window.submitFoodEntry = async function(e) {
     // wrap it as a single-item document (no Sheet schema changes needed).
     const payload = {
         ...(!editId && { requestId: createClientRequestId('food') }),
+        organizationId: isAdminUser(currentUser)
+            ? getActiveOrganizationId()
+            : currentUser && currentUser.organizationId,
         month: postingMonth,
         year: postingYear,
         dormitory: '',
@@ -13338,11 +14948,12 @@ window.closeExportModal = function() {
 // นับจาก buildExportSectionData (แหล่งข้อมูลเดียวกับที่ PDF ใช้) เพื่อให้ badge ตรงกับตารางใน PDF เสมอ
 // — เดิมนับจาก DOM table ทำให้รวมแถว "เพิ่มข้อมูล" (inline-add) เกินมาด้วย และไม่ได้กรองตามเดือนของรายงาน
 window.updateExportSectionBadges = function() {
-    const set = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n + ' รายการ'; };
     try {
-        set('export-bills-badge', buildExportSectionData('bills').length);
-        set('export-food-badge', buildExportSectionData('food').length);
-        set('export-attach-badge', buildExportSectionData('attach').length);
+        getExportSectionDefinitions().forEach(section => {
+            const badge = document.getElementById(section.badgeId);
+            if (badge) badge.textContent = getExportSectionRows(section.key).length + ' รายการ';
+            if (section.supportsAttachments) updateExportSectionEvidenceBadges(section.key);
+        });
     } catch (e) { /* state อาจยังไม่พร้อมตอนเรียกครั้งแรก — ปล่อยผ่าน */ }
 };
 
@@ -13391,30 +15002,27 @@ window.clearExportLogo = function() {
 
 /* Count report rows (นับจากแหล่งเดียวกับ PDF — ดูหมายเหตุที่ window.updateExportSectionBadges) */
 function updateExportSectionBadges() {
-    const billsN = buildExportSectionData('bills').length;
-    const foodN = buildExportSectionData('food').length;
-    const attachN = buildExportSectionData('attach').length;
-
-    const bb = document.getElementById('export-bills-badge');
-    const fb = document.getElementById('export-food-badge');
-    const ab = document.getElementById('export-attach-badge');
-    if (bb) bb.textContent = billsN + ' รายการ';
-    if (fb) fb.textContent = foodN + ' รายการ';
-    if (ab) ab.textContent = attachN + ' รายการ';
+    getExportSectionDefinitions().forEach(section => {
+        const badge = document.getElementById(section.badgeId);
+        if (badge) badge.textContent = getExportSectionRows(section.key).length + ' รายการ';
+        if (section.supportsAttachments) updateExportSectionEvidenceBadges(section.key);
+    });
 }
 
 /* Column definitions shared by preview, PDF and per-section download —
    each id matches a checkbox `value` in the modal so selection state maps 1:1. */
 const EXPORT_BILL_COLUMNS = [
-    { id: 'docNo', label: 'เลขบิล', align: 'left', get: r => r.docNo },
-    { id: 'receiptNo', label: 'เล่มที่ / เลขที่ใบเสร็จ', align: 'left', get: r => r.receiptNo },
-    { id: 'date', label: 'วันที่', align: 'left', get: r => formatDateThai(r.date) },
-    { id: 'postingMonth', label: 'รอบบันทึก', align: 'left', get: r => formatPostingMonth(r.postingMonth) },
-    { id: 'project', label: 'โครงการ', align: 'left', get: r => r.project },
+    { id: 'sequence', label: 'ลำดับ', align: 'center', get: (_r, rowIndex) => rowIndex + 1, pdfWeight: 0.42 },
+    { id: 'docNo', label: 'เลขบิล', align: 'left', get: r => r.docNo, pdfWeight: 1.15 },
+    { id: 'date', label: 'วันที่', align: 'left', get: r => formatDateThai(r.date), pdfWeight: 0.90 },
+    { id: 'receiptNo', label: 'เล่มที่ / เลขที่ใบเสร็จ', align: 'left', get: r => r.receiptNo, pdfWeight: 1.25 },
+    { id: 'postingMonth', label: 'รอบบันทึก', align: 'left', get: r => formatPostingMonth(r.postingMonth), pdfWeight: 0.95 },
+    { id: 'vendor', label: 'ผู้ขาย', align: 'left', get: r => r.vendor, pdfWeight: 1.20 },
+    { id: 'description', label: 'รายละเอียดรายการ', align: 'left', get: r => r.description, pdfWeight: 1.80 },
+    { id: 'project', label: 'โครงการ', align: 'left', get: r => r.project, pdfWeight: 0.90 },
     { id: 'category', label: 'หมวดหมู่', align: 'left', get: r => r.category },
-    { id: 'vendor', label: 'ผู้ขาย', align: 'left', get: r => r.vendor },
-    { id: 'amount', label: 'ยอดรวม', align: 'right', get: r => formatNumber(r.amount), isAmount: true },
-    { id: 'attachmentsCount', label: 'จำนวนหลักฐาน', align: 'right', get: r => r.attachmentsCount || 0 },
+    { id: 'attachmentsCount', label: 'หลักฐาน', align: 'right', get: r => r.attachmentsCount || 0, pdfWeight: 0.48 },
+    { id: 'amount', label: 'ยอดรวม', align: 'right', get: r => formatNumber(r.amount), isAmount: true, pdfWeight: 0.78 },
     { id: 'claimType', label: 'ประเภทเบิก', align: 'left', get: r => r.claimType }
 ];
 const EXPORT_FOOD_COLUMNS = [
@@ -13422,8 +15030,269 @@ const EXPORT_FOOD_COLUMNS = [
     { id: 'postingMonth', label: 'รอบบันทึก', align: 'left', get: r => formatPostingMonth(r.postingMonth) },
     { id: 'foodName', label: 'รายการ', align: 'left', get: r => r.foodName },
     { id: 'foodCategory', label: 'หมวดหมู่', align: 'left', get: r => r.foodCategory },
+    { id: 'attachmentsCount', label: 'หลักฐาน', align: 'right', get: r => r.attachmentsCount || 0, pdfWeight: 0.55 },
     { id: 'foodAmount', label: 'ยอดเงิน', align: 'right', get: r => formatNumber(r.foodAmount), isAmount: true }
 ];
+
+function getExportColumnValue(column, row, rowIndex) {
+    return column.get(row, rowIndex) ?? '';
+}
+
+// ทะเบียนหัวข้อรายงานเป็นแหล่งกำหนดกลางของเมนู, Preview, PDF, CSV/Excel และ Template
+// หัวข้อใหม่ลงทะเบียนเพิ่มเพียงจุดเดียว พร้อม columns และ dataProvider (ถ้ามีแหล่งข้อมูลใหม่)
+// ระบบจะสร้างตัวเลือกคอลัมน์ ป้ายจำนวน และการส่งออกให้โดยอัตโนมัติ.
+const EXPORT_REPORT_SECTIONS = [
+    {
+        key: 'bills', label: 'รายการบิลประจำเดือน', reportLabel: 'รายการบิล',
+        checkboxId: 'export-chk-bills', badgeId: 'export-bills-badge',
+        icon: 'receipt', accent: '#059669', badgeBackground: 'var(--accent-light)',
+        columns: EXPORT_BILL_COLUMNS, columnClass: 'export-col-chk', showColumns: true,
+        appendMonthToLabel: true, supportsAttachments: true,
+    },
+    {
+        key: 'food', label: 'ค่าอาหารประจำเดือน', reportLabel: 'ค่าอาหารประจำเดือน',
+        checkboxId: 'export-chk-food', badgeId: 'export-food-badge',
+        icon: 'utensils', accent: '#d97706', badgeBackground: '#fef3c7',
+        columns: EXPORT_FOOD_COLUMNS, columnClass: 'export-food-col', showColumns: true,
+        supportsAttachments: true,
+    },
+    {
+        key: 'attach', label: 'บิลแนบ / ค่าสาธารณูปโภค', reportLabel: 'บิลแนบ / ค่าสาธารณูปโภค',
+        checkboxId: 'export-chk-attach', badgeId: 'export-attach-badge',
+        icon: 'paperclip', accent: '#7c3aed', badgeBackground: '#ede9fe',
+        columnSourceKey: 'bills', showColumns: false, supportsAttachments: true,
+    },
+];
+
+function getExportSectionDefinitions() {
+    return EXPORT_REPORT_SECTIONS.slice();
+}
+
+function getExportSectionDefinition(sectionKey) {
+    return EXPORT_REPORT_SECTIONS.find(section => section.key === sectionKey) || null;
+}
+
+function getExportSectionColumnDefinition(sectionKey) {
+    const section = getExportSectionDefinition(sectionKey);
+    if (!section) return [];
+    if (section.columns) return section.columns;
+    const source = getExportSectionDefinition(section.columnSourceKey);
+    return source && source.columns ? source.columns : [];
+}
+
+function getExportSectionRows(sectionKey) {
+    const section = getExportSectionDefinition(sectionKey);
+    if (section && typeof section.dataProvider === 'function') {
+        const rows = section.dataProvider({ state, section: sectionKey });
+        return Array.isArray(rows) ? rows : [];
+    }
+    return buildExportSectionData(sectionKey);
+}
+
+function getExportSelectedSectionColumns(sectionKey) {
+    const section = getExportSectionDefinition(sectionKey);
+    const sourceKey = section && section.columnSourceKey ? section.columnSourceKey : sectionKey;
+    const dynamicSelector = `.export-section-column[data-export-column-section="${sourceKey}"]`;
+    const dynamicInputs = document.querySelectorAll(dynamicSelector);
+    if (dynamicInputs.length) return getExportSelectedColumns(dynamicSelector);
+    const source = getExportSectionDefinition(sourceKey);
+    return source && source.columnClass ? getExportSelectedColumns(`.${source.columnClass}`) : [];
+}
+
+function getExportSectionState() {
+    return Object.fromEntries(getExportSectionDefinitions().map(section => {
+        const checkbox = document.getElementById(section.checkboxId);
+        return [section.key, {
+            enabled: checkbox ? checkbox.checked : section.defaultChecked !== false,
+            columns: getExportSelectedSectionColumns(section.key),
+            evidenceLayout: section.supportsAttachments
+                ? getExportSectionEvidenceLayoutSetting(section.key)
+                : null,
+        }];
+    }));
+}
+
+function registerExportReportSection(definition) {
+    if (!definition || !definition.key || !definition.label) {
+        throw new Error('หัวข้อรายงานใหม่ต้องระบุ key และ label');
+    }
+    if (getExportSectionDefinition(definition.key)) {
+        throw new Error(`มีหัวข้อรายงาน ${definition.key} อยู่แล้ว`);
+    }
+    const safeKey = String(definition.key).replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!safeKey || safeKey !== definition.key) throw new Error('key ของหัวข้อรายงานไม่ถูกต้อง');
+    EXPORT_REPORT_SECTIONS.push({
+        checkboxId: `export-chk-${safeKey}`,
+        badgeId: `export-${safeKey}-badge`,
+        icon: 'file-text',
+        accent: '#2563eb',
+        badgeBackground: '#dbeafe',
+        defaultChecked: true,
+        showColumns: true,
+        supportsAttachments: false,
+        ...definition,
+    });
+    renderExportSectionControls(true);
+    renderExportSignatureSectionTargets(true);
+}
+window.registerExportReportSection = registerExportReportSection;
+
+function getExportSectionEvidenceStatus(sectionKey) {
+    const rows = getExportSectionRows(sectionKey);
+    const loadedRows = rows.filter(row => Object.prototype.hasOwnProperty.call(attachmentStore, row.id));
+    const count = rows.reduce((sum, row) => sum + ((attachmentStore[row.id] || []).length), 0);
+    return {
+        count,
+        loaded: rows.length === 0 || loadedRows.length === rows.length,
+        loadedRows: loadedRows.length,
+        totalRows: rows.length,
+    };
+}
+
+function updateExportSectionEvidenceBadges(sectionKey) {
+    const status = getExportSectionEvidenceStatus(sectionKey);
+    const badge = document.querySelector(`[data-export-evidence-badge="${sectionKey}"]`);
+    if (badge) {
+        badge.textContent = status.loaded ? `${status.count} หลักฐาน` : `รอตรวจ ${status.totalRows - status.loadedRows} รายการ`;
+        badge.classList.toggle('is-ready', status.loaded);
+        badge.classList.toggle('is-empty', status.loaded && status.count === 0);
+        badge.title = status.loaded
+            ? `พบหลักฐาน ${status.count} ไฟล์จาก ${status.totalRows} รายการ`
+            : `ยังไม่ได้ตรวจหลักฐาน ${status.totalRows - status.loadedRows} รายการ`;
+    }
+    return status;
+}
+
+window.toggleExportSectionDetails = function(sectionKey, expanded) {
+    const card = document.querySelector(`[data-export-section-card="${sectionKey}"]`);
+    if (!card) return;
+    const nextExpanded = typeof expanded === 'boolean' ? expanded : card.classList.contains('is-collapsed');
+    card.classList.toggle('is-collapsed', !nextExpanded);
+    const button = card.querySelector('[data-export-section-toggle]');
+    if (button) {
+        button.setAttribute('aria-expanded', nextExpanded ? 'true' : 'false');
+        button.title = nextExpanded ? 'ยุบรายละเอียดหัวข้อ' : 'ขยายรายละเอียดหัวข้อ';
+    }
+};
+
+window.toggleAllExportSectionDetails = function(expanded) {
+    getExportSectionDefinitions().forEach(section => window.toggleExportSectionDetails(section.key, !!expanded));
+};
+
+window.loadExportSectionEvidence = async function(sectionKey) {
+    const button = document.querySelector(`[data-export-evidence-load="${sectionKey}"]`);
+    if (button) {
+        button.disabled = true;
+        button.setAttribute('aria-busy', 'true');
+    }
+    try {
+        const reportMonth = (document.getElementById('export-report-month') || {}).value || getSelectedPostingMonth();
+        await ensureExportReportData(reportMonth);
+        const rows = getExportSectionRows(sectionKey);
+        await ensureAttachmentsLoaded(rows, sectionKey);
+        rows.forEach(row => { row.attachmentsCount = (attachmentStore[row.id] || []).length; });
+        updateExportSectionEvidenceBadges(sectionKey);
+        clearExportPreviewCache();
+        renderExportPreview();
+    } catch (error) {
+        appAlert(`ตรวจหลักฐานไม่สำเร็จ: ${error.message}`, 'error');
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.setAttribute('aria-busy', 'false');
+        }
+    }
+};
+
+function renderExportSectionControls(force = false) {
+    const host = document.getElementById('export-section-options');
+    if (!host || (host.dataset.registryRendered === 'true' && !force)) return;
+    const previous = {};
+    getExportSectionDefinitions().forEach(section => {
+        const checkbox = document.getElementById(section.checkboxId);
+        const columnSelector = `[data-export-column-section="${section.key}"]`;
+        const existingColumns = Array.from(document.querySelectorAll(columnSelector));
+        previous[section.key] = {
+            enabled: checkbox ? checkbox.checked : section.defaultChecked !== false,
+            columns: existingColumns.length
+                ? existingColumns.filter(input => input.checked).map(input => input.value)
+                : null,
+            collapsed: !!document.querySelector(`[data-export-section-card="${section.key}"]`)?.classList.contains('is-collapsed'),
+            evidenceLayout: section.supportsAttachments
+                ? getExportSectionEvidenceLayoutSetting(section.key)
+                : null,
+        };
+    });
+
+    host.innerHTML = getExportSectionDefinitions().map(section => {
+        const stateBefore = previous[section.key] || {};
+        const checked = stateBefore.enabled !== false ? ' checked' : '';
+        const collapsed = stateBefore.collapsed ? ' is-collapsed' : '';
+        const columns = section.showColumns === false ? [] : getExportSectionColumnDefinition(section.key);
+        const columnClass = section.columnClass ? ` ${section.columnClass}` : '';
+        const columnHtml = columns.length ? `<fieldset class="export-section-columns" data-export-section-columns="${escapeHTML(section.key)}"><legend>รายละเอียดรายการที่แสดง</legend>${columns.map(column => {
+            const selected = !stateBefore.columns || stateBefore.columns.includes(column.id);
+            return `<label><input type="checkbox" class="export-section-column${columnClass}" data-export-column-section="${escapeHTML(section.key)}" value="${escapeHTML(column.id)}"${selected ? ' checked' : ''} onchange="renderExportPreview()"> ${escapeHTML(column.label)}</label>`;
+        }).join('')}</fieldset>` : '';
+        const savedLayout = stateBefore.evidenceLayout || getExportSectionEvidenceLayoutSetting(section.key);
+        const sectionLayout = normalizeExportEvidenceLayout(savedLayout, getExportEvidenceLayoutDefaults());
+        const layoutHtml = section.supportsAttachments ? `<fieldset class="export-section-evidence-layout">
+            <legend>รูปแบบหลักฐานของหัวข้อนี้</legend>
+            <label class="export-section-layout-mode">การใช้ค่า
+                <select class="form-select" data-export-evidence-mode="${escapeHTML(section.key)}" onchange="handleExportEvidenceLayoutChange('${escapeHTML(section.key)}')">
+                    <option value="inherit"${savedLayout.inherit !== false ? ' selected' : ''}>ใช้ค่าเริ่มต้นของรายงาน</option>
+                    <option value="custom"${savedLayout.inherit === false ? ' selected' : ''}>กำหนดเฉพาะหัวข้อนี้</option>
+                </select>
+            </label>
+            <label>แนวกระดาษ
+                <select class="form-select" data-export-evidence-orientation="${escapeHTML(section.key)}" onchange="handleExportEvidenceLayoutChange('${escapeHTML(section.key)}')">
+                    <option value="portrait"${sectionLayout.orientation === 'portrait' ? ' selected' : ''}>แนวตั้ง</option>
+                    <option value="landscape"${sectionLayout.orientation === 'landscape' ? ' selected' : ''}>แนวนอน</option>
+                </select>
+            </label>
+            <label>หลักฐานต่อหน้า
+                <select class="form-select" data-export-evidence-items="${escapeHTML(section.key)}" onchange="handleExportEvidenceLayoutChange('${escapeHTML(section.key)}')">
+                    <option value="1"${sectionLayout.itemsPerPage === 1 ? ' selected' : ''}>1 รายการ</option>
+                    <option value="2"${sectionLayout.itemsPerPage === 2 ? ' selected' : ''}>2 รายการ</option>
+                </select>
+            </label>
+            <label>การจัดเรียง
+                <select class="form-select" data-export-evidence-placement="${escapeHTML(section.key)}" onchange="handleExportEvidenceLayoutChange('${escapeHTML(section.key)}')">
+                    <option value="vertical"${sectionLayout.placement === 'vertical' ? ' selected' : ''}>บน–ล่าง</option>
+                    <option value="horizontal"${sectionLayout.placement === 'horizontal' ? ' selected' : ''}>ซ้าย–ขวา</option>
+                </select>
+            </label>
+            <small data-export-evidence-summary="${escapeHTML(section.key)}"></small>
+        </fieldset>` : '';
+        const evidenceBadge = section.supportsAttachments
+            ? `<span class="export-section-evidence-badge" data-export-evidence-badge="${escapeHTML(section.key)}">รอตรวจหลักฐาน</span>`
+            : '';
+        const evidenceButton = section.supportsAttachments
+            ? `<button type="button" class="btn btn-sm btn-secondary" data-export-evidence-load="${escapeHTML(section.key)}" onclick="loadExportSectionEvidence('${escapeHTML(section.key)}')" title="ตรวจจำนวนหลักฐานจากข้อมูลจริง"><i data-lucide="paperclip"></i><span>ตรวจหลักฐาน</span></button>`
+            : '';
+        return `<div class="export-section-card${collapsed}" data-export-section-card="${escapeHTML(section.key)}">
+            <div class="export-section-card-header">
+                <label class="export-section-card-title">
+                    <input type="checkbox" id="${escapeHTML(section.checkboxId)}"${checked} onchange="handleExportReportSectionToggle('${escapeHTML(section.key)}')">
+                    <i data-lucide="${escapeHTML(section.icon || 'file-text')}" style="color:${escapeHTML(section.accent || '#2563eb')};"></i>
+                    <span>${escapeHTML(section.label)}</span>
+                    <span id="${escapeHTML(section.badgeId)}" class="export-section-row-badge" style="background:${escapeHTML(section.badgeBackground || '#dbeafe')};color:${escapeHTML(section.accent || '#2563eb')};">0 รายการ</span>
+                    ${evidenceBadge}
+                </label>
+                <div class="export-section-card-actions">
+                    ${evidenceButton}
+                    <button type="button" class="btn btn-action-view export-section-download" onclick="exportSingleSection('${escapeHTML(section.key)}')" title="ดาวน์โหลดเฉพาะหัวข้อนี้"><i data-lucide="download"></i><span>ดาวน์โหลด</span></button>
+                    <button type="button" class="btn btn-sm btn-secondary export-section-collapse" data-export-section-toggle onclick="toggleExportSectionDetails('${escapeHTML(section.key)}')" aria-expanded="${stateBefore.collapsed ? 'false' : 'true'}" title="${stateBefore.collapsed ? 'ขยาย' : 'ยุบ'}รายละเอียดหัวข้อ"><i data-lucide="chevron-down"></i></button>
+                </div>
+            </div>
+            <div class="export-section-card-body">${columnHtml}${layoutHtml}</div>
+        </div>`;
+    }).join('');
+    host.dataset.registryRendered = 'true';
+    renderExportEvidenceLayoutPreview();
+    updateExportSectionBadges();
+    if (typeof initializeLucide === 'function') initializeLucide();
+}
 
 /* ==========================================================================
    pdfmake docDefinition builder — ชั้นเดียวที่รู้จัก "หน้าตา" ของ PDF จริง
@@ -13432,8 +15301,287 @@ const EXPORT_FOOD_COLUMNS = [
    ========================================================================== */
 const PDF_A4_PORTRAIT_WIDTH = 595.28; // A4 pt
 const PDF_A4_LANDSCAPE_WIDTH = 841.89; // A4 pt
-const PDF_MARGIN = [40, 40, 40, 56];
-const PDF_ATTACHMENT_IMAGE_FIT = [260, 330];
+const PDF_POINTS_PER_MM = 72 / 25.4;
+const PDF_MARGIN = [
+    DEFAULT_EXPORT_PAGE_MARGINS_MM.left * PDF_POINTS_PER_MM,
+    DEFAULT_EXPORT_PAGE_MARGINS_MM.top * PDF_POINTS_PER_MM,
+    DEFAULT_EXPORT_PAGE_MARGINS_MM.right * PDF_POINTS_PER_MM,
+    DEFAULT_EXPORT_PAGE_MARGINS_MM.bottom * PDF_POINTS_PER_MM,
+];
+
+function getPdfPageMargins(pageMarginsMm) {
+    const mm = normalizeExportPageMarginsMm(pageMarginsMm || DEFAULT_EXPORT_PAGE_MARGINS_MM);
+    return [mm.left, mm.top, mm.right, mm.bottom].map(value => value * PDF_POINTS_PER_MM);
+}
+
+const PDF_THAI_CHARACTER_PATTERN = /[\u0E00-\u0E7F]/;
+const PDF_COPY_UNSAFE_BREAK_PATTERN = /[\u00AD\u200B\u200C\u2060\uFEFF]/g;
+const PDF_TABLE_COLUMN_PRIORITY = Object.freeze({
+    sequence: 1, docNo: 2, date: 3, foodDate: 3, receiptNo: 4,
+    postingMonth: 5, vendor: 6, description: 7, foodName: 7,
+    project: 8, foodCategory: 8, attachmentsCount: 9,
+    amount: 10, foodAmount: 10, category: 11, claimType: 12,
+});
+const PDF_TABLE_MAX_PRIMARY_COLUMNS = Object.freeze({ portrait: 10, landscape: 12 });
+const PDF_THAI_WORD_SEGMENTER = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter('th', { granularity: 'word' })
+    : null;
+
+function splitLongPdfTechnicalToken(token, maximumLength) {
+    const text = String(token || '');
+    if (!text || PDF_THAI_CHARACTER_PATTERN.test(text) || text.length <= maximumLength) return [text];
+    const chunks = [];
+    let remaining = text;
+    while (remaining.length > maximumLength) {
+        const windowText = remaining.slice(0, maximumLength + 1);
+        const candidates = ['/', '_', '-', '.', ':'].map(mark => windowText.lastIndexOf(mark));
+        const naturalBreak = Math.max(...candidates);
+        const breakAt = naturalBreak >= Math.floor(maximumLength * 0.5) ? naturalBreak + 1 : maximumLength;
+        chunks.push(remaining.slice(0, breakAt));
+        remaining = remaining.slice(breakAt);
+    }
+    if (remaining) chunks.push(remaining);
+    return chunks;
+}
+
+// เพิ่มเฉพาะ newline ที่ "ขอบคำ" จาก Intl.Segmenter เท่านั้น ไม่เติมช่องว่าง,
+// zero-width space หรือ soft hyphen จึงไม่ทำให้คำไทยกลายเป็น "ก าร" ตอนแสดง/คัดลอก.
+function wrapPdfTextByWords(value, maximumLineLength = 36) {
+    const clean = String(value ?? '').replace(PDF_COPY_UNSAFE_BREAK_PATTERN, '');
+    const limit = Math.max(4, Number(maximumLineLength) || 36);
+    return clean.split('\n').map(sourceLine => {
+        const segments = PDF_THAI_WORD_SEGMENTER
+            ? Array.from(PDF_THAI_WORD_SEGMENTER.segment(sourceLine), item => item.segment)
+            : sourceLine.split(/(\s+)/).filter(Boolean);
+        let result = '';
+        let lineLength = 0;
+        segments.forEach(segment => {
+            const technicalChunks = splitLongPdfTechnicalToken(segment, limit);
+            technicalChunks.forEach((chunk, chunkIndex) => {
+                const chunkLength = Array.from(chunk).length;
+                const isWhitespace = /^\s+$/.test(chunk);
+                if (lineLength > 0 && lineLength + chunkLength > limit) {
+                    result = result.replace(/[ \t]+$/g, '') + '\n';
+                    lineLength = 0;
+                }
+                const safeChunk = lineLength === 0 && isWhitespace ? chunk.replace(/^\s+/, '') : chunk;
+                result += safeChunk;
+                lineLength += Array.from(safeChunk).length;
+                if (chunkIndex < technicalChunks.length - 1) {
+                    result += '\n';
+                    lineLength = 0;
+                }
+            });
+        });
+        return result;
+    }).join('\n');
+}
+
+function splitPdfTableColumns(columns, pageOrientation) {
+    const maximum = PDF_TABLE_MAX_PRIMARY_COLUMNS[pageOrientation] || PDF_TABLE_MAX_PRIMARY_COLUMNS.portrait;
+    if (columns.length <= maximum) return { primary: columns.slice(), overflow: [] };
+    const ranked = columns.map((column, index) => ({
+        column, index,
+        priority: Number(column.pdfPriority ?? PDF_TABLE_COLUMN_PRIORITY[column.id]) || (100 + index),
+    })).sort((a, b) => a.priority - b.priority || a.index - b.index);
+    const primarySet = new Set(ranked.slice(0, maximum).map(item => item.column));
+    return {
+        primary: columns.filter(column => primarySet.has(column)),
+        overflow: columns.filter(column => !primarySet.has(column)),
+    };
+}
+
+function getPdfTableColumnWidths(columns, contentWidth, horizontalPaddingPerColumn = 4) {
+    const horizontalPadding = horizontalPaddingPerColumn * columns.length;
+    const ruleAllowance = 2;
+    const usableWidth = Math.max(120, contentWidth - horizontalPadding - ruleAllowance);
+    const weightFor = column => {
+        if (Number(column.pdfWeight) > 0) return Number(column.pdfWeight);
+        if (column.id === 'sequence') return 0.42;
+        if (column.id === 'attachmentsCount') return 0.58;
+        if (column.isAmount) return 0.78;
+        if (column.id === 'description' || column.id === 'foodName') return 1.65;
+        if (['docNo', 'receiptNo', 'vendor'].includes(column.id)) return 1.18;
+        return 1;
+    };
+    const weights = columns.map(weightFor);
+    const weightTotal = weights.reduce((sum, weight) => sum + weight, 0) || 1;
+    const widths = weights.map(weight => usableWidth * weight / weightTotal);
+    // ชดเชย floating point ให้ผลรวมไม่เกินพื้นที่จริงแม้มีคอลัมน์เพิ่มในอนาคต.
+    const used = widths.reduce((sum, width) => sum + width, 0);
+    widths[widths.length - 1] -= Math.max(0, used - usableWidth);
+    return widths;
+}
+
+function getPdfTableWrapLimit(columnWidth, fontSize) {
+    return Math.max(5, Math.floor(columnWidth / Math.max(3.2, fontSize * 0.55)));
+}
+
+function getReportSummaryAmount(row) {
+    return parseFloat(row?.amount ?? row?.foodAmount) || 0;
+}
+
+function getReportSummaryReference(row, rowIndex) {
+    const references = [];
+    if (row?.docNo) references.push(String(row.docNo));
+    if (row?.receiptNo) references.push(`ใบเสร็จ ${row.receiptNo}`);
+    if (references.length) return references.join('\n');
+    return String(row?.referenceNo || row?.project || row?.id || `รายการ ${rowIndex + 1}`);
+}
+
+function getReportSummaryDescription(row) {
+    return String(row?.description || row?.foodName || row?.itemName || row?.project || row?.note || '-');
+}
+
+function getReportSummaryContext(row) {
+    return [
+        row?.date || row?.foodDate ? `วันที่ ${formatDateThai(row.date || row.foodDate)}` : '',
+        row?.postingMonth ? `รอบ ${formatPostingMonth(row.postingMonth)}` : '',
+        row?.project ? `โครงการ ${row.project}` : '',
+        row?.category || row?.foodCategory ? `หมวดหมู่ ${row.category || row.foodCategory}` : '',
+        row?.vendor ? `ผู้ขาย ${row.vendor}` : '',
+    ].filter(Boolean).join('\n') || '-';
+}
+
+function getReportMetadataDetailText(row) {
+    const category = String(row?.category || row?.foodCategory || '').trim();
+    const claimType = String(row?.claimType || '').trim();
+    const hasAttachmentValue = row && row.attachmentsCount !== undefined && row.attachmentsCount !== null;
+    if (!category && !claimType && !hasAttachmentValue) return '';
+    return [
+        `หมวดหมู่: ${category || '-'}`,
+        `จำนวนหลักฐาน: ${Number(row?.attachmentsCount) || 0}`,
+        `ประเภทเบิก: ${claimType || '-'}`,
+    ].join(' | ');
+}
+
+function getSharedReportDetailText(detailTexts) {
+    if (!detailTexts.length || detailTexts.some(text => !text)) return '';
+    return detailTexts.every(text => text === detailTexts[0]) ? detailTexts[0] : '';
+}
+
+function buildReportSummarySectionTable(section, contentWidth) {
+    const rows = Array.isArray(section.rows) ? section.rows : [];
+    const total = rows.reduce((sum, row) => sum + getReportSummaryAmount(row), 0);
+    const attachmentTotal = Number(section.attachmentCount)
+        || rows.reduce((sum, row) => sum + (Number(row.attachmentsCount) || 0), 0);
+    const isCompactFood = section.key === 'food' || /ค่าอาหารประจำเดือน/.test(section.label || '');
+    const titleFill = '#f3f4f6';
+    const headerFill = '#e5e7eb';
+
+    if (isCompactFood) {
+        const columns = [
+            { id: 'count', pdfWeight: 0.85 },
+            { id: 'category', pdfWeight: 2.10 },
+            { id: 'attachmentsCount', pdfWeight: 0.70 },
+            { id: 'amount', isAmount: true, pdfWeight: 1.00 },
+        ];
+        const widths = getPdfTableColumnWidths(columns, contentWidth, 6);
+        const categories = Array.from(new Set(rows.map(row => row.foodCategory || row.category || '').filter(Boolean)));
+        const categorySummary = categories.length > 4 ? `${categories.length} หมวดหมู่` : (categories.join(', ') || '-');
+        const body = [
+            [{ text: wrapPdfTextByWords(section.label, 54), colSpan: columns.length, bold: true, fontSize: 9.2, color: section.accent || '#1a1a2e', fillColor: titleFill, margin: [2, 2, 2, 2] }, ...columns.slice(1).map(() => ({}))],
+            ['จำนวนรายการ', 'หมวดหมู่', 'หลักฐาน', 'ยอดรวม'].map((label, index) => ({
+                text: wrapPdfTextByWords(label, getPdfTableWrapLimit(widths[index], 7.2)), bold: true,
+                fontSize: 7.2, fillColor: headerFill, alignment: [0, 2, 3].includes(index) ? 'right' : 'left',
+            })),
+            [
+                { text: `${rows.length} รายการ`, alignment: 'right', fontSize: 7.2 },
+                { text: wrapPdfTextByWords(categorySummary, getPdfTableWrapLimit(widths[1], 7.2)), fontSize: 7.2 },
+                { text: String(attachmentTotal), alignment: 'right', fontSize: 7.2 },
+                { text: formatNumber(total), alignment: 'right', fontSize: 7.2 },
+            ],
+            [
+                { text: 'ยอดรวม', colSpan: 2, alignment: 'right', bold: true, fontSize: 7.4, fillColor: '#f9fafb' }, {},
+                { text: String(attachmentTotal), alignment: 'right', bold: true, fontSize: 7.2, fillColor: '#f9fafb' },
+                { text: formatNumber(total), alignment: 'right', bold: true, fontSize: 7.4, color: '#047857', fillColor: '#f9fafb' },
+            ],
+        ];
+        return { table: { headerRows: 2, keepWithHeaderRows: 1, dontBreakRows: true, widths, body } };
+    }
+
+    // ใช้โครงสร้างเดียวกับตารางรายละเอียดของหัวข้อหลัก เพื่อให้เทียบข้อมูลได้ทันที.
+    const columns = [
+        { id: 'sequence', pdfWeight: 0.36 },
+        { id: 'docNo', pdfWeight: 0.92 },
+        { id: 'date', pdfWeight: 0.72 },
+        { id: 'receiptNo', pdfWeight: 1.02 },
+        { id: 'postingMonth', pdfWeight: 0.78 },
+        { id: 'vendor', pdfWeight: 0.92 },
+        { id: 'description', pdfWeight: 1.58 },
+        { id: 'project', pdfWeight: 0.68 },
+        { id: 'attachmentsCount', pdfWeight: 0.48 },
+        { id: 'amount', isAmount: true, pdfWeight: 0.76 },
+    ];
+    const widths = getPdfTableColumnWidths(columns, contentWidth, 6);
+    const headers = [
+        'ลำดับ', 'เลขบิล', 'วันที่', 'เล่มที่ / เลขที่ใบเสร็จ', 'รอบบันทึก',
+        'ผู้ขาย', 'รายละเอียดรายการ', 'โครงการ', 'หลักฐาน', 'ยอดรวม',
+    ];
+    const body = [
+        [{ text: wrapPdfTextByWords(section.label, 54), colSpan: columns.length, bold: true, fontSize: 9.2, color: section.accent || '#1a1a2e', fillColor: titleFill, margin: [2, 2, 2, 2] }, ...columns.slice(1).map(() => ({}))],
+        headers.map((label, index) => ({
+            text: wrapPdfTextByWords(label, getPdfTableWrapLimit(widths[index], 6.4)), bold: true,
+            fontSize: 6.4, fillColor: headerFill, alignment: [0, 8, 9].includes(index) ? 'right' : 'left',
+        })),
+    ];
+    if (rows.length === 0) {
+        body.push([{ text: 'ไม่มีรายการ', colSpan: columns.length, alignment: 'center', italics: true, color: '#9ca3af', fontSize: 6.8 }, ...columns.slice(1).map(() => ({}))]);
+    } else {
+        const metadataDetails = rows.map(getReportMetadataDetailText);
+        const sharedMetadataDetail = getSharedReportDetailText(metadataDetails);
+        rows.forEach((row, rowIndex) => {
+            body.push([
+                { text: String(rowIndex + 1), alignment: 'right', fontSize: 6.15 },
+                { text: wrapPdfTextByWords(row.docNo || row.referenceNo || row.id || '-', getPdfTableWrapLimit(widths[1], 6.15)), fontSize: 6.15 },
+                { text: row.date || row.foodDate ? formatDateThai(row.date || row.foodDate) : '-', fontSize: 6.15 },
+                { text: wrapPdfTextByWords(row.receiptNo || '-', getPdfTableWrapLimit(widths[3], 6.15)), fontSize: 6.15 },
+                { text: row.postingMonth ? formatPostingMonth(row.postingMonth) : '-', fontSize: 6.15 },
+                { text: wrapPdfTextByWords(row.vendor || '-', getPdfTableWrapLimit(widths[5], 6.15)), fontSize: 6.15 },
+                { text: wrapPdfTextByWords(getReportSummaryDescription(row), getPdfTableWrapLimit(widths[6], 6.15)), fontSize: 6.15 },
+                { text: wrapPdfTextByWords(row.project || '-', getPdfTableWrapLimit(widths[7], 6.15)), fontSize: 6.15 },
+                { text: String(Number(row.attachmentsCount) || 0), alignment: 'right', fontSize: 6.15 },
+                { text: formatNumber(getReportSummaryAmount(row)), alignment: 'right', fontSize: 6.15 },
+            ]);
+            if (!sharedMetadataDetail && metadataDetails[rowIndex]) {
+                body.push([{
+                    text: wrapPdfTextByWords(`รายละเอียดรายการที่ ${rowIndex + 1}: ${metadataDetails[rowIndex]}`, Math.max(48, Math.floor(contentWidth / 3.4))),
+                    colSpan: columns.length, italics: true, fontSize: 6.2, color: '#4b5563', fillColor: '#f8fafc', margin: [2, 1, 2, 1],
+                }, ...columns.slice(1).map(() => ({}))]);
+            }
+        });
+        if (sharedMetadataDetail) {
+            body.push([{
+                text: wrapPdfTextByWords(`รายละเอียดร่วม: ${sharedMetadataDetail}`, Math.max(48, Math.floor(contentWidth / 3.4))),
+                colSpan: columns.length, italics: true, fontSize: 6.2, color: '#4b5563', fillColor: '#f8fafc', margin: [2, 1, 2, 1],
+            }, ...columns.slice(1).map(() => ({}))]);
+        }
+    }
+    body.push([
+        { text: `ยอดรวม ${rows.length} รายการ`, colSpan: 8, alignment: 'right', bold: true, fontSize: 7.2, fillColor: '#f9fafb' }, {}, {}, {}, {}, {}, {}, {},
+        { text: String(attachmentTotal), alignment: 'right', bold: true, fontSize: 7.0, fillColor: '#f9fafb' },
+        { text: formatNumber(total), alignment: 'right', bold: true, fontSize: 7.2, color: '#047857', fillColor: '#f9fafb' },
+    ]);
+    return { table: { headerRows: 2, keepWithHeaderRows: 1, dontBreakRows: true, widths, body } };
+}
+
+function applyReportSummaryTableLayout(node) {
+    return {
+        ...node,
+        layout: {
+            hLineWidth: (index, tableNode) => index === 2 || index === tableNode.table.body.length - 1 ? 0.75 : 0.35,
+            vLineWidth: () => 0.35,
+            hLineColor: () => '#cbd5e1',
+            vLineColor: () => '#e5e7eb',
+            paddingLeft: () => 3,
+            paddingRight: () => 3,
+            paddingTop: () => 3,
+            paddingBottom: () => 3,
+        },
+        margin: [0, 0, 0, 10],
+        preservePdfText: true,
+    };
+}
 
 // ฟอนต์ Sarabun ถูกฝัง base64 + ลงทะเบียนแล้วโดย fonts/sarabun-vfs.js (โหลดก่อน app.js ใน index.html)
 // ผ่าน pdfMake.addVirtualFileSystem()+addFonts() (วิธีเดียวกับที่ vfs_fonts.js ของ pdfmake เองใช้ลงทะเบียน
@@ -13444,7 +15592,66 @@ function buildPdfDocDefinition(model) {
     const { header, sections, signature, reportOptions = {} } = model;
     const pageOrientation = reportOptions.pageOrientation === 'landscape' ? 'landscape' : 'portrait';
     const pageWidth = pageOrientation === 'landscape' ? PDF_A4_LANDSCAPE_WIDTH : PDF_A4_PORTRAIT_WIDTH;
-    const contentWidth = pageWidth - PDF_MARGIN[0] - PDF_MARGIN[2];
+    const pageHeight = pageOrientation === 'landscape' ? PDF_A4_PORTRAIT_WIDTH : PDF_A4_LANDSCAPE_WIDTH;
+    const pageMargins = getPdfPageMargins(reportOptions.pageMarginsMm);
+    const legacySignatureSigners = signature ? [
+        { role: 'prepared', label: 'ผู้จัดทำ', name: signature.preparer || '', position: '', image: signature.preparerImage || '' },
+        { role: 'checked', label: 'ผู้ตรวจสอบ', name: signature.reviewer || '', position: '', image: signature.reviewerImage || '' },
+        { role: 'approved', label: 'ผู้อนุมัติ', name: signature.approver || '', position: '', image: signature.approverImage || '' },
+    ] : [];
+    const signatureSigners = (signature && Array.isArray(signature.signers) ? signature.signers : legacySignatureSigners)
+        .filter(signer => signer && (String(signer.name || '').trim() || String(signer.position || '').trim() || signer.image))
+        .slice(0, MAX_EXPORT_SIGNERS);
+    const signaturePlacements = signature && signature.placements
+        ? signature.placements
+        : { first: false, last: true, every: false };
+    const signatureTargets = signature && Array.isArray(signature.targets) ? signature.targets : [];
+    const effectiveSignatureTargets = signaturePlacements.every ? [] : signatureTargets;
+    const signatureRowCount = Math.ceil(signatureSigners.length / 3);
+    const signatureFooterHeight = signatureRowCount ? (signatureRowCount * 66) + 24 : 0;
+    const hasSignaturePagePlacement = !!(signaturePlacements.every || signaturePlacements.first || signaturePlacements.last);
+    if (signatureFooterHeight && hasSignaturePagePlacement) pageMargins[3] = Math.max(pageMargins[3], signatureFooterHeight);
+    const repeatedHeaderTop = Math.max(8, Math.min(8 * PDF_POINTS_PER_MM, pageMargins[1] - 36));
+    const contentWidth = pageWidth - pageMargins[0] - pageMargins[2];
+    const contentHeight = pageHeight - pageMargins[1] - pageMargins[3];
+    const firstEvidenceImageFit = [contentWidth - 8, Math.max(220, contentHeight - 150)];
+    const getEvidencePageGeometry = orientation => {
+        const landscape = orientation === 'landscape';
+        const width = landscape ? PDF_A4_LANDSCAPE_WIDTH : PDF_A4_PORTRAIT_WIDTH;
+        const height = landscape ? PDF_A4_PORTRAIT_WIDTH : PDF_A4_LANDSCAPE_WIDTH;
+        return {
+            width,
+            height,
+            contentWidth: width - pageMargins[0] - pageMargins[2],
+            contentHeight: height - pageMargins[1] - pageMargins[3],
+        };
+    };
+    const EVIDENCE_HORIZONTAL_OUTER_INSET = 4;
+    const EVIDENCE_HORIZONTAL_GAP = 12;
+    const getEvidenceHorizontalMetrics = geometry => {
+        const usableWidth = Math.max(300, geometry.contentWidth - (EVIDENCE_HORIZONTAL_OUTER_INSET * 2));
+        const slotWidth = Math.max(140, (usableWidth - EVIDENCE_HORIZONTAL_GAP) / 2);
+        return {
+            outerInset: EVIDENCE_HORIZONTAL_OUTER_INSET,
+            gap: EVIDENCE_HORIZONTAL_GAP,
+            slotWidth,
+            imageWidth: Math.max(136, slotWidth - 4),
+        };
+    };
+    const getEvidenceImageFit = layout => {
+        const geometry = getEvidencePageGeometry(layout.orientation);
+        if (layout.itemsPerPage === 1) {
+            if (layout.orientation === pageOrientation) return firstEvidenceImageFit;
+            return [geometry.contentWidth - 8, Math.max(150, geometry.contentHeight - 158)];
+        }
+        if (layout.placement === 'horizontal') {
+            const horizontal = getEvidenceHorizontalMetrics(geometry);
+            // เหลือพื้นที่คงที่ให้หัวข้อ/คำอธิบาย แต่ใช้ความสูงหน้ากระดาษมากขึ้น
+            // เพื่อให้ใบเสร็จแนวตั้งสองใบมีขนาดใกล้เคียงกันและไม่เสียสัดส่วน.
+            return [horizontal.imageWidth, Math.max(150, geometry.contentHeight - 132)];
+        }
+        return [geometry.contentWidth - 10, Math.max(105, (geometry.contentHeight - 42) / 2 - 88)];
+    };
     const content = [];
 
     // pdfmake 0.3.11 ต้องอ้างรูปผ่าน images dictionary (key → dataURL) เท่านั้น — มันจะแปลง base64→Buffer
@@ -13459,9 +15666,9 @@ function buildPdfDocDefinition(model) {
         return key;
     };
 
-    // หัวเอกสาร: โลโก้ | ชื่อหน่วยงาน/ชื่อเรื่อง | (เลขที่เอกสาร + QR ตรวจสอบ) มุมขวา
-    // QR วางเป็น image ในหัวเอกสาร (content ปกติ) — อยู่หน้าแรกครั้งเดียวอยู่แล้ว และ image ใน content
-    // render ได้จริงเสมอ (ต่างจาก background callback ที่ commit ที่ (0,0) ทำให้ absolutePosition ไม่ทำงาน)
+    // หัวเอกสารหน้าแรก: โลโก้ | ชื่อหน่วยงาน/ชื่อเรื่อง | ข้อมูลตรวจสอบแนวนอน + QR ขนาดกระชับ
+    // หน้าถัดไปใช้ header callback ด้านล่างเพื่อแสดง QR และข้อมูลตรวจสอบซ้ำครบทุกหน้า
+    const qrImageKey = header.qrDataUrl ? registerImage(header.qrDataUrl) : null;
     const headerCols = [];
     if (header.logoSrc) headerCols.push({ image: registerImage(header.logoSrc), width: 46, height: 46, margin: [0, 0, 10, 0] });
     const titleStack = { stack: [], width: '*' };
@@ -13471,47 +15678,125 @@ function buildPdfDocDefinition(model) {
     if (header.subHeading) titleStack.stack.push({ text: header.subHeading, fontSize: 8, color: '#6b7280', margin: [0, 2, 0, 0] });
     headerCols.push(titleStack);
 
-    const rightStack = [];
-    if (header.docNum) rightStack.push({ text: 'เลขที่: ' + header.docNum, fontSize: 9, color: '#6b7280', alignment: 'right' });
-    if (header.qrDataUrl) {
-        rightStack.push({ image: registerImage(header.qrDataUrl), width: 62, alignment: 'right', margin: [0, 4, 0, 0] });
-        rightStack.push({ text: 'สแกนเพื่อตรวจสอบ', fontSize: 6.5, color: '#9ca3af', alignment: 'right', margin: [0, 1, 0, 0] });
+    const verificationLines = [];
+    if (header.docNum) verificationLines.push({ text: 'เลขที่: ' + header.docNum, bold: true, fontSize: 7, color: '#4b5563', alignment: 'right', preservePdfText: true });
+    if (header.verifyCode) verificationLines.push({ text: 'รหัส: ' + header.verifyCode, fontSize: 5.8, color: '#6b7280', alignment: 'right', preservePdfText: true });
+    if (qrImageKey) verificationLines.push({
+        text: `สแกนเพื่อตรวจสอบ | หลักฐาน ${Number(header.attachmentCount) || 0} ไฟล์`,
+        fontSize: 5.8,
+        color: '#6b7280',
+        alignment: 'right',
+        preservePdfText: true,
+    });
+    if (verificationLines.length || qrImageKey) {
+        const verificationColumns = [];
+        if (verificationLines.length) verificationColumns.push({ width: '*', stack: verificationLines, margin: [0, 2, 0, 0] });
+        if (qrImageKey) verificationColumns.push({ image: qrImageKey, width: 42, margin: [7, 0, 0, 0] });
+        headerCols.push({ width: 178, columns: verificationColumns, columnGap: 4 });
     }
-    if (header.verifyCode) {
-        rightStack.push({ text: 'รหัสตรวจสอบ: ' + header.verifyCode, fontSize: 6.5, color: '#6b7280', alignment: 'right', margin: [0, 2, 0, 0] });
-    }
-    if (header.qrDataUrl) {
-        rightStack.push({ text: `หลักฐานแนบ: ${Number(header.attachmentCount) || 0} ไฟล์`, fontSize: 6.5, color: '#6b7280', alignment: 'right', margin: [0, 1, 0, 0] });
-    }
-    if (rightStack.length) headerCols.push({ width: 'auto', stack: rightStack });
 
     content.push({ columns: headerCols, columnGap: 10 });
     content.push({ canvas: [{ type: 'line', x1: 0, y1: 0, x2: contentWidth, y2: 0, lineWidth: 1.2, lineColor: '#1a1a2e' }], margin: [0, 8, 0, 14] });
 
-    if (reportOptions.audit) {
-        const auditBody = [[
-            { text: 'หัวข้อ', bold: true, fontSize: 8.5, fillColor: '#e5e7eb' },
-            { text: 'จำนวนรายการ', bold: true, fontSize: 8.5, fillColor: '#e5e7eb', alignment: 'right' },
-            { text: 'ยอดรวม', bold: true, fontSize: 8.5, fillColor: '#e5e7eb', alignment: 'right' },
-            { text: 'หลักฐาน', bold: true, fontSize: 8.5, fillColor: '#e5e7eb', alignment: 'right' },
-        ]];
-        sections.forEach(section => {
-            const total = section.rows.reduce((sum, row) => sum + (parseFloat(row.amount ?? row.foodAmount) || 0), 0);
-            auditBody.push([
-                { text: section.label, fontSize: 8.5 },
-                { text: String(section.rows.length), fontSize: 8.5, alignment: 'right' },
-                { text: formatNumber(total), fontSize: 8.5, alignment: 'right' },
-                { text: String(Number(section.attachmentCount) || 0), fontSize: 8.5, alignment: 'right' },
-            ]);
+    // ส่วนสรุปด้านหน้าแยกตารางตามหัวข้อหลักเพื่ออ่านง่าย หัวข้อทั่วไปแสดงรายการย่อย
+    // ส่วนค่าอาหารแสดงเฉพาะจำนวน/หมวดหมู่/ยอดรวมเพื่อรองรับข้อมูลจำนวนมาก.
+    content.push({ text: 'สรุปรายการทั้งหมด', fontSize: 11, bold: true, color: '#1a1a2e', margin: [0, 0, 0, 6], preservePdfText: true });
+    sections.forEach(section => content.push(applyReportSummaryTableLayout(
+        buildReportSummarySectionTable(section, contentWidth)
+    )));
+    const summaryGrandCount = sections.reduce((sum, section) => sum + section.rows.length, 0);
+    const summaryGrandTotal = sections.reduce((sum, section) => (
+        sum + section.rows.reduce((sectionSum, row) => sectionSum + getReportSummaryAmount(row), 0)
+    ), 0);
+    const summaryGrandAttachments = sections.reduce((sum, section) => sum + (Number(section.attachmentCount) || 0), 0);
+    content.push({
+        table: {
+            widths: ['*', 72, 72, 86],
+            body: [[
+                { text: 'ยอดรวมสรุปรายการทั้งหมด', bold: true, fontSize: 8.4, alignment: 'right', fillColor: '#ecfdf5' },
+                { text: `${summaryGrandCount} รายการ`, bold: true, fontSize: 8.2, alignment: 'right', fillColor: '#ecfdf5' },
+                { text: `${summaryGrandAttachments} หลักฐาน`, bold: true, fontSize: 8.2, alignment: 'right', fillColor: '#ecfdf5' },
+                { text: formatNumber(summaryGrandTotal), bold: true, fontSize: 8.6, alignment: 'right', color: '#047857', fillColor: '#ecfdf5' },
+            ]],
+        },
+        layout: {
+            hLineWidth: () => 0.8, vLineWidth: () => 0.35,
+            hLineColor: () => '#86efac', vLineColor: () => '#bbf7d0',
+            paddingLeft: () => 4, paddingRight: () => 4,
+            paddingTop: () => 4, paddingBottom: () => 4,
+        },
+        margin: [0, 2, 0, 10],
+        preservePdfText: true,
+    });
+
+    const signatureAssets = signatureSigners.map(signer => ({
+        ...signer,
+        imageKey: signer.image ? registerImage(signer.image) : '',
+    }));
+    const buildSignatureBlock = signer => ({
+        width: '*',
+        stack: [
+            signer.imageKey
+                ? { image: signer.imageKey, fit: [78, 24], alignment: 'center', margin: [0, 0, 0, 2] }
+                : { text: ' ', margin: [0, 13, 0, 0] },
+            { text: '................................', alignment: 'center', fontSize: 7.5 },
+            { text: `(${String(signer.name || '.........................').trim()})`, alignment: 'center', fontSize: 8, margin: [0, 1, 0, 0], preservePdfText: true },
+            { text: String(signer.position || ' ').trim() || ' ', alignment: 'center', fontSize: 7.2, color: '#374151', preservePdfText: true },
+            { text: String(signer.label || 'ผู้ลงนาม').trim(), alignment: 'center', fontSize: 7.2, color: '#6b7280', preservePdfText: true },
+        ],
+    });
+    const buildSignatureRows = () => {
+        const rows = [];
+        for (let index = 0; index < signatureAssets.length; index += 3) {
+            const chunk = signatureAssets.slice(index, index + 3);
+            const leadingBlanks = chunk.length < 3 ? Array.from({ length: 3 - chunk.length }, () => ({ text: '', width: '*' })) : [];
+            rows.push({
+                columns: leadingBlanks.concat(chunk.map(buildSignatureBlock)),
+                columnGap: 8,
+                margin: [0, 0, 0, 2],
+                unbreakable: true,
+            });
+        }
+        return rows;
+    };
+    const shouldShowSignaturesOnPage = (currentPage, pageCount) => {
+        if (!signatureAssets.length) return false;
+        if (signaturePlacements.every) return true;
+        return !!((signaturePlacements.first && currentPage === 1) || (signaturePlacements.last && currentPage === pageCount));
+    };
+    const appendSectionSignature = target => {
+        if (!signatureAssets.length || !target) return;
+        const targetLabel = target.type === 'project'
+            ? `โครงการเพิ่มเติม / ${target.label}`
+            : target.label;
+        content.push({
+            stack: [
+                {
+                    text: `การลงชื่อใต้เอกสาร - ${targetLabel}`,
+                    bold: true,
+                    fontSize: 8.5,
+                    color: '#374151',
+                    fillColor: '#f3f4f6',
+                    margin: [5, 3, 5, 4],
+                    preservePdfText: true,
+                },
+                ...buildSignatureRows(),
+            ],
+            margin: [0, 10, 0, 8],
+            unbreakable: true,
         });
-        content.push({ text: 'สรุปสำหรับตรวจสอบบัญชี', fontSize: 11, bold: true, color: '#1a1a2e', margin: [0, 0, 0, 6] });
-        content.push({ table: { headerRows: 1, widths: ['*', 72, 82, 52], body: auditBody }, layout: 'lightHorizontalLines', margin: [0, 0, 0, 14] });
-    }
+    };
 
     sections.forEach(section => {
+        const sectionEvidenceLayout = normalizeExportEvidenceLayout(
+            section.evidenceLayout || reportOptions.evidenceLayout || DEFAULT_EXPORT_EVIDENCE_LAYOUT
+        );
+        const sectionHeadingOrientation = section.attachmentOnly && section.attachmentItems.length > 0
+            ? sectionEvidenceLayout.orientation
+            : pageOrientation;
         // หัวข้อ section: พื้นเทาอ่อน + แถบสี accent ซ้าย (แทน emoji ที่ Sarabun ไม่มี glyph)
         content.push({
-            table: { widths: ['*'], body: [[{ text: section.label, fontSize: 12, bold: true, color: '#1a1a2e', fillColor: '#f3f4f6', margin: [8, 5, 8, 5] }]] },
+            table: { widths: ['*'], body: [[{ text: wrapPdfTextByWords(section.label, Math.max(32, Math.floor(contentWidth / 6.6))), fontSize: 12, bold: true, color: '#1a1a2e', fillColor: '#f3f4f6', margin: [8, 5, 8, 5] }]] },
             layout: {
                 hLineWidth: () => 0,
                 vLineWidth: (i) => i === 0 ? 3 : 0,
@@ -13520,6 +15805,9 @@ function buildPdfDocDefinition(model) {
             },
             margin: [0, 2, 0, 6],
             unbreakable: true,
+            pageBreak: 'before',
+            pageOrientation: sectionHeadingOrientation,
+            preservePdfText: true,
         });
 
         if (section.attachmentOnly) {
@@ -13529,110 +15817,281 @@ function buildPdfDocDefinition(model) {
         } else if (section.columns.length === 0) {
             content.push({ text: 'ยังไม่ได้เลือกคอลัมน์ที่จะแสดง', italics: true, color: '#9ca3af', fontSize: 9, margin: [0, 6, 0, 14] });
         } else {
-            const cols = section.columns;
+            const selectedCols = section.columns;
+            const columnSplit = splitPdfTableColumns(selectedCols, pageOrientation);
+            const cols = columnSplit.primary;
+            const overflowCols = columnSplit.overflow;
             const amtIdx = cols.findIndex(c => c.isAmount);
-            const widths = cols.map(c => c.isAmount ? 70 : '*');
-            const body = [cols.map(c => ({ text: c.label, bold: true, fontSize: 9, fillColor: '#e5e7eb', alignment: c.align }))];
+            const attachmentIdx = cols.findIndex(c => c.id === 'attachmentsCount');
+            const tableFontSize = cols.length >= 8 ? 6.4 : cols.length >= 6 ? 7.2 : 8.2;
+            const compactLabel = label => String(label || '')
+                .replace('เล่มที่ / เลขที่ใบเสร็จ', 'เล่มที่ /\nเลขที่ใบเสร็จ')
+                .replace('จำนวนหลักฐาน', 'จำนวน\nหลักฐาน')
+                .replace('ประเภทเบิก', 'ประเภท\nเบิก')
+                .replace('รอบบันทึก', 'รอบ\nบันทึก');
+            const widths = getPdfTableColumnWidths(cols, contentWidth);
+            const body = [cols.map((c, columnIndex) => ({
+                text: wrapPdfTextByWords(compactLabel(c.label), getPdfTableWrapLimit(widths[columnIndex], tableFontSize)),
+                bold: true,
+                fontSize: tableFontSize,
+                fillColor: '#e5e7eb',
+                alignment: c.align,
+            }))];
+            const additionalCols = overflowCols.slice();
+            if (section.detailed) {
+                getExportSectionColumnDefinition(section.key).forEach(column => {
+                    if (!selectedCols.includes(column) && !additionalCols.includes(column)) additionalCols.push(column);
+                });
+            }
+            const hasMetadataDetail = additionalCols.some(column => ['category', 'foodCategory', 'claimType'].includes(column.id));
+            const selectedAttachmentColumn = selectedCols.find(column => column.id === 'attachmentsCount');
+            if (hasMetadataDetail && selectedAttachmentColumn && !additionalCols.includes(selectedAttachmentColumn)) {
+                additionalCols.push(selectedAttachmentColumn);
+            }
+            const detailRank = { category: 1, foodCategory: 1, attachmentsCount: 2, claimType: 3 };
+            const originalDetailOrder = new Map(additionalCols.map((column, index) => [column, index]));
+            additionalCols.sort((a, b) => (
+                (detailRank[a.id] ?? (100 + originalDetailOrder.get(a)))
+                - (detailRank[b.id] ?? (100 + originalDetailOrder.get(b)))
+            ));
+            const detailTexts = section.rows.map((row, rowIndex) => additionalCols
+                .map(column => `${column.id === 'attachmentsCount' ? 'จำนวนหลักฐาน' : column.label}: ${getExportColumnValue(column, row, rowIndex)}`)
+                .join(' | '));
+            const sharedDetailText = getSharedReportDetailText(detailTexts);
+            const pushDetailRow = (prefix, detailText) => {
+                if (!detailText) return;
+                body.push([{
+                    text: wrapPdfTextByWords(`${prefix}${detailText}`, Math.max(42, Math.floor(contentWidth / 3.6))),
+                    colSpan: cols.length,
+                    italics: true,
+                    fontSize: 6.6,
+                    lineHeight: 1.18,
+                    color: '#4b5563',
+                    fillColor: '#f8fafc',
+                    margin: [2, 1, 2, 1],
+                }, ...cols.slice(1).map(() => ({}))]);
+            };
 
             if (section.rows.length === 0) {
                 body.push([{ text: 'ไม่มีข้อมูล', colSpan: cols.length, alignment: 'center', italics: true, color: '#9ca3af', fontSize: 9 }, ...cols.slice(1).map(() => ({}))]);
             } else {
-                section.rows.forEach(row => {
-                    body.push(cols.map(c => ({ text: String(c.get(row) ?? ''), alignment: c.align, fontSize: 9 })));
-                    if (section.detailed) {
-                        const missingCols = (section.key === 'food' ? EXPORT_FOOD_COLUMNS : EXPORT_BILL_COLUMNS).filter(c => !cols.includes(c));
-                        if (missingCols.length > 0) {
-                            const detailText = missingCols.map(c => `${c.label}: ${c.get(row) ?? ''}`).join('   ');
-                            body.push([{ text: detailText, colSpan: cols.length, italics: true, fontSize: 8, color: '#6b7280' }, ...cols.slice(1).map(() => ({}))]);
-                        }
-                    }
+                section.rows.forEach((row, rowIndex) => {
+                    body.push(cols.map((c, columnIndex) => ({
+                        text: wrapPdfTextByWords(getExportColumnValue(c, row, rowIndex), getPdfTableWrapLimit(widths[columnIndex], tableFontSize)),
+                        alignment: c.align,
+                        fontSize: tableFontSize,
+                    })));
+                    if (!sharedDetailText) pushDetailRow(`รายละเอียดรายการที่ ${rowIndex + 1}: `, detailTexts[rowIndex]);
                 });
+                if (sharedDetailText) pushDetailRow('รายละเอียดร่วม: ', sharedDetailText);
                 if (amtIdx >= 0) {
                     const total = section.rows.reduce((s, r) => s + (parseFloat(r.amount ?? r.foodAmount) || 0), 0);
+                    const attachmentTotal = Number(section.attachmentCount)
+                        || section.rows.reduce((sum, row) => sum + (Number(row.attachmentsCount) || 0), 0);
+                    const totalLabelIdx = attachmentIdx > 0 ? attachmentIdx - 1 : Math.max(0, amtIdx - 1);
                     const totalRow = cols.map((c, i) => {
-                        if (i === amtIdx) return { text: formatNumber(total), bold: true, alignment: 'right', fillColor: '#f9fafb', color: '#059669', fontSize: 9 };
-                        if (i === amtIdx - 1) return { text: 'รวมทั้งหมด', bold: true, alignment: 'right', fillColor: '#f9fafb', fontSize: 9 };
+                        if (i === amtIdx) return { text: formatNumber(total), bold: true, alignment: 'right', fillColor: '#f9fafb', color: '#059669', fontSize: tableFontSize };
+                        if (i === attachmentIdx) return { text: String(attachmentTotal), bold: true, alignment: 'right', fillColor: '#f9fafb', fontSize: tableFontSize };
+                        if (i === totalLabelIdx) return { text: 'รวมทั้งหมด', bold: true, alignment: 'right', fillColor: '#f9fafb', fontSize: tableFontSize };
                         return { text: '', fillColor: '#f9fafb' };
                     });
                     body.push(totalRow);
                 }
             }
 
-            content.push({ table: { headerRows: 1, widths, body }, layout: 'lightHorizontalLines', margin: [0, 4, 0, 14] });
+            content.push({
+                table: { headerRows: 1, keepWithHeaderRows: 1, dontBreakRows: true, widths, body },
+                layout: {
+                    hLineWidth: i => i === 1 ? 0.8 : 0.35,
+                    vLineWidth: () => 0,
+                    hLineColor: () => '#9ca3af',
+                    paddingLeft: () => 2,
+                    paddingRight: () => 2,
+                    paddingTop: () => 2.5,
+                    paddingBottom: () => 2.5,
+                },
+                margin: [0, 4, 0, 14],
+                preservePdfText: true,
+            });
         }
 
-        // Section "หลักฐานแนบ" — ต่อจากตารางเสมอ ไม่แทรกในตาราง
+        // แปลงรูปหลักฐานเป็นการ์ดก่อนแบ่งหน้า เพื่อให้จับคู่ข้ามรายการได้จริง.
+        // PDF/ไฟล์เอกสารที่ฝังไม่ได้ยังคงเป็นลิงก์อ้างอิงและไม่ถูกบีบภาพจนอ่านไม่ออก.
         if (section.attachmentItems.length > 0) {
-            content.push({ text: 'หลักฐานแนบ', fontSize: 11, bold: true, color: '#1a1a2e', margin: [0, 2, 0, 6], unbreakable: true });
-            section.attachmentItems.forEach((item, idx) => {
-                const stack = [];
-                stack.push({ text: `รายการที่ ${idx + 1}`, bold: true, fontSize: 9, color: '#1a1a2e' });
-                stack.push({
-                    text: item.detail.map(d => `${d.label}: ${d.value ?? '-'}`).join('\n'),
-                    fontSize: 8.5, color: '#374151', margin: [0, 2, 0, 6],
+            const evidenceCards = [];
+            section.attachmentItems.forEach((item, itemIndex) => {
+                const billNumber = item.detail.find(detail => detail.label === 'เลขบิล')?.value;
+                const receiptNumber = item.detail.find(detail => detail.label === 'เล่มที่ / เลขที่ใบเสร็จ')?.value;
+                const reference = billNumber || receiptNumber || `รายการที่ ${itemIndex + 1}`;
+                if (item.images.length === 0) {
+                    evidenceCards.push({ item, itemIndex, image: null, imageIndex: 0, reference, includeFileRefs: true });
+                    return;
+                }
+                item.images.forEach((image, imageIndex) => evidenceCards.push({
+                    item, itemIndex, image, imageIndex, reference, includeFileRefs: imageIndex === 0,
+                }));
+            });
+
+            const pageGeometry = getEvidencePageGeometry(sectionEvidenceLayout.orientation);
+            const imageFit = getEvidenceImageFit(sectionEvidenceLayout);
+            const horizontalMetrics = getEvidenceHorizontalMetrics(pageGeometry);
+            const descriptionWrap = sectionEvidenceLayout.itemsPerPage === 2 && sectionEvidenceLayout.placement === 'horizontal'
+                ? Math.max(24, Math.floor(horizontalMetrics.slotWidth / 5.1))
+                : Math.max(38, Math.floor(pageGeometry.contentWidth / 5.4));
+            const buildEvidenceCardStack = (card, options = {}) => {
+                const cardImageFit = options.imageFit || imageFit;
+                const description = [];
+                card.item.detail.forEach((detail, detailIndex) => {
+                    if (detailIndex > 0) description.push({ text: '  |  ', color: '#9ca3af' });
+                    description.push({ text: `${detail.label}: `, bold: true, color: '#1f2937' });
+                    description.push({ text: wrapPdfTextByWords(detail.value ?? '-', descriptionWrap), bold: false, color: '#374151' });
                 });
-                item.images.forEach((img, imageIdx) => {
-                    const src = typeof img === 'string' ? img : img.src;
-                    const caption = typeof img === 'string' ? `Image ${imageIdx + 1}` : (img.caption || img.name || `Image ${imageIdx + 1}`);
+                const stack = [{
+                    text: wrapPdfTextByWords(`รายการที่ ${card.itemIndex + 1} | ${card.reference}`, descriptionWrap),
+                    bold: true,
+                    fontSize: sectionEvidenceLayout.itemsPerPage === 2 ? 7.2 : 8.5,
+                    color: '#1a1a2e',
+                    fillColor: '#eef2ff',
+                    margin: [5, 3, 5, 3],
+                    preservePdfText: true,
+                }, {
+                    text: description,
+                    fontSize: sectionEvidenceLayout.itemsPerPage === 2 ? 6.15 : 7.2,
+                    lineHeight: 1.16,
+                    margin: [2, 3, 2, 4],
+                    preservePdfText: true,
+                }];
+                if (card.includeFileRefs) {
+                    card.item.fileRefs.forEach(ref => stack.push({
+                        text: (ref.note ? '[ไฟล์อ้างอิง] ' : '[ไฟล์แนบ] ') + ref.name + (ref.note ? ' - ' + ref.note : ''),
+                        fontSize: sectionEvidenceLayout.itemsPerPage === 2 ? 6 : 7.2,
+                        color: ref.note ? '#b45309' : '#4f46e5',
+                        link: ref.url || undefined,
+                        margin: [2, 1, 2, 3],
+                        preservePdfText: true,
+                    }));
+                }
+                if (card.image) {
+                    const src = typeof card.image === 'string' ? card.image : card.image.src;
+                    const evidenceNumber = card.imageIndex + 1;
+                    const caption = typeof card.image === 'string'
+                        ? `หลักฐาน ${evidenceNumber}`
+                        : (card.image.caption || card.image.name || `หลักฐาน ${evidenceNumber}`);
                     stack.push({
-                        stack: [
-                            { image: registerImage(src), fit: PDF_ATTACHMENT_IMAGE_FIT, alignment: 'center', margin: [0, 4, 0, 2] },
-                            { text: caption, fontSize: 7.5, color: '#6b7280', alignment: 'center', margin: [0, 0, 0, 6] },
-                        ],
-                        unbreakable: true,
-                    });
-                });
-                item.fileRefs.forEach(ref => {
-                    // ไม่ใช้ emoji (Sarabun ไม่มี glyph) — ใช้ป้ายข้อความนำหน้าแทน
-                    stack.push({
-                        text: (ref.note ? '[!] ' : '[ไฟล์แนบ] ') + ref.name + (ref.note ? ' — ' + ref.note : ''),
-                        fontSize: 8.5, color: ref.note ? '#b45309' : '#4f46e5', link: ref.url || undefined,
+                        image: registerImage(src),
+                        fit: cardImageFit,
+                        alignment: 'center',
                         margin: [0, 2, 0, 2],
+                    }, {
+                        text: `${caption} | หลักฐาน ${evidenceNumber}/${card.item.images.length}`,
+                        fontSize: 6.2,
+                        color: '#6b7280',
+                        alignment: 'center',
+                        margin: [0, 0, 0, 2],
+                        preservePdfText: true,
                     });
+                }
+                return stack;
+            };
+
+            const groups = [];
+            const perPage = sectionEvidenceLayout.itemsPerPage;
+            for (let cardIndex = 0; cardIndex < evidenceCards.length; cardIndex += perPage) {
+                groups.push(evidenceCards.slice(cardIndex, cardIndex + perPage));
+            }
+            groups.forEach((group, groupIndex) => {
+                const pageStack = [{
+                    text: wrapPdfTextByWords(`หลักฐานใบเสร็จ - ${section.label}`, Math.max(32, Math.floor(pageGeometry.contentWidth / 5.8))),
+                    fontSize: 10.5,
+                    bold: true,
+                    color: '#1a1a2e',
+                    margin: [0, 0, 0, 5],
+                    preservePdfText: true,
+                }];
+                if (group.length === 1 || perPage === 1) {
+                    const singleImageFit = getEvidenceImageFit({ ...sectionEvidenceLayout, itemsPerPage: 1 });
+                    pageStack.push(...buildEvidenceCardStack(group[0], { imageFit: singleImageFit }));
+                } else if (sectionEvidenceLayout.placement === 'horizontal') {
+                    pageStack.push({
+                        columns: group.map(card => ({
+                            width: horizontalMetrics.slotWidth,
+                            stack: buildEvidenceCardStack(card),
+                        })),
+                        columnGap: horizontalMetrics.gap,
+                        margin: [horizontalMetrics.outerInset, 0, horizontalMetrics.outerInset, 0],
+                    });
+                } else {
+                    group.forEach((card, cardIndex) => pageStack.push({
+                        stack: buildEvidenceCardStack(card),
+                        margin: [0, cardIndex ? 6 : 0, 0, 0],
+                    }));
+                }
+                content.push({
+                    stack: pageStack,
+                    // หัวข้อที่มีเฉพาะหลักฐานใช้หน้าและแนวกระดาษเดียวกับหลักฐานกลุ่มแรก.
+                    pageBreak: section.attachmentOnly && groupIndex === 0 ? undefined : 'before',
+                    pageOrientation: sectionEvidenceLayout.orientation,
+                    unbreakable: true,
+                    margin: [0, 0, 0, 6],
                 });
-                content.push({ stack, margin: [0, 0, 0, 12] });
             });
         }
         if (section.attachmentWarnings && section.attachmentWarnings.length) {
             content.push({
-                text: `หลักฐานแนบโหลดไม่สำเร็จ ${section.attachmentWarnings.length} รายการ — ตรวจสอบการเชื่อมต่อแล้วลองสร้างรายงานใหม่`,
+                text: `หลักฐานแนบโหลดไม่สำเร็จ ${section.attachmentWarnings.length} รายการ - ตรวจสอบการเชื่อมต่อแล้วลองสร้างรายงานใหม่`,
                 fontSize: 8.5, color: '#b45309', margin: [0, 2, 0, 12]
             });
         }
+        effectiveSignatureTargets
+            .filter(target => target && target.sectionKey === section.key)
+            .forEach(appendSectionSignature);
     });
-
-    if (signature && (signature.preparer || signature.reviewer || signature.approver || signature.preparerImage || signature.reviewerImage || signature.approverImage)) {
-        const sigBlock = (role, name, image) => ({
-            stack: [
-                image ? { image: registerImage(image), fit: [120, 48], alignment: 'center', margin: [0, 0, 0, 5] } : { text: ' ', margin: [0, 30, 0, 0] },
-                { text: '........................................', alignment: 'center', fontSize: 9 },
-                { text: '(' + (name || '.........................') + ')', alignment: 'center', fontSize: 9, margin: [0, 2, 0, 0] },
-                { text: role, alignment: 'center', fontSize: 9, color: '#6b7280' },
-            ],
-        });
-        content.push({
-            columns: [
-                sigBlock('ผู้จัดทำ', signature.preparer, signature.preparerImage),
-                sigBlock('ผู้ตรวจสอบ', signature.reviewer, signature.reviewerImage),
-                sigBlock('ผู้อนุมัติ', signature.approver, signature.approverImage),
-            ],
-            unbreakable: true,
-            margin: [0, 20, 0, 0],
-        });
-    }
 
     return preparePdfDocumentText({
         pageSize: 'A4',
         pageOrientation,
-        pageMargins: PDF_MARGIN,
+        pageMargins: pageMargins,
         defaultStyle: { font: 'Sarabun', fontSize: 10 },
         images, // ทุกรูป (QR/โลโก้/หลักฐานแนบ) ลงทะเบียนไว้ที่นี่ แล้ว content อ้างด้วย key
         content,
-        // QR ย้ายไปอยู่ในหัวเอกสาร (content) แล้ว — ไม่ใช้ background callback เพราะ absolutePosition ไม่ทำงานในนั้น
-        footer: (currentPage, pageCount) => ({
-            text: `หน้า ${currentPage} / ${pageCount}`,
-            alignment: 'center', fontSize: 8, color: '#9ca3af', margin: [0, 14, 0, 0],
-        }),
+        // หน้าแรกมี QR ในหัวเอกสารหลัก ส่วนหน้าที่ 2 เป็นต้นไปใช้หัวกระดาษขนาดเล็ก
+        // พร้อมข้อความตรวจสอบแนวนอน เพื่อให้ตรวจสอบเลขเอกสาร/รหัส/เลขหน้าได้ครบทุกหน้า
+        header: (currentPage, pageCount) => {
+            if (currentPage === 1 || !qrImageKey) return { text: '' };
+            return {
+                columns: [
+                    {
+                        text: `${header.title}${header.monthLabel ? ' | ' + header.monthLabel : ''}`,
+                        bold: true,
+                        fontSize: 6.2,
+                        color: '#374151',
+                        width: '*',
+                        margin: [0, 6, 0, 0],
+                    },
+                    {
+                        text: `ตรวจสอบ: ${header.docNum || '-'} | รหัส: ${header.verifyCode || '-'} | หน้า ${currentPage}/${pageCount}`,
+                        fontSize: 5.2,
+                        color: '#6b7280',
+                        alignment: 'right',
+                        width: 'auto',
+                        margin: [6, 7, 6, 0],
+                    },
+                    { image: qrImageKey, width: 28, height: 28 },
+                ],
+                columnGap: 4,
+                margin: [pageMargins[0], repeatedHeaderTop, pageMargins[2], 0],
+            };
+        },
+        footer: (currentPage, pageCount) => {
+            const showSignatures = shouldShowSignaturesOnPage(currentPage, pageCount);
+            return {
+                stack: [
+                    ...(showSignatures ? buildSignatureRows() : []),
+                    { text: `หน้า ${currentPage} / ${pageCount}`, alignment: 'center', fontSize: 8, color: '#9ca3af', margin: [0, showSignatures ? 3 : 14, 0, 0] },
+                ],
+                margin: [pageMargins[0], 0, pageMargins[2], 0],
+            };
+        },
     });
 }
 
@@ -13640,6 +16099,74 @@ function buildPdfDocDefinition(model) {
    generation counter กันผลลัพธ์เก่า (ที่ยังรอ fetch รูปอยู่) มาทับผลลัพธ์ใหม่กว่าที่เสร็จก่อน */
 let _previewDebounceTimer = null;
 let _previewGeneration = 0;
+const EXPORT_PREVIEW_CACHE_LIMIT = 3;
+const exportPreviewCache = new Map();
+
+function compactDataUrlFingerprint(value) {
+    const text = String(value || '');
+    return text ? `${text.length}:${text.slice(0, 24)}:${text.slice(-24)}` : '';
+}
+
+function getExportPreviewCacheKey() {
+    ensureSignatureState();
+    const value = id => (document.getElementById(id) || {}).value || '';
+    const checked = id => !!(document.getElementById(id) || {}).checked;
+    const attachmentFingerprint = getExportSectionDefinitions().filter(section => section.supportsAttachments).flatMap(section =>
+        getExportSectionRows(section.key).map(row => {
+            const files = attachmentStore[row.id] || [];
+            return `${row.id}:${files.map(file => file.id || file.attachmentId || file.fileName || file.name || '').join(',')}`;
+        })
+    );
+    const payload = {
+        revision: exportReportData.revision,
+        month: value('export-report-month'),
+        orgFilter: value('export-org-filter'),
+        orgName: value('export-org-name'),
+        title: value('pdf-report-title'),
+        detail: value('export-header-detail'),
+        docNumber: value('export-doc-number'),
+        archivedVerifyCode: (currentExportArchiveState.current || {}).verifyCode || '',
+        reportType: getExportReportType(),
+        orientation: getExportPageOrientation(),
+        pageMarginsMm: getExportPageMarginsMm(),
+        evidenceLayout: getExportEvidenceLayoutState(),
+        sortBy: value('export-sort-by'),
+        sortOrder: value('export-sort-order'),
+        sectionState: getExportSectionDefinitions().map(section => ({
+            key: section.key,
+            enabled: checked(section.checkboxId),
+            columns: getExportSelectedSectionColumns(section.key),
+        })),
+        attachments: getExportSelectedColumns('.att-chk'),
+        signaturesEnabled: checked('pdf-include-signature'),
+        signaturePlacements: getExportSignaturePlacements(),
+        signatureTargets: getExportSignatureTargets().map(target => target.key),
+        signatureSigners: getExportSignerRows().map(signer => ({
+            role: signer.role,
+            name: signer.name,
+            position: signer.position,
+            label: signer.label,
+            signatureId: signer.signatureId,
+            data: compactDataUrlFingerprint(signer.image),
+        })),
+        logo: compactDataUrlFingerprint((document.getElementById('export-logo-preview') || {}).dataset?.logoSrc || ''),
+        attachmentFingerprint,
+    };
+    return JSON.stringify(payload);
+}
+
+function clearExportPreviewCache() {
+    exportPreviewCache.clear();
+}
+
+function rememberExportPreview(cacheKey, dataUrl) {
+    exportPreviewCache.delete(cacheKey);
+    exportPreviewCache.set(cacheKey, dataUrl);
+    while (exportPreviewCache.size > EXPORT_PREVIEW_CACHE_LIMIT) {
+        exportPreviewCache.delete(exportPreviewCache.keys().next().value);
+    }
+}
+
 window.renderExportPreview = function() {
     // อัปเดตเลขที่เอกสารอัตโนมัติทันที (ไม่ debounce) ให้ผู้ใช้เห็นเลขเปลี่ยนตามเดือน/องค์กรทันที
     // ต้องมาก่อน buildReportModel เพราะ QR/เอกสารอ่านเลขจากช่องนี้
@@ -13656,13 +16183,74 @@ function setPreviewLoadingText(text, isError) {
     }
     const spinner = document.getElementById('export-preview-spinner');
     if (spinner) spinner.style.display = isError ? 'none' : '';
+    const progress = document.getElementById('export-preview-progress');
+    if (progress) progress.classList.toggle('is-error', !!isError);
 }
 
-function withTimeout(promise, ms, label) {
-    return Promise.race([
-        promise,
-        new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} ใช้เวลานานเกินไป (เกิน ${ms / 1000} วินาที) — อาจเป็นปัญหาเครือข่ายหรือเข้าถึงไฟล์แนบไม่ได้`)), ms)),
-    ]);
+function resetExportPreviewProgress() {
+    const progress = document.getElementById('export-preview-progress');
+    const bar = document.getElementById('export-preview-progress-bar');
+    const stage = document.getElementById('export-preview-progress-stage');
+    const count = document.getElementById('export-preview-progress-count');
+    if (progress) {
+        progress.hidden = false;
+        progress.classList.remove('is-error');
+        progress.setAttribute('aria-valuenow', '0');
+        progress.setAttribute('aria-valuetext', 'เริ่มเตรียมตัวอย่างรายงาน');
+        progress.dataset.percent = '0';
+    }
+    if (bar) bar.style.width = '0%';
+    if (stage) stage.textContent = 'เริ่มเตรียมตัวอย่างรายงาน';
+    if (count) count.textContent = '0%';
+}
+
+function updateExportPreviewProgress(detail = {}) {
+    const progress = document.getElementById('export-preview-progress');
+    const bar = document.getElementById('export-preview-progress-bar');
+    const stage = document.getElementById('export-preview-progress-stage');
+    const count = document.getElementById('export-preview-progress-count');
+    const previous = Number(progress && progress.dataset.percent) || 0;
+    const requested = Number(detail.percent);
+    const percent = Math.max(previous, Math.min(100, Math.max(0, Number.isFinite(requested) ? requested : previous)));
+    const rounded = Math.round(percent);
+    const stageText = detail.stage || (stage ? stage.textContent : 'กำลังสร้างตัวอย่างรายงาน');
+    const countText = detail.count ? `${detail.count} · ${rounded}%` : `${rounded}%`;
+    if (progress) {
+        progress.hidden = false;
+        progress.dataset.percent = String(percent);
+        progress.setAttribute('aria-valuenow', String(rounded));
+        progress.setAttribute('aria-valuetext', `${stageText} ${countText}`);
+    }
+    if (bar) bar.style.width = `${percent}%`;
+    if (stage) stage.textContent = stageText;
+    if (count) count.textContent = countText;
+}
+
+function getExportPreviewCollectionTimeoutMs() {
+    const reportOptions = getExportReportOptions();
+    if (!reportOptions.needsEvidence) return 90000;
+    let uncachedRecords = 0;
+    getExportSectionDefinitions().forEach(section => {
+        const checkbox = document.getElementById(section.checkboxId);
+        if (!checkbox || !checkbox.checked || !section.supportsAttachments) return;
+        uncachedRecords += getExportSectionRows(section.key).filter(row => !attachmentStore[row.id]).length;
+    });
+    const requestBatches = Math.ceil(uncachedRecords / Math.max(1, ATTACHMENT_LOAD_CONCURRENCY));
+    return Math.min(300000, Math.max(90000, 60000 + (requestBatches * 30000)));
+}
+
+async function withTimeout(promise, ms, label) {
+    let timeoutId;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise((_, reject) => {
+                timeoutId = setTimeout(() => reject(new Error(`${label} ใช้เวลานานเกินไป (เกิน ${Math.round(ms / 1000)} วินาที) — อาจเป็นปัญหาเครือข่ายหรือเข้าถึงไฟล์แนบไม่ได้`)), ms);
+            }),
+        ]);
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+    }
 }
 
 async function generateAndShowPreview() {
@@ -13671,30 +16259,65 @@ async function generateAndShowPreview() {
     if (!frame) return;
     const myGeneration = ++_previewGeneration;
     if (loading) loading.style.display = 'flex';
+    resetExportPreviewProgress();
     setPreviewLoadingText('กำลังเตรียมเครื่องมือสร้าง PDF...');
+    updateExportPreviewProgress({ percent: 3, stage: 'กำลังเตรียมเครื่องมือสร้าง PDF' });
     try {
         // โหลด pdfmake/ฟอนต์แบบ lazy (ปกติเตรียมไว้เบื้องหลังแล้ว → resolve ทันที)
         await ensureExportLibs();
+        updateExportPreviewProgress({ percent: 8, stage: 'เตรียมเครื่องมือสร้าง PDF แล้ว' });
+        updateExportPreviewProgress({ percent: 10, stage: 'กำลังโหลดข้อมูลรายงานประจำเดือน' });
+        await ensureExportReportData((document.getElementById('export-report-month') || {}).value || getSelectedPostingMonth());
+        updateExportPreviewProgress({ percent: 15, stage: 'โหลดข้อมูลรายงานแล้ว' });
+        const cacheKey = getExportPreviewCacheKey();
+        const cachedPreview = exportPreviewCache.get(cacheKey);
+        if (cachedPreview) {
+            if (myGeneration !== _previewGeneration) return;
+            frame.src = cachedPreview;
+            updateExportPreviewProgress({ percent: 100, stage: 'ใช้ตัวอย่างรายงานล่าสุดจากแคช' });
+            if (loading) loading.style.display = 'none';
+            setPreviewLoadingText('ใช้ตัวอย่างรายงานล่าสุด');
+            return;
+        }
         setPreviewLoadingText('กำลังสร้างตัวอย่าง PDF...');
-        const model = await withTimeout(buildReportModel(), 45000, 'การรวบรวมข้อมูล/ไฟล์แนบ');
+        const collectionTimeoutMs = getExportPreviewCollectionTimeoutMs();
+        const model = await withTimeout(
+            buildReportModel(detail => {
+                if (myGeneration === _previewGeneration) updateExportPreviewProgress(detail);
+            }, {
+                verifyCode: (currentExportArchiveState.current || {}).verifyCode || '',
+                allowCreateVerifyCode: false,
+            }),
+            collectionTimeoutMs,
+            'การรวบรวมข้อมูล/ไฟล์แนบ'
+        );
         if (myGeneration !== _previewGeneration) return; // มีคำขอใหม่กว่าเข้ามาแล้ว
 
+        updateExportPreviewProgress({ percent: 93, stage: 'กำลังจัดหน้าเอกสาร PDF' });
         updateExportPreviewPaperSize((model.reportOptions || {}).pageOrientation);
         const docDef = buildPdfDocDefinition(model);
+        updateExportPreviewProgress({ percent: 96, stage: 'กำลังสร้างไฟล์ตัวอย่าง PDF' });
         // pdfmake 0.3.x: getDataUrl() เป็น async คืน Promise<string> โดยตรง (ไม่ใช่ callback แบบเวอร์ชันเก่า)
         const dataUrl = await withTimeout(
             pdfMake.createPdf(docDef).getDataUrl(),
-            15000,
+            45000,
             'การสร้างไฟล์ PDF (pdfmake)'
         );
 
         if (myGeneration !== _previewGeneration) return;
+        if (!model.sections.some(section => section.attachmentWarnings && section.attachmentWarnings.length)) {
+            // buildReportModel อาจเพิ่งโหลดลายเซ็น/รายการไฟล์แนบ จึงคำนวณ key หลังโหลดอีกครั้ง
+            // เพื่อให้การเปิด Preview ครั้งถัดไปใช้ผลเดิมได้ทันที
+            rememberExportPreview(getExportPreviewCacheKey(), dataUrl);
+        }
         frame.src = dataUrl;
+        updateExportPreviewProgress({ percent: 100, stage: 'สร้างตัวอย่างรายงานสำเร็จ' });
         if (loading) loading.style.display = 'none';
     } catch (err) {
         console.error('[export] สร้างตัวอย่าง PDF ไม่สำเร็จ:', err);
         if (myGeneration === _previewGeneration) {
             setPreviewLoadingText('สร้างตัวอย่างไม่สำเร็จ: ' + err.message + ' (ดูรายละเอียดใน Console — กด F12)', true);
+            updateExportPreviewProgress({ stage: 'หยุดการสร้างตัวอย่าง กรุณาตรวจสอบข้อความด้านบน' });
         }
     }
 }
@@ -13717,13 +16340,38 @@ document.addEventListener('DOMContentLoaded', () => {
    Export Single Section - individual file download per section
    ========================================================================== */
 window.exportSingleSection = async function(section) {
+    if (_exportOperationInProgress) {
+        setExportOperationState(true, 'กำลังสร้างรายงาน กรุณารอสักครู่...');
+        return false;
+    }
+    _exportOperationInProgress = true;
+    setExportOperationState(true, 'กำลังเตรียมข้อมูลหัวข้อที่เลือก...');
+    try {
+        const succeeded = await exportSingleSectionInternal(section);
+        setExportOperationState(false, succeeded ? 'ดาวน์โหลดหัวข้อสำเร็จ' : 'ดาวน์โหลดหัวข้อไม่สำเร็จ', !succeeded);
+        return succeeded;
+    } catch (err) {
+        console.error('[export] ดาวน์โหลดหัวข้อไม่สำเร็จ:', err);
+        setExportOperationState(false, 'ดาวน์โหลดหัวข้อไม่สำเร็จ', true);
+        appAlert('ดาวน์โหลดหัวข้อไม่สำเร็จ: ' + err.message, 'error');
+        return false;
+    } finally {
+        _exportOperationInProgress = false;
+        document.querySelectorAll('.export-execute-button, .export-section-download').forEach(button => {
+            button.disabled = false;
+            button.setAttribute('aria-busy', 'false');
+        });
+    }
+};
+
+async function exportSingleSectionInternal(section) {
     const monthInput = document.getElementById('export-report-month');
     const reportMonth = monthInput?.value || '';
     try {
         await ensureExportReportData(reportMonth || getSelectedPostingMonth());
     } catch (err) {
         appAlert('โหลดข้อมูลสำหรับส่งออกไม่สำเร็จ: ' + err.message, 'error');
-        return;
+        return false;
     }
     let monthLabel = '';
     if (reportMonth) {
@@ -13732,39 +16380,38 @@ window.exportSingleSection = async function(section) {
         monthLabel = thMonths[parseInt(m)] + '_' + (parseInt(y) + 543);
     }
 
-    const sectionNames = {
-        bills: 'รายการบิลประจำเดือน',
-        food: 'ค่าอาหารประจำเดือน',
-        attach: 'บิลแนบ_สาธารณูปโภค'
-    };
-
-    const rows = buildExportSectionData(section);
+    const sectionDefinition = getExportSectionDefinition(section);
+    if (!sectionDefinition) {
+        if (typeof showToast === 'function') showToast('ไม่พบหัวข้อรายงานที่เลือก', 'warning');
+        return false;
+    }
+    const sectionName = sectionDefinition.fileName || sectionDefinition.label.replace(/[\\/:*?"<>|]/g, '_');
+    const rows = getExportSectionRows(section);
     if (rows.length === 0) {
         if (typeof showToast === 'function') showToast('ไม่มีข้อมูลในหัวข้อนี้', 'warning');
-        return;
+        return false;
     }
 
-    const isFood = section === 'food';
-    const columnDefs = isFood ? EXPORT_FOOD_COLUMNS : EXPORT_BILL_COLUMNS;
-    const selectedIds = isFood ? getExportSelectedColumns('.export-food-col') : getExportSelectedColumns('.export-col-chk');
+    const columnDefs = getExportSectionColumnDefinition(section);
+    const selectedIds = getExportSelectedSectionColumns(section);
     const cols = columnDefs.filter(c => selectedIds.includes(c.id));
     if (cols.length === 0) {
         if (typeof showToast === 'function') showToast('กรุณาเลือกคอลัมน์ที่จะดาวน์โหลดอย่างน้อย 1 คอลัมน์', 'warning');
-        return;
+        return false;
     }
 
-    const fileName = (sectionNames[section] || section) + (monthLabel ? '_' + monthLabel : '');
+    const fileName = sectionName + (monthLabel ? '_' + monthLabel : '');
 
-    // Build CSV
-    let csvContent = cols.map(c => '"' + c.label.replace(/"/g, '""') + '"').join(',') + '\n';
-    rows.forEach(row => {
-        const cells = cols.map(c => '"' + String(c.get(row) ?? '').replace(/"/g, '""') + '"');
-        csvContent += cells.join(',') + '\n';
+    // สร้างเป็น array แล้ว join ครั้งเดียว เพื่อลดการคัดลอก string ซ้ำเมื่อมีหลายพันรายการ
+    const csvLines = [cols.map(c => '"' + c.label.replace(/"/g, '""') + '"').join(',')];
+    rows.forEach((row, rowIndex) => {
+        const cells = cols.map(c => '"' + String(getExportColumnValue(c, row, rowIndex)).replace(/"/g, '""') + '"');
+        csvLines.push(cells.join(','));
     });
 
     // Download as CSV (Excel-compatible with UTF-8 BOM)
     const BOM = '\uFEFF';
-    const blob = new Blob([BOM + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob([BOM, csvLines.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -13775,8 +16422,9 @@ window.exportSingleSection = async function(section) {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
 
-    if (typeof showToast === 'function') showToast('ดาวน์โหลด ' + sectionNames[section] + ' สำเร็จ', 'success');
-};
+    if (typeof showToast === 'function') showToast('ดาวน์โหลด ' + sectionDefinition.label + ' สำเร็จ', 'success');
+    return true;
+}
 
 /* ==========================================================================
    Modal UX: Auto-close sidebar when any modal opens (mobile)

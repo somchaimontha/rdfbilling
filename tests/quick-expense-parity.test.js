@@ -255,6 +255,36 @@ test('monthly food records collapse responsively and expose semantic row actions
     assert.match(style, /\.btn-icon-attach[\s\S]*background: var\(--action-view\)/);
 });
 
+test('semantic action colours stay consistent and readable in light and dark themes', () => {
+    const rootBlock = (style.match(/:root\s*\{([\s\S]*?)\n\}/) || [])[1] || '';
+    const darkBlock = (style.match(/\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/) || [])[1] || '';
+    const relativeLuminance = hex => {
+        const channels = hex.slice(1).match(/.{2}/g).map(value => parseInt(value, 16) / 255)
+            .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+        return (0.2126 * channels[0]) + (0.7152 * channels[1]) + (0.0722 * channels[2]);
+    };
+    const contrastWithWhite = hex => 1.05 / (relativeLuminance(hex) + 0.05);
+
+    for (const block of [rootBlock, darkBlock]) {
+        for (const action of ['create', 'view', 'edit', 'delete', 'neutral']) {
+            const match = block.match(new RegExp(`--action-${action}:\\s*(#[0-9a-f]{6})`, 'i'));
+            assert.ok(match, `missing ${action} colour token`);
+            assert.ok(contrastWithWhite(match[1]) >= 4.5, `${action} must retain readable white foreground contrast`);
+        }
+    }
+
+    assert.match(style, /\.btn-action-create,[\s\S]*\.btn-action-save/);
+    assert.match(style, /\.btn-icon-view,[\s\S]*\.btn-icon-edit,[\s\S]*\.btn-icon-delete/);
+    assert.match(style, /\.btn-icon-view:focus-visible[\s\S]*outline-offset: 2px/);
+    assert.match(source, /btn-icon-view quick-expense-open-full/);
+    assert.match(source, /btn-icon-retry quick-expense-retry-attachments/);
+    assert.match(source, /function claimToolsButtons[\s\S]*btn-icon-print[\s\S]*btn-action-create[\s\S]*btn-action-delete-outline[\s\S]*btn-action-save/);
+    assert.match(source, /btn-icon-edit[^\n]+แก้ไขเอกสารรับเงินทุน/);
+    assert.match(source, /btn-icon-save[^\n]+เพิ่มเอกสารรับเงินทุน/);
+    assert.match(html, /id="btn-export-excel" class="btn btn-action-save btn-sm"|class="btn btn-action-save btn-sm" id="btn-export-excel"/);
+    assert.match(source, /class="btn btn-action-view export-section-download"/);
+});
+
 test('food overview shares monthly records with inline editing, evidence, totals, and six-row disclosure', () => {
     assert.match(html, /id="food-overview-table"/);
     assert.match(html, /<th class="text-center" style="width:52px;">ที่<\/th>/);
@@ -576,14 +606,14 @@ test('opening a batch row in the full form preserves receipt data, common fields
 test('bill preview offers all billing profiles and keeps row labels compact', () => {
     const { api } = createHarness();
     api.setOrganizations([
-        { id: 'ORG-OF', name: 'office', shortName: 'OF', active: true },
-        { id: 'ORG-BS', name: 'Boribhat Suksa', shortName: 'BS', active: true }
+        { id: 'ORG-OFFICE', name: 'สำนักงาน', shortName: 'OFFICE', active: true },
+        { id: 'ORG-MBS', name: 'โรงเรียนแม่สะเรียงบริพัตร์', shortName: 'MBS', active: true }
     ]);
 
-    assert.equal(api.getQuickExpenseDocumentPreview('2026-09', 'BS'), 'BSSEP26_1');
-    const compactOptions = api.getQuickExpenseBillingProfileOptions('BS', true);
-    assert.match(compactOptions, />OF<\/option>/);
-    assert.match(compactOptions, />BS<\/option>/);
+    assert.equal(api.getQuickExpenseDocumentPreview('2026-09', 'MBS'), 'MBSSEP26_1');
+    const compactOptions = api.getQuickExpenseBillingProfileOptions('MBS', true);
+    assert.match(compactOptions, />OFFICE<\/option>/);
+    assert.match(compactOptions, />MBS<\/option>/);
     assert.match(compactOptions, />VC<\/option>/);
     assert.match(compactOptions, />P<\/option>/);
     assert.doesNotMatch(compactOptions, /Boribhat Suksa|Vocational College|โปรเจกต์อื่นๆ/);
@@ -594,9 +624,9 @@ test('bill preview offers all billing profiles and keeps row labels compact', ()
     assert.match(rowHtml, /class="quick-expense-billing-menu"/);
     assert.match(rowHtml, /class="quick-expense-billing-options" role="listbox"/);
     assert.doesNotMatch(rowHtml, /quick-expense-org-select/);
-    assert.match(rowHtml, /OF — office/);
-    assert.match(rowHtml, /BS — Boribhat Suksa/);
-    assert.match(rowHtml, /VC — Vocational College/);
+    assert.match(rowHtml, /OFFICE — สำนักงาน/);
+    assert.match(rowHtml, /MBS — โรงเรียนแม่สะเรียงบริพัตร์/);
+    assert.match(rowHtml, /VC — วิทยาลัยการอาชีพแม่สะเรียง/);
     assert.match(rowHtml, /P — โปรเจกต์อื่นๆ/);
     assert.match(rowHtml, /title="เปิดรายการแบบป๊อปอัป"/);
     assert.doesNotMatch(rowHtml, /quick-expense-add-row/);
@@ -712,7 +742,7 @@ test('saved cloud bills are restored into the quick table after reload', () => {
     });
 
     assert.equal(restored.postingMonth, '2026-09');
-    assert.equal(restored.documentPrefix, 'OF');
+    assert.equal(restored.documentPrefix, 'OFFICE');
     assert.equal(restored.vendorName, 'ร้านทดสอบ');
     assert.equal(restored.note, 'หมายเหตุ');
     assert.deepEqual(JSON.parse(JSON.stringify(restored.multiItems)), [{ desc: 'ปากกา', qty: 2, price: 150 }]);
@@ -831,7 +861,9 @@ test('transient write failures retry safely and expose item-level status', () =>
     assert.match(source, /const API_WRITE_RETRY_ATTEMPTS = 3/);
     assert.match(source, /function canSafelyRetryWrite/);
     assert.match(source, /const MUTATING_API_ACTIONS = new Set/);
-    assert.match(source, /return MUTATING_API_ACTIONS\.has\(action\)/);
+    assert.match(source, /return apiIdempotencySupported && MUTATING_API_ACTIONS\.has\(action\)/);
+    assert.match(source, /apiIdempotencySupported = value\.idempotencySupported === true/);
+    assert.match(backendSystemSource, /idempotencySupported:\s*true/);
     assert.match(source, /requestId: statusRequestId/);
     assert.match(source, /status: attempt > 1 \? 'retrying' : 'sending'/);
     assert.match(source, /reportApiRequestStatus\(options, \{ action, isWrite, requestId: statusRequestId, status: 'success'/);
@@ -845,6 +877,27 @@ test('transient write failures retry safely and expose item-level status', () =>
     assert.match(backendCodeSource, /function runIdempotentMutation_/);
     assert.match(backendCodeSource, /cache\.put\(cacheKey, content, 21600\)/);
     assert.match(backendCodeSource, /runIdempotentMutation_\(requestId, action/);
+});
+
+test('report center reuses fresh data and previews while preventing duplicate exports', () => {
+    assert.match(source, /const EXPORT_REPORT_CACHE_TTL_MS = 2 \* 60 \* 1000/);
+    assert.match(source, /const exportReportDataCache = new Map\(\)/);
+    assert.match(source, /if \(cached && cached\.loading\) return cached\.loading/);
+    assert.match(source, /if \(!force && cached && cached\.fetchedAt/);
+    assert.match(source, /requestEpoch !== exportReportCacheEpoch/);
+    assert.match(source, /isWrite && !EXPORT_CACHE_NEUTRAL_WRITE_ACTIONS\.has\(action\)/);
+    assert.match(source, /Promise\.allSettled\(\[/);
+    assert.match(source, /const exportPreviewCache = new Map\(\)/);
+    assert.match(source, /rememberExportPreview\(getExportPreviewCacheKey\(\), dataUrl\)/);
+    assert.match(source, /if \(_exportOperationInProgress\)/);
+    assert.match(source, /const csvLines = \[/);
+    assert.match(source, /URL\.revokeObjectURL\(downloadUrl\)/);
+    assert.match(html, /id="export-data-status"[^>]+aria-live="polite"/);
+    assert.match(html, /id="btn-refresh-export-data"[^>]+refreshExportReportData\(\)/);
+    assert.match(html, /id="export-operation-status"[^>]+aria-live="polite"/);
+    assert.equal((html.match(/export-execute-button/g) || []).length, 3);
+    assert.match(style, /\.export-data-toolbar/);
+    assert.match(style, /\.export-operation-status\.is-busy::before/);
 });
 
 test('report verification QR always points to the public site', () => {
