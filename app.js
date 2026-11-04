@@ -9443,7 +9443,9 @@ async function submitQuickExpenseBatch(event) {
                 return appAlert('บันทึกการแก้ไขยังไม่สำเร็จ กรุณาตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง', 'error');
             }
             clearQuickExpenseTableValidation();
-            return appAlert('บันทึกการแก้ไขเรียบร้อยแล้ว', 'success');
+            // Nothing left to enter: go back to the normal record table.
+            toggleQuickExpenseEntry(false);
+            return appToast('บันทึกการแก้ไขเรียบร้อยแล้ว');
         }
 
         const hasSavedRows = quickExpenseRows.some(rowId => {
@@ -9451,8 +9453,11 @@ async function submitQuickExpenseBatch(event) {
             return row && row.dataset.saved === 'true';
         });
         if (hasSavedRows) {
-            showQuickExpenseTableValidation('ไม่มีรายการใหม่ที่รอบันทึก หากต้องการเพิ่มให้กรอกข้อมูลในแถวว่าง', [], 'warning');
-            return appAlert('ไม่มีรายการใหม่ที่รอบันทึก', 'info');
+            // Saved rows are already shown in the normal table (with expandable
+            // sub-items); return there instead of leaving the user in an empty entry table.
+            clearQuickExpenseTableValidation();
+            toggleQuickExpenseEntry(false);
+            return appToast('ไม่มีรายการใหม่ที่รอบันทึก กลับสู่ตารางรายการแล้ว', 'info');
         }
 
         const firstPendingRowId = quickExpenseRows.find(rowId => {
