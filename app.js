@@ -432,6 +432,28 @@ async function fetchAllPagedRecords(fetchPage, getRecords, options = {}) {
     return firstRecords.concat(...remainingResponses.map(response => getRecords(response) || []));
 }
 
+// Google Sheets turns receipt numbers such as "10/2026" into Date cells, which the
+// API returns as ISO timestamps. Backends that store receipts as text no longer do
+// this; for older rows, show the date the way it was most likely typed.
+function normalizeLegacyReceiptNo(value) {
+    const text = String(value == null ? '' : value).trim();
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(text)) return text;
+    const date = new Date(text);
+    if (Number.isNaN(date.getTime())) return text;
+    const bangkok = new Date(date.getTime() + 7 * 60 * 60 * 1000);
+    const day = bangkok.getUTCDate();
+    const month = String(bangkok.getUTCMonth() + 1).padStart(2, '0');
+    const year = bangkok.getUTCFullYear();
+    return day === 1 ? `${month}/${year}` : `${String(day).padStart(2, '0')}/${month}/${year}`;
+}
+
+function normalizeExpenseRecords(records) {
+    (records || []).forEach(record => {
+        if (record && record.receiptNo) record.receiptNo = normalizeLegacyReceiptNo(record.receiptNo);
+    });
+    return records;
+}
+
 async function fetchAllExpensesForMonth(month, options = {}) {
     // Filter in the browser until every deployed Apps Script version handles
     // Google Sheets Date cells consistently. Server-side month filtering in an
@@ -440,16 +462,17 @@ async function fetchAllExpensesForMonth(month, options = {}) {
         page => apiCall('getExpenses', null, null, { page, limit: API_LIST_PAGE_SIZE }, options),
         response => response.expenses || []
     );
+    normalizeExpenseRecords(allRecords);
     cacheAuthorizedExpenseRecords(allRecords);
     return allRecords.filter(expense => getExpensePostingMonth(expense) === month);
 }
 
 async function fetchAllExpensesForYear(year) {
     const cachedRecords = getCachedAuthorizedExpenseRecords();
-    const allRecords = cachedRecords || cacheAuthorizedExpenseRecords(await fetchAllPagedRecords(
+    const allRecords = cachedRecords || cacheAuthorizedExpenseRecords(normalizeExpenseRecords(await fetchAllPagedRecords(
         page => apiCall('getExpenses', null, null, { page, limit: API_LIST_PAGE_SIZE }),
         response => response.expenses || []
-    ));
+    )));
     const yearPrefix = `${String(year)}-`;
     return allRecords.filter(expense => getExpensePostingMonth(expense).startsWith(yearPrefix));
 }
@@ -6771,7 +6794,43 @@ function renderExpenseRow(exp, idx, tbody) {
     tbody.appendChild(tr);
 }
 
+// "[หลายรายการ]" bills keep their sub-items in the note. Show them as an
+// expandable list inside the description cell so they can be read in the table.
+function buildExpenseSubItemsHtml(record) {
+    const items = (parseNoteData(record && record.note).multiItems || [])
+        .filter(item => item && String(item.desc || '').trim());
+    if (items.length < 2) return { toggle: '', panel: '' };
+    const money = value => (Number(value) || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const total = items.reduce((sum, item) => sum + (Number(item.qty) || 0) * (Number(item.price) || 0), 0);
+    const toggle = `<button type="button" class="expense-subitems-toggle" onclick="toggleExpenseSubItems(this)" aria-expanded="false" title="ขยาย / ยุบรายการย่อย"><i data-lucide="chevron-down"></i><span>รายการย่อย ${items.length} รายการ</span></button>`;
+    const panel = `<div class="expense-subitems-panel" hidden>
+        <table class="expense-subitems-table">
+            <thead><tr><th>#</th><th>รายการ</th><th class="text-right">จำนวน</th><th class="text-right">ราคา/หน่วย</th><th class="text-right">รวม</th></tr></thead>
+            <tbody>${items.map((item, index) => `<tr>
+                <td>${index + 1}</td>
+                <td>${escapeHTML(item.desc)}</td>
+                <td class="text-right">${escapeHTML(String(Number(item.qty) || 0))}</td>
+                <td class="text-right">${money(item.price)}</td>
+                <td class="text-right">${money((Number(item.qty) || 0) * (Number(item.price) || 0))}</td>
+            </tr>`).join('')}</tbody>
+            <tfoot><tr><td colspan="4" class="text-right">รวมทั้งหมด</td><td class="text-right">${money(total)}</td></tr></tfoot>
+        </table>
+    </div>`;
+    return { toggle, panel };
+}
+
+window.toggleExpenseSubItems = function(button) {
+    const cell = button.closest('td');
+    const panel = cell && cell.querySelector('.expense-subitems-panel');
+    if (!panel) return;
+    const open = panel.hidden;
+    panel.hidden = !open;
+    button.setAttribute('aria-expanded', String(open));
+    button.classList.toggle('is-open', open);
+};
+
 function renderCompactExpenseRow(exp, idx, tbody) {
+    const subItems = buildExpenseSubItemsHtml(exp);
     const tr = document.createElement('tr');
     tr.id = `row-exp-${exp.id}`;
     tr.className = 'compact-expense-row';
@@ -6798,7 +6857,9 @@ function renderCompactExpenseRow(exp, idx, tbody) {
         </td>
         <td data-label="รายละเอียดรายการ">
             <span class="record-primary">${escapeHTML(exp.description || '-')}</span>
+            ${subItems.toggle}
             <div class="record-meta">${meta}</div>
+            ${subItems.panel}
         </td>
         <td class="text-right" data-label="จำนวนเงิน">
             <span class="record-secondary">${quantity.toLocaleString('th-TH')} ${escapeHTML(exp.unit || 'รายการ')} × ฿${unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
@@ -6846,7 +6907,9 @@ function renderAttachmentRow(a, idx, tbody) {
             </td>
             <td data-label="รายละเอียดรายการ">
                 <span class="record-primary">${escapeHTML(a.description || '-')}</span>
+                ${buildExpenseSubItemsHtml(a).toggle}
                 <div class="record-meta">${meta}</div>
+                ${buildExpenseSubItemsHtml(a).panel}
             </td>
             <td class="text-right" data-label="จำนวนเงิน">
                 <span class="record-secondary">${quantity.toLocaleString('th-TH')} ${escapeHTML(a.unit || 'รายการ')} × ฿${unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
@@ -7044,6 +7107,7 @@ function populateQuickExpenseProjectOptions(selectedId = '') {
         '<option value="">เลือกโครงการ</option>',
         ...projects.map(project => `<option value="${escapeHTML(project.id)}" ${project.id === defaultId ? 'selected' : ''}>${escapeHTML(project.name || project.id)}</option>`)
     ].join('');
+    if (typeof refreshQuickExpenseRowProjects === 'function') refreshQuickExpenseRowProjects();
 }
 
 function getOrganizationShortName(organizationId) {
@@ -7701,6 +7765,7 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
             <td class="quick-expense-doc-cell" data-role="document-number">
                 <strong class="quick-expense-doc-preview">${escapeHTML(getQuickExpenseDocumentPreview(postingMonth, documentPrefix))}</strong>
                 ${billingProfileControl}
+                <small class="quick-expense-row-project" data-role="row-project" hidden></small>
             </td>
             <td><input type="text" class="form-input" data-field="receiptNo" value="${escapeHTML(receiptNo)}" placeholder="${quickExpenseEntryMode === 'ATT' ? 'ระบุได้ (ถ้ามี)' : 'เล่ม 1 / เลขที่ 001'}"></td>
             <td><input type="date" class="form-input" data-field="expenseDate" value="${escapeHTML(expenseDate)}"></td>
@@ -7740,6 +7805,33 @@ function buildQuickExpenseRowHTML(rowId, initial = {}) {
     `;
 }
 
+// Every row shows the project it belongs to: saved rows keep their own project,
+// pending rows follow the shared project selector above the table.
+function renderQuickExpenseRowProject(rowId) {
+    const row = getQuickExpenseRowElement(rowId);
+    const docCell = row && row.querySelector('[data-role="document-number"]');
+    if (!docCell) return;
+    let label = docCell.querySelector('[data-role="row-project"]');
+    if (!label) {
+        label = document.createElement('small');
+        label.className = 'quick-expense-row-project';
+        label.dataset.role = 'row-project';
+        docCell.appendChild(label);
+    }
+    const projectId = row.dataset.saved === 'true'
+        ? (row.dataset.projectId || '')
+        : String((document.getElementById('inline-exp-project') || {}).value || '');
+    const name = projectId ? (getProjectName(projectId) || '') : '';
+    label.textContent = name && name !== '-' ? name : '';
+    label.title = label.textContent ? `โครงการ: ${label.textContent}` : '';
+    label.hidden = !label.textContent;
+}
+
+function refreshQuickExpenseRowProjects() {
+    quickExpenseRows.forEach(renderQuickExpenseRowProject);
+}
+window.refreshQuickExpenseRowProjects = refreshQuickExpenseRowProjects;
+
 function refreshQuickExpenseDocumentPreviews() {
     const postingMonth = String((document.getElementById('inline-exp-posting-month') || {}).value || '').trim();
     quickExpenseRows.forEach(rowId => {
@@ -7761,6 +7853,7 @@ function addQuickExpenseRow(initial = {}, options = {}) {
     quickExpenseAttachmentsByRow[rowId] = [];
     quickExpenseMultiItemsByRow[rowId] = Array.isArray(initial.multiItems) ? initial.multiItems.map(item => ({ ...item })) : [];
     tbody.insertAdjacentHTML('beforeend', buildQuickExpenseRowHTML(rowId, initial));
+    renderQuickExpenseRowProject(rowId);
     enhanceSystemDateInputs(tbody);
     updateQuickExpenseRowTotal(rowId);
     renumberQuickExpenseRows();
@@ -8021,6 +8114,7 @@ function markQuickExpenseRowSaved(rowId, documentNo, attachmentErrorCount = 0, e
     });
     const documentEditButton = row.querySelector('[data-role="document-edit"]');
     if (documentEditButton) documentEditButton.disabled = false;
+    row.querySelectorAll('.quick-expense-subitems-button').forEach(button => { button.disabled = false; });
     row.querySelectorAll('.quick-expense-open-full, [data-row-remove]').forEach(button => {
         const savedDeleteWithoutPermission = button.matches('[data-row-remove]') && !['admin', 'manager'].includes(getCurrentUserRole());
         button.disabled = savedDeleteWithoutPermission;
@@ -8035,6 +8129,9 @@ function markQuickExpenseRowSaved(rowId, documentNo, attachmentErrorCount = 0, e
     if (status) status.textContent = attachmentErrorCount
         ? `บันทึกแล้ว · แนบไฟล์ไม่สำเร็จ ${attachmentErrorCount} ไฟล์`
         : 'บันทึกแล้ว · คลิกช่องข้อมูลเพื่อแก้ไข';
+    // Rows saved from this table belong to the project that was selected at save time.
+    if (!row.dataset.projectId) row.dataset.projectId = String((document.getElementById('inline-exp-project') || {}).value || '');
+    renderQuickExpenseRowProject(rowId);
     updateQuickExpenseBatchSummary();
     scheduleQuickExpenseDraftSave();
 }
@@ -8104,6 +8201,7 @@ function addQuickExpenseSavedRow(expense) {
     if (row) {
         row.dataset.postingMonth = getExpensePostingMonth(expense);
         row.dataset.documentNo = String(expense.documentNo || '');
+        row.dataset.projectId = String(expense.projectId || '');
     }
     markQuickExpenseRowSaved(rowId, expense.documentNo || 'บันทึกแล้ว', 0, expense.id);
     const removeButton = row && row.querySelector('[data-row-remove]');
@@ -10007,7 +10105,21 @@ function openQuickExpenseMultiItems(rowId) {
 }
 window.openQuickExpenseMultiItems = openQuickExpenseMultiItems;
 
+function updateBillModalTotal() {
+    const display = document.getElementById('bill-total-display');
+    if (!display) return;
+    const qty = parseFloat((document.getElementById('bill-qty') || {}).value) || 0;
+    const price = parseFloat((document.getElementById('bill-price') || {}).value) || 0;
+    display.textContent = `฿${(qty * price).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+window.updateBillModalTotal = updateBillModalTotal;
+
+document.addEventListener('input', event => {
+    if (event.target && (event.target.id === 'bill-qty' || event.target.id === 'bill-price')) updateBillModalTotal();
+});
+
 function updateExpenseModalMultiItemsSummary() {
+    updateBillModalTotal();
     const summary = document.getElementById('bill-multi-items-summary');
     if (!summary) return;
     const items = expenseModalNoteMetadata.multiItems || [];
@@ -10162,6 +10274,8 @@ function saveMultiItems() {
         updateQuickExpenseRowTotal(currentQuickExpenseRowId);
         ensureQuickExpenseTrailingRow(currentQuickExpenseRowId);
         scheduleQuickExpenseDraftSave();
+        const editedRow = getQuickExpenseRowElement(currentQuickExpenseRowId);
+        if (editedRow && editedRow.dataset.saved === 'true') scheduleQuickExpenseInlineSave(currentQuickExpenseRowId, 0);
         closeMultiItemsModal();
         return;
     }

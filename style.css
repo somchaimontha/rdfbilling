@@ -6304,3 +6304,214 @@ table.table tbody tr:hover {
         text-align: left;
     }
 }
+
+/* ==========================================================================
+   Bill edit modal — sectioned, responsive layout
+   ========================================================================== */
+.modal-bill-card {
+    max-width: 880px;
+    width: min(94vw, 880px);
+}
+
+.modal-bill-heading { min-width: 0; }
+.modal-bill-subtitle {
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+#form-bill {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1 1 auto;
+}
+
+.bill-modal-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px 20px;
+    background: var(--bg-main);
+}
+
+.bill-form-section {
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    padding: 14px 16px 6px;
+}
+
+.bill-form-section-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 12px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--primary);
+}
+
+.bill-form-section-title svg,
+.bill-form-section-title i { width: 16px; height: 16px; }
+
+.bill-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+    gap: 0 14px;
+}
+
+.bill-grid .bill-span-full { grid-column: 1 / -1; }
+
+.bill-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.bill-label-row .form-label { margin-bottom: 0; }
+
+.bill-quick-add {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--primary);
+    background: none;
+    border: none;
+    cursor: pointer;
+}
+
+.bill-quick-add svg,
+.bill-quick-add i { width: 12px; height: 12px; }
+
+.bill-subitems-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    margin-top: 8px;
+}
+
+.bill-subitems-summary {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.bill-attachments-preview {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.bill-modal-footer {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+}
+
+.bill-total {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-right: auto;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.bill-total strong {
+    font-size: 20px;
+    line-height: 1.1;
+    color: var(--primary);
+    font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 600px) {
+    .modal-bill-card {
+        width: 100%;
+        max-width: 100%;
+        border-radius: 16px 16px 0 0;
+    }
+    .bill-modal-body { padding: 12px; gap: 10px; }
+    .bill-form-section { padding: 12px 12px 4px; }
+    .bill-total { width: 100%; justify-content: space-between; }
+    .bill-modal-footer .btn { flex: 1 1 0; }
+}
+
+/* Expandable sub-items inside the bill tables */
+.expense-subitems-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin: 4px 0 0;
+    padding: 2px 10px 2px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--primary);
+    background: var(--primary-light);
+    border: 1px solid transparent;
+    border-radius: 999px;
+    cursor: pointer;
+}
+
+.expense-subitems-toggle svg,
+.expense-subitems-toggle i {
+    width: 14px;
+    height: 14px;
+    transition: transform 0.2s ease;
+}
+
+.expense-subitems-toggle.is-open svg,
+.expense-subitems-toggle.is-open i { transform: rotate(180deg); }
+
+.expense-subitems-panel {
+    margin-top: 8px;
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--primary);
+    border-radius: 8px;
+    overflow-x: auto;
+    background: var(--bg-main);
+}
+
+.expense-subitems-panel[hidden] { display: none; }
+
+.expense-subitems-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.expense-subitems-table th,
+.expense-subitems-table td {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border-color);
+    text-align: left;
+    white-space: nowrap;
+}
+
+.expense-subitems-table td:nth-child(2) { white-space: normal; min-width: 120px; }
+.expense-subitems-table th.text-right,
+.expense-subitems-table td.text-right { text-align: right; }
+.expense-subitems-table tfoot td { font-weight: 700; border-bottom: 0; }
+
+/* Project label under the bill number in the quick-entry table */
+.quick-expense-row-project {
+    display: block;
+    margin-top: 4px;
+    max-width: 150px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--primary);
+    overflow-wrap: anywhere;
+}
+
+.quick-expense-row-project[hidden] { display: none; }

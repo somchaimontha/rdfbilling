@@ -7,7 +7,7 @@
     <meta name="description" content="ระบบบันทึกและบริหารรายจ่ายโครงการ มูลนิธิ Dr. Robert Dyckerhoff  วิทยาลัยการอาชีพแม่สะเรียง">
     <!-- SweetAlert2 -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="stylesheet" href="style.css?v=20261104-01">
+    <link rel="stylesheet" href="style.css?v=20261104-02">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- node-qrcode (MIT) ไม่มี browser UMD build — path build/qrcode.min.js เดิม 404 มาตลอด (QRCode จึง undefined)
          โหลดผ่าน ESM bundle ของ jsdelivr (CommonJS→ESM) แล้ว expose เป็น window.QRCode ให้โค้ดเดิมใช้ได้
@@ -473,7 +473,7 @@
                                             <i data-lucide="plus"></i> เพิ่มโครงการด่วน
                                         </button>
                                     </div>
-                                    <select id="inline-exp-project" class="form-select" required></select>
+                                    <select id="inline-exp-project" class="form-select" required onchange="refreshQuickExpenseRowProjects()"></select>
                                 </div>
                                 <div class="form-group quick-span-2">
                                     <label class="form-label" for="inline-exp-category-input">หมวดหมู่</label>
@@ -1652,113 +1652,134 @@
      MODAL: Add / Edit Expense (Bill)
 ===================================================== -->
 <div class="modal-overlay" id="modal-bill">
-    <div class="modal-card">
+    <div class="modal-card modal-bill-card">
         <header class="modal-header">
-            <h3 class="modal-title" id="modal-bill-title">เพิ่มรายการรายจ่ายใหม่</h3>
-            <button class="modal-close" id="modal-bill-close"><i data-lucide="x"></i></button>
+            <div class="modal-bill-heading">
+                <h3 class="modal-title" id="modal-bill-title">เพิ่มรายการรายจ่ายใหม่</h3>
+                <p class="modal-bill-subtitle">กรอกข้อมูลตามหัวข้อด้านล่าง ยอดรวมจะคำนวณให้อัตโนมัติ</p>
+            </div>
+            <button class="modal-close" id="modal-bill-close" type="button" aria-label="ปิด"><i data-lucide="x"></i></button>
         </header>
         <form id="form-bill">
             <input type="hidden" id="bill-edit-index">
-            <div class="modal-body" style="max-height:520px; overflow-y:auto;">
-                <div class="form-grid form-grid-3">
-                    <div class="form-group">
-                        <label class="form-label" for="bill-docno">เลขบิล</label>
-                        <input type="text" id="bill-docno" class="form-input" placeholder="สร้างเมื่อบันทึก" readonly>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label" for="bill-receipt-no">เล่มที่ / เลขที่ใบเสร็จ</label>
-                        <input type="text" id="bill-receipt-no" class="form-input" placeholder="เช่น เล่ม 1 / เลขที่ 001" required>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label" for="bill-date">วันที่บิล</label>
-                        <input type="date" id="bill-date" class="form-input" required>
-                    </div>
-                </div>
-                <div class="form-grid form-grid-2">
-                    <div class="form-group">
-                        <label class="form-label" for="bill-posting-month">รอบเดือนที่บันทึก</label>
-                        <input type="month" id="bill-posting-month" class="form-input" required>
-                        <small class="form-help">วันที่บิลอาจเป็นเดือนก่อนหน้าได้ แต่ยอดจะรวมในรอบเดือนนี้</small>
-                    </div>
-                    <div class="form-group" id="bill-project-select-group">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
-                            <label class="form-label" for="bill-project" style="margin-bottom:0;">โครงการ</label>
-                            <button type="button" class="btn btn-link btn-xs" onclick="quickAddProject('bill')" style="font-size:11px; padding:0; color:var(--primary); background:none; border:none; cursor:pointer; font-weight:600; display:flex; align-items:center; gap:2px;">
-                                <i data-lucide="plus" style="width:12px; height:12px;"></i> เพิ่มโครงการด่วน
-                            </button>
+            <div class="modal-body bill-modal-body">
+
+                <section class="bill-form-section" aria-labelledby="bill-sec-doc">
+                    <h4 class="bill-form-section-title" id="bill-sec-doc"><i data-lucide="receipt"></i> ข้อมูลบิล</h4>
+                    <div class="bill-grid">
+                        <div class="form-group">
+                            <label class="form-label" for="bill-docno">เลขบิล</label>
+                            <input type="text" id="bill-docno" class="form-input" placeholder="สร้างเมื่อบันทึก" readonly>
                         </div>
-                        <select id="bill-project" class="form-select w-full" style="padding:10px;" required></select>
+                        <div class="form-group">
+                            <label class="form-label" for="bill-receipt-no">เล่มที่ / เลขที่ใบเสร็จ</label>
+                            <input type="text" id="bill-receipt-no" class="form-input" placeholder="เช่น เล่ม 1 / เลขที่ 001" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="bill-date">วันที่บิล</label>
+                            <input type="date" id="bill-date" class="form-input" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="bill-posting-month">รอบเดือนที่บันทึก</label>
+                            <input type="month" id="bill-posting-month" class="form-input" required>
+                            <small class="form-help">วันที่บิลเป็นเดือนก่อนหน้าได้ แต่ยอดจะรวมในรอบเดือนนี้</small>
+                        </div>
                     </div>
-                    <div class="form-group" id="bill-project-new-group" style="display:none;">
-                        <label class="form-label" for="bill-project-new-name">ชื่อโครงการ / กิจกรรมเพิ่มเติม</label>
-                        <input type="text" id="bill-project-new-name" class="form-input w-full" placeholder="พิมพ์ชื่อโครงการใหม่..." style="padding:10px;">
+                </section>
+
+                <section class="bill-form-section" aria-labelledby="bill-sec-class">
+                    <h4 class="bill-form-section-title" id="bill-sec-class"><i data-lucide="folder-tree"></i> โครงการและแหล่งเงิน</h4>
+                    <div class="bill-grid">
+                        <div class="form-group" id="bill-project-select-group">
+                            <div class="bill-label-row">
+                                <label class="form-label" for="bill-project">โครงการ</label>
+                                <button type="button" class="btn btn-link btn-xs bill-quick-add" onclick="quickAddProject('bill')">
+                                    <i data-lucide="plus"></i> เพิ่มโครงการด่วน
+                                </button>
+                            </div>
+                            <select id="bill-project" class="form-select w-full" required></select>
+                        </div>
+                        <div class="form-group" id="bill-project-new-group" style="display:none;">
+                            <label class="form-label" for="bill-project-new-name">ชื่อโครงการ / กิจกรรมเพิ่มเติม</label>
+                            <input type="text" id="bill-project-new-name" class="form-input w-full" placeholder="พิมพ์ชื่อโครงการใหม่...">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="bill-category-input">หมวดหมู่รายจ่าย</label>
+                            <input type="hidden" id="bill-category">
+                            <input type="text" id="bill-category-input" class="form-input w-full" list="bill-category-list" placeholder="พิมพ์หรือเลือกหมวดหมู่..." required>
+                            <datalist id="bill-category-list"></datalist>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="bill-fund-source-input">แหล่งเงินสำรองจ่าย</label>
+                            <input type="hidden" id="bill-fund-source">
+                            <input type="text" id="bill-fund-source-input" class="form-input w-full" list="bill-fund-source-list" placeholder="พิมพ์หรือเลือกแหล่งเงิน..." required>
+                            <datalist id="bill-fund-source-list"></datalist>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="bill-claim-type">ประเภทการเบิก</label>
+                            <select id="bill-claim-type" class="form-select w-full">
+                                <option value="claim">ขอเบิกจากมูลนิธิ (Claimable)</option>
+                                <option value="no-claim">ไม่เบิกจากมูลนิธิ (Non-claimable)</option>
+                            </select>
+                        </div>
                     </div>
+                </section>
+
+                <section class="bill-form-section" aria-labelledby="bill-sec-items">
+                    <h4 class="bill-form-section-title" id="bill-sec-items"><i data-lucide="shopping-basket"></i> รายการและยอดเงิน</h4>
+                    <div class="bill-grid">
+                        <div class="form-group bill-span-full">
+                            <label class="form-label" for="bill-vendor-input">ผู้ขาย / ร้านค้า</label>
+                            <input type="hidden" id="bill-vendor">
+                            <input type="text" id="bill-vendor-input" class="form-input w-full" list="bill-vendor-list" placeholder="พิมพ์หรือเลือกผู้ขาย..." required>
+                            <datalist id="bill-vendor-list"></datalist>
+                        </div>
+                        <div class="form-group bill-span-full">
+                            <label class="form-label" for="bill-desc">รายละเอียดรายการ</label>
+                            <input type="text" id="bill-desc" class="form-input" placeholder="รายละเอียดสินค้า/บริการ" required>
+                            <div class="bill-subitems-row">
+                                <button type="button" class="btn btn-outline btn-sm" onclick="openExpenseModalMultiItems()">
+                                    <i data-lucide="list-plus"></i> เพิ่มรายละเอียดรายการย่อย
+                                </button>
+                                <span id="bill-multi-items-summary" class="bill-subitems-summary">ยังไม่มีรายการย่อย</span>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="bill-qty">จำนวน</label>
+                            <input type="number" id="bill-qty" class="form-input text-right" value="1" min="0.01" step="any" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="bill-unit">หน่วย</label>
+                            <input type="text" id="bill-unit" class="form-input" value="รายการ" placeholder="เช่น ชิ้น, กล่อง" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="bill-price">ราคาต่อหน่วย (บาท)</label>
+                            <input type="number" id="bill-price" class="form-input text-right" min="0.01" step="any" inputmode="decimal" placeholder="เช่น 150.00" required>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="bill-form-section" aria-labelledby="bill-sec-extra">
+                    <h4 class="bill-form-section-title" id="bill-sec-extra"><i data-lucide="paperclip"></i> หมายเหตุและหลักฐาน</h4>
                     <div class="form-group">
-                        <label class="form-label" for="bill-category">หมวดหมู่รายจ่าย</label>
-                        <input type="hidden" id="bill-category">
-                        <input type="text" id="bill-category-input" class="form-input w-full" list="bill-category-list" placeholder="พิมพ์หรือเลือกหมวดหมู่..." style="padding:10px;" required>
-                        <datalist id="bill-category-list"></datalist>
+                        <label class="form-label" for="bill-note">หมายเหตุ (ถ้ามี)</label>
+                        <input type="text" id="bill-note" class="form-input" placeholder="ระบุรายละเอียดเพิ่มเติม">
                     </div>
-                </div>
-                <div class="form-grid form-grid-2">
-                    <div class="form-group">
-                        <label class="form-label" for="bill-vendor">ผู้ขาย / ร้านค้า</label>
-                        <input type="hidden" id="bill-vendor">
-                        <input type="text" id="bill-vendor-input" class="form-input w-full" list="bill-vendor-list" placeholder="พิมพ์หรือเลือกผู้ขาย..." style="padding:10px;" required>
-                        <datalist id="bill-vendor-list"></datalist>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label" for="bill-fund-source">แหล่งเงินสำรองจ่าย</label>
-                        <input type="hidden" id="bill-fund-source">
-                        <input type="text" id="bill-fund-source-input" class="form-input w-full" list="bill-fund-source-list" placeholder="พิมพ์หรือเลือกแหล่งเงิน..." style="padding:10px;" required>
-                        <datalist id="bill-fund-source-list"></datalist>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="bill-desc">รายละเอียดรายการ</label>
-                    <input type="text" id="bill-desc" class="form-input" placeholder="รายละเอียดสินค้า/บริการ" required>
-                    <div style="display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap;">
-                        <button type="button" class="btn btn-outline btn-sm" onclick="openExpenseModalMultiItems()">
-                            <i data-lucide="list-plus" style="width:16px; height:16px;"></i> เพิ่มรายละเอียดรายการย่อย
+                    <div class="form-group attachment-manager-launcher">
+                        <label class="form-label">หลักฐานแนบ (เพิ่มได้หลายไฟล์)</label>
+                        <div id="bill-attachments-preview" class="bill-attachments-preview"></div>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="openExpenseFormAttachmentManager()">
+                            <i data-lucide="folder-open"></i> จัดการหลักฐาน
                         </button>
-                        <span id="bill-multi-items-summary" class="text-muted" style="font-size:12px;">ยังไม่มีรายการย่อย</span>
+                        <small class="form-help">เปิดหน้าต่างเดียวกับเมนูจัดการหลักฐาน เพื่อดู เลือก ถ่ายภาพ หรือลบไฟล์</small>
                     </div>
-                </div>
-                <div class="form-grid form-grid-3">
-                    <div class="form-group">
-                        <label class="form-label" for="bill-qty">จำนวน</label>
-                        <input type="number" id="bill-qty" class="form-input" value="1" min="0.01" step="any" required>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label" for="bill-unit">หน่วย</label>
-                        <input type="text" id="bill-unit" class="form-input" value="รายการ" placeholder="เช่น ชิ้น, กล่อง" required>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label" for="bill-price">ราคาต่อหน่วย (บาท)</label>
-                        <input type="number" id="bill-price" class="form-input" min="0.01" step="any" inputmode="decimal" placeholder="เช่น 150.00" required>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="bill-claim-type">ประเภทการเบิก</label>
-                    <select id="bill-claim-type" class="form-select w-full" style="padding:10px;">
-                        <option value="claim">ขอเบิกจากมูลนิธิ (Claimable)</option>
-                        <option value="no-claim">ไม่เบิกจากมูลนิธิ (Non-claimable)</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="bill-note">หมายเหตุ (ถ้ามี)</label>
-                    <input type="text" id="bill-note" class="form-input" placeholder="ระบุรายละเอียดเพิ่มเติม">
-                </div>
-                <div class="form-group attachment-manager-launcher">
-                    <label class="form-label">หลักฐานแนบ (สามารถเพิ่มได้หลายไฟล์)</label>
-                    <div id="bill-attachments-preview" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;"></div>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="openExpenseFormAttachmentManager()" style="display:flex; align-items:center; gap:6px; margin-top:8px;">
-                        <i data-lucide="folder-open" style="width:16px; height:16px;"></i> จัดการหลักฐาน
-                    </button>
-                    <small class="form-help">เปิดหน้าต่างเดียวกับเมนูจัดการหลักฐาน เพื่อดู เลือก ถ่ายภาพ หรือลบไฟล์</small>
-                </div>
+                </section>
             </div>
-            <footer class="modal-footer">
+            <footer class="modal-footer bill-modal-footer">
+                <div class="bill-total" aria-live="polite">
+                    <span>ยอดรวม</span>
+                    <strong id="bill-total-display">฿0.00</strong>
+                </div>
                 <button type="button" class="btn btn-secondary" id="btn-bill-cancel">ยกเลิก</button>
                 <button type="submit" class="btn btn-primary" id="btn-bill-save">บันทึกรายการ</button>
             </footer>
@@ -2574,7 +2595,7 @@
 
 <!-- Application Scripts -->
 <script src="thai-baht.js"></script>
-    <script src="app.js?v=20261104-01"></script>
+    <script src="app.js?v=20261104-02"></script>
 <script>
     // Wire up Master Data modal buttons
     (document.getElementById('modal-master-close') || {}).addEventListener?.('click', closeMasterModal);
