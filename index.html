@@ -7,7 +7,7 @@
     <meta name="description" content="ระบบบันทึกและบริหารรายจ่ายโครงการ มูลนิธิ Dr. Robert Dyckerhoff  วิทยาลัยการอาชีพแม่สะเรียง">
     <!-- SweetAlert2 -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="stylesheet" href="style.css?v=20261104-02">
+    <link rel="stylesheet" href="style.css?v=20261104-03">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- node-qrcode (MIT) ไม่มี browser UMD build — path build/qrcode.min.js เดิม 404 มาตลอด (QRCode จึง undefined)
          โหลดผ่าน ESM bundle ของ jsdelivr (CommonJS→ESM) แล้ว expose เป็น window.QRCode ให้โค้ดเดิมใช้ได้
@@ -2568,9 +2568,18 @@
                     </tbody>
                 </table>
             </div>
-            <button type="button" class="btn btn-action-create btn-sm multi-item-add-button" onclick="addMultiItemRow()">
-                <i data-lucide="plus"></i> เพิ่มรายการสินค้าย่อย
-            </button>
+            <div class="multi-item-actions">
+                <button type="button" class="btn btn-action-create btn-sm multi-item-add-button" onclick="addMultiItemRow()">
+                    <i data-lucide="plus"></i> เพิ่มรายการสินค้าย่อย
+                </button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="downloadMultiItemsTemplate()">
+                    <i data-lucide="download"></i> ดาวน์โหลดแม่แบบ
+                </button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('multi-items-import-file').click()">
+                    <i data-lucide="upload"></i> อัปโหลดไฟล์
+                </button>
+                <input type="file" id="multi-items-import-file" accept=".csv,.xlsx,.xls" hidden onchange="importMultiItemsFile(event)">
+            </div>
         </div>
         <footer class="modal-footer">
             <div style="flex:1; font-weight:700; font-size:14px; color:var(--primary);" id="multi-items-grand-total">
@@ -2595,7 +2604,7 @@
 
 <!-- Application Scripts -->
 <script src="thai-baht.js"></script>
-    <script src="app.js?v=20261104-02"></script>
+    <script src="app.js?v=20261104-03"></script>
 <script>
     // Wire up Master Data modal buttons
     (document.getElementById('modal-master-close') || {}).addEventListener?.('click', closeMasterModal);

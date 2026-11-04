@@ -10222,6 +10222,74 @@ function addMultiItemRow() {
     renderMultiItemsInModal();
 }
 
+const MULTI_ITEMS_TEMPLATE_HEADERS = ['รายการสินค้า', 'จำนวน', 'ราคา/หน่วย'];
+const MULTI_ITEMS_IMPORT_LIMIT = 500;
+
+async function downloadMultiItemsTemplate() {
+    try {
+        await ensureSpreadsheetLib('กำลังสร้างไฟล์แม่แบบ...');
+        const rows = [
+            { 'รายการสินค้า': 'ตัวอย่าง ปากกาลูกลื่น', 'จำนวน': 2, 'ราคา/หน่วย': 15 },
+            { 'รายการสินค้า': 'ตัวอย่าง กระดาษ A4', 'จำนวน': 1, 'ราคา/หน่วย': 120 }
+        ];
+        const worksheet = XLSX.utils.json_to_sheet(rows, { header: MULTI_ITEMS_TEMPLATE_HEADERS });
+        worksheet['!cols'] = [{ wch: 40 }, { wch: 12 }, { wch: 16 }];
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'รายการย่อย');
+        XLSX.writeFile(workbook, 'RDF_MULTI_ITEMS_TEMPLATE.xlsx');
+    } catch (error) {
+        appAlert('สร้างไฟล์แม่แบบไม่สำเร็จ: ' + (error.message || error), 'error');
+    }
+}
+window.downloadMultiItemsTemplate = downloadMultiItemsTemplate;
+
+async function importMultiItemsFile(event) {
+    const input = event && event.target;
+    const file = input && input.files && input.files[0];
+    if (!file) return;
+    showLoading(true);
+    try {
+        const extension = String(file.name || '').split('.').pop().toLowerCase();
+        if (!['csv', 'xlsx', 'xls'].includes(extension)) throw new Error('รองรับเฉพาะไฟล์ CSV, XLSX และ XLS');
+        if (file.size > 5 * 1024 * 1024) throw new Error('ไฟล์ต้องมีขนาดไม่เกิน 5MB');
+        const rawRows = await readQuickImportFile(file);
+        const imported = [];
+        const errors = [];
+        rawRows.forEach((source, index) => {
+            const desc = String(getImportedValue(source, ['รายการสินค้า', 'รายการ', 'รายละเอียด', 'desc', 'description', 'name']) || '').trim();
+            const qtyRaw = getImportedValue(source, ['จำนวน', 'qty', 'quantity']);
+            const priceRaw = getImportedValue(source, ['ราคา/หน่วย', 'ราคาต่อหน่วย', 'ราคา', 'price', 'unitPrice']);
+            if (!desc && qtyRaw === '' && priceRaw === '') return; // blank line
+            const qty = Number(qtyRaw);
+            const price = Number(priceRaw);
+            const problems = [];
+            if (!desc) problems.push('ไม่พบชื่อรายการ');
+            if (!(qty > 0)) problems.push('จำนวนต้องมากกว่า 0');
+            if (!(price >= 0) || priceRaw === '') problems.push('ราคา/หน่วยไม่ถูกต้อง');
+            if (problems.length) errors.push(`แถว ${index + 2}: ${problems.join(', ')}`);
+            else imported.push({ desc, qty, price });
+        });
+        if (errors.length) {
+            appAlert(`พบข้อมูลไม่ถูกต้อง ระบบยังไม่เพิ่มรายการใด\n${errors.slice(0, 15).join('\n')}${errors.length > 15 ? `\n...และอีก ${errors.length - 15} แถว` : ''}`, 'error');
+            return;
+        }
+        if (!imported.length) throw new Error('ไม่พบแถวข้อมูล กรุณาใช้ไฟล์แม่แบบของระบบ');
+        const kept = currentMultiItems.filter(item => String(item.desc || '').trim() || Number(item.price) > 0);
+        if (kept.length + imported.length > MULTI_ITEMS_IMPORT_LIMIT) {
+            throw new Error(`รองรับรายการย่อยไม่เกิน ${MULTI_ITEMS_IMPORT_LIMIT} รายการต่อบิล`);
+        }
+        currentMultiItems = kept.concat(imported);
+        renderMultiItemsInModal();
+        appToast(`เพิ่มรายการย่อยจากไฟล์ ${imported.length} รายการ`);
+    } catch (error) {
+        appAlert('นำเข้ารายการย่อยไม่สำเร็จ: ' + (error.message || error), 'error');
+    } finally {
+        showLoading(false);
+        if (input) input.value = '';
+    }
+}
+window.importMultiItemsFile = importMultiItemsFile;
+
 function removeMultiItemRow(index) {
     currentMultiItems.splice(index, 1);
     renderMultiItemsInModal();

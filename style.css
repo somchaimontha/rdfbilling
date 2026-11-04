@@ -3699,6 +3699,17 @@ button, input, select, textarea {
     min-width: 640px;
 }
 
+.multi-item-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.multi-item-actions .multi-item-add-button {
+    margin-top: 0;
+}
+
 #multi-items-table .multi-item-qty {
     min-width: 90px;
 }
