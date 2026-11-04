@@ -90,7 +90,11 @@ test('institution and location management uses one shared registry across the sy
     assert.match(app, /rebuildOrganizationFilter\('summary-org-filter'/);
     assert.match(app, /rebuildOrganizationFilter\('export-org-filter'/);
     assert.match(app, /setupAdminUserOrgSelect\(currentSelection\)/);
-    assert.match(app, /if \(adminUserList\.length\) renderUserManagementRows\(\)/);
+    assert.match(app, /async function loadAdminUserList\(\)/);
+    assert.match(app, /if \(adminUserListLoaded\) renderUserManagementRows\(\)/);
+    assert.match(app, /await loadAdminUserList\(\);[\s\S]*?renderMasterData\(\)/);
+    assert.match(app, /adminUserListLoaded[\s\S]*?กำลังโหลดจำนวนผู้ใช้/);
+    assert.match(app, /master === 'organization' && !adminUserListLoaded[\s\S]*?await loadAdminUserList\(\)/);
 });
 
 test('institution registry prevents duplicate codes and unsafe deactivation', () => {

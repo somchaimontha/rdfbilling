@@ -7,7 +7,7 @@
     <meta name="description" content="ระบบบันทึกและบริหารรายจ่ายโครงการ มูลนิธิ Dr. Robert Dyckerhoff  วิทยาลัยการอาชีพแม่สะเรียง">
     <!-- SweetAlert2 -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="stylesheet" href="style.css?v=20261013-03">
+    <link rel="stylesheet" href="style.css?v=20261104-01">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- node-qrcode (MIT) ไม่มี browser UMD build — path build/qrcode.min.js เดิม 404 มาตลอด (QRCode จึง undefined)
          โหลดผ่าน ESM bundle ของ jsdelivr (CommonJS→ESM) แล้ว expose เป็น window.QRCode ให้โค้ดเดิมใช้ได้
@@ -385,14 +385,39 @@
                 </div>
             </div>
 
-            <!-- Additional Project Bills Button (No Table) -->
+            <!-- Additional Project Bills: every project other than "ปกติ" -->
             <div class="widget" style="margin-bottom:24px;">
                 <div class="widget-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
                     <h3 class="widget-title" id="additional-bills-widget-title" style="margin-bottom:0;">รายการใช้จ่าย (โครงการเพิ่มเติม)</h3>
-                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                        <button class="btn btn-accent btn-sm" onclick="openExpenseModal(null, true)" style="display:flex; align-items:center; gap:6px;">
-                            <i data-lucide="folder-plus" style="width:16px; height:16px;"></i> เพิ่มรายการใช้จ่าย
+                    <div class="entry-widget-actions">
+                        <button class="btn btn-outline btn-sm monthly-bills-records-toggle" id="additional-bills-records-toggle" type="button" onclick="toggleAdditionalBillsRecords()" aria-controls="additional-bills-records" aria-expanded="true" title="ซ่อนรายการโครงการเพิ่มเติมที่บันทึกแล้ว">
+                            <i data-lucide="chevron-up" style="width:16px; height:16px;"></i>
+                            <span data-role="label">ซ่อนรายการเดิม</span>
                         </button>
+                        <button class="btn btn-primary btn-sm" type="button" onclick="toggleQuickExpenseEntry(undefined, 'PRJ')" style="display:flex; align-items:center; gap:6px;">
+                            <i data-lucide="table-2" style="width:16px; height:16px;"></i> เพิ่มในตาราง
+                        </button>
+                        <button class="btn btn-outline btn-sm" type="button" onclick="openExpenseModal(null, true)" style="display:flex; align-items:center; gap:6px;">
+                            <i data-lucide="maximize-2" style="width:16px; height:16px;"></i> ฟอร์มเต็ม
+                        </button>
+                    </div>
+                </div>
+                <div id="quick-project-entry-host"></div>
+                <div class="monthly-bills-records" id="additional-bills-records">
+                    <div class="table-container">
+                        <table class="data-table compact-record-table" id="additional-bills-table">
+                            <thead>
+                                <tr>
+                                    <th>เลขบิล / ใบเสร็จ</th>
+                                    <th>วันที่ / รอบ</th>
+                                    <th>รายละเอียดรายการ</th>
+                                    <th class="text-right">จำนวนเงิน</th>
+                                    <th>หลักฐาน / ประเภท</th>
+                                    <th class="text-center">เครื่องมือ</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -2510,10 +2535,10 @@
                 <table class="data-table" id="multi-items-table">
                     <thead>
                         <tr>
-                            <th>รายการนค้า/รายละเอียด</th>
-                            <th class="text-right" style="width:80px;">จำนวน</th>
-                            <th class="text-right" style="width:100px;">ราคาต่อหน่วย</th>
-                            <th class="text-right" style="width:120px;">ราคารวมม (฿)</th>
+                            <th style="min-width:220px;">รายการสินค้า/รายละเอียด</th>
+                            <th class="text-right" style="width:110px; min-width:110px;">จำนวน</th>
+                            <th class="text-right" style="width:140px; min-width:140px;">ราคาต่อหน่วย</th>
+                            <th class="text-right" style="width:130px; min-width:130px;">ราคารวม (฿)</th>
                             <th class="text-center" style="width:80px;">เครื่องมือ</th>
                         </tr>
                     </thead>
@@ -2549,7 +2574,7 @@
 
 <!-- Application Scripts -->
 <script src="thai-baht.js"></script>
-    <script src="app.js?v=20261013-08"></script>
+    <script src="app.js?v=20261104-01"></script>
 <script>
     // Wire up Master Data modal buttons
     (document.getElementById('modal-master-close') || {}).addEventListener?.('click', closeMasterModal);

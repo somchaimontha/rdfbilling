@@ -1068,6 +1068,7 @@ button, input, select, textarea {
 /* Billing forms contain many meaningful fields. Keep headers and inputs at a
    readable width instead of letting the browser compress them into slivers. */
 #full-bills-table,
+#additional-bills-table,
 #attached-bills-table {
     min-width: 1400px;
 }
@@ -1106,6 +1107,7 @@ button, input, select, textarea {
     }
 
     #full-bills-table.responsive-record-table,
+    #additional-bills-table.responsive-record-table,
     #attached-bills-table.responsive-record-table,
     #food-bills-table.responsive-record-table {
         display: table;
@@ -1114,6 +1116,7 @@ button, input, select, textarea {
     }
 
     #full-bills-table.responsive-record-table,
+    #additional-bills-table.responsive-record-table,
     #attached-bills-table.responsive-record-table {
         min-width: 640px;
     }
@@ -2467,12 +2470,18 @@ button, input, select, textarea {
     overflow-wrap: anywhere;
 }
 
-#full-bills-table.compact-record-table th:nth-child(1) { width: 13%; }
-#full-bills-table.compact-record-table th:nth-child(2) { width: 13%; }
-#full-bills-table.compact-record-table th:nth-child(3) { width: 32%; }
-#full-bills-table.compact-record-table th:nth-child(4) { width: 14%; }
-#full-bills-table.compact-record-table th:nth-child(5) { width: 16%; }
-#full-bills-table.compact-record-table th:nth-child(6) { width: 12%; }
+#full-bills-table.compact-record-table th:nth-child(1),
+#additional-bills-table.compact-record-table th:nth-child(1) { width: 13%; }
+#full-bills-table.compact-record-table th:nth-child(2),
+#additional-bills-table.compact-record-table th:nth-child(2) { width: 13%; }
+#full-bills-table.compact-record-table th:nth-child(3),
+#additional-bills-table.compact-record-table th:nth-child(3) { width: 32%; }
+#full-bills-table.compact-record-table th:nth-child(4),
+#additional-bills-table.compact-record-table th:nth-child(4) { width: 14%; }
+#full-bills-table.compact-record-table th:nth-child(5),
+#additional-bills-table.compact-record-table th:nth-child(5) { width: 16%; }
+#full-bills-table.compact-record-table th:nth-child(6),
+#additional-bills-table.compact-record-table th:nth-child(6) { width: 12%; }
 
 #attached-bills-table.compact-record-table th:nth-child(1) { width: 13%; }
 #attached-bills-table.compact-record-table th:nth-child(2) { width: 13%; }
@@ -3686,6 +3695,18 @@ button, input, select, textarea {
     font-weight: 600;
 }
 
+#multi-items-table {
+    min-width: 640px;
+}
+
+#multi-items-table .multi-item-qty {
+    min-width: 90px;
+}
+
+#multi-items-table .multi-item-price {
+    min-width: 120px;
+}
+
 .multi-item-add-button {
     margin-top: 12px;
     padding: 6px 12px;
@@ -3998,6 +4019,7 @@ table.table tbody tr:hover {
     }
     .data-table,
     #full-bills-table,
+    #additional-bills-table,
     #attached-bills-table {
         width: 100% !important;
         min-width: 0 !important;

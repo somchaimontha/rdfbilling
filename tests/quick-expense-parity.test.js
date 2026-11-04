@@ -200,8 +200,12 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(source, /getQuickExpenseDocumentPreview/);
     assert.match(source, /editQuickExpenseDocumentNo/);
     assert.match(source, /function toggleMonthlyBillsRecords/);
-    assert.match(source, /if \(quickExpenseEntryMode === 'ATT'\) toggleAttachmentBillsRecords\(false\);\s*else toggleMonthlyBillsRecords\(false\)/);
-    assert.match(source, /if \(quickExpenseEntryMode === 'ATT'\) toggleAttachmentBillsRecords\(true\);\s*else toggleMonthlyBillsRecords\(true\)/);
+    // Each quick-entry mode hides/restores the saved records of its own widget.
+    assert.match(source, /EXP: \{\s*hostId: 'quick-expense-entry-host',\s*toggleRecords: show => toggleMonthlyBillsRecords\(show\)/);
+    assert.match(source, /PRJ: \{\s*hostId: 'quick-project-entry-host',\s*toggleRecords: show => toggleAdditionalBillsRecords\(show\)/);
+    assert.match(source, /ATT: \{\s*hostId: 'quick-attachment-entry-host',\s*toggleRecords: show => toggleAttachmentBillsRecords\(show\)/);
+    assert.match(source, /if \(open\) \{\s*config\.toggleRecords\(false\);/);
+    assert.match(source, /\} else \{\s*config\.toggleRecords\(true\);/);
     assert.match(style, /\.monthly-bills-records\[hidden\]/);
 });
 

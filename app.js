@@ -845,6 +845,19 @@ function appAlert(message, icon = 'info', title = '') {
     });
 }
 
+// Non-blocking confirmation for successful actions, so a finished batch does not
+// stack another modal dialog on top of the panel the user is working in.
+function appToast(message, icon = 'success') {
+    if (typeof Swal === 'undefined' || !Swal.mixin) return appAlert(message, icon);
+    return Swal.mixin({
+        toast: true,
+        position: 'top-end',
+        showConfirmButton: false,
+        timer: 3500,
+        timerProgressBar: true
+    }).fire({ icon, title: String(message || '') });
+}
+
 // Database status is deliberately non-blocking: users can still inspect the
 // current screen while Apps Script loads or reconnects.
 function setDatabaseStatus(message, status = 'loading', detail = '', canRetry = false) {
@@ -1096,6 +1109,7 @@ let quickFoodAttachmentsByRow = {};
 let quickExpenseFileProcessingCount = 0;
 let quickFoodFileProcessingCount = 0;
 let quickImportPreview = null;
+let foodImportPeriodNotice = '';
 let quickExpenseDraftSaveTimer = null;
 const quickExpenseInlineSaveTimers = new Map();
 let isRestoringQuickExpenseDraft = false;
@@ -3578,13 +3592,32 @@ function renderTables() {
         return matchSearch && matchProj;
     });
 
-    if (filteredExp.length === 0) {
+    // "ปกติ" bills stay in the monthly table; other projects get their own widget.
+    const regularExp = filteredExp.filter(exp => !isAdditionalProjectExpense(exp));
+    const additionalExp = filteredExp.filter(isAdditionalProjectExpense);
+
+    if (regularExp.length === 0) {
         tbodyBills.innerHTML = '<tr><td colspan="6" class="empty-state">ไม่พบรายการบิลในเดือนนี้</td></tr>';
     } else {
-        filteredExp.forEach(exp => {
+        regularExp.forEach(exp => {
             const idx = state.expenses.findIndex(e => e === exp);
             renderExpenseRow(exp, idx, tbodyBills);
         });
+    }
+
+    const additionalTable = document.getElementById('additional-bills-table');
+    const tbodyAdditional = additionalTable && additionalTable.querySelector('tbody');
+    if (tbodyAdditional) {
+        renderTableHeaders('additional-bills-table');
+        tbodyAdditional.innerHTML = '';
+        if (additionalExp.length === 0) {
+            tbodyAdditional.innerHTML = '<tr><td colspan="6" class="empty-state">ไม่พบรายการใช้จ่ายโครงการเพิ่มเติมในเดือนนี้</td></tr>';
+        } else {
+            additionalExp.forEach(exp => {
+                const idx = state.expenses.findIndex(e => e === exp);
+                renderExpenseRow(exp, idx, tbodyAdditional);
+            });
+        }
     }
 
     // 3. Attachment records (ATT)
@@ -3979,8 +4012,16 @@ async function refreshOrganizationsAcrossSystem(showNotice = false) {
         }
         applyMasterDataToState(master);
 
-        const activeOrganizationId = getActiveOrganizationId();
         const currentUser = getCurrentUser();
+        if (isAdminUser(currentUser)) {
+            try {
+                await loadAdminUserList();
+            } catch (userError) {
+                console.warn('Organization user counts could not be refreshed:', userError);
+            }
+        }
+
+        const activeOrganizationId = getActiveOrganizationId();
         if (isAdminUser(currentUser) && activeOrganizationId) {
             localStorage.setItem(getActiveOrganizationStorageKey(currentUser), activeOrganizationId);
         }
@@ -3998,7 +4039,7 @@ async function refreshOrganizationsAcrossSystem(showNotice = false) {
             const currentSelection = document.getElementById('admin-user-org').value;
             setupAdminUserOrgSelect(currentSelection);
         }
-        if (adminUserList.length) renderUserManagementRows();
+        if (adminUserListLoaded) renderUserManagementRows();
         updateFundReceiptWidget();
         clearExportPreviewCache();
         if (document.getElementById('modal-export-pdf')?.classList.contains('active')) renderExportPreview();
@@ -4139,7 +4180,12 @@ function renderMasterOrganizations() {
     });
     (state.organizations || []).forEach((o, idx) => {
         const tr = document.createElement('tr');
-        const assignedUsers = adminUserList.filter(user => user.active !== false && String(user.organizationId) === String(o.id)).length;
+        const assignedUsers = adminUserListLoaded
+            ? adminUserList.filter(user => user.active !== false && String(user.organizationId) === String(o.id)).length
+            : null;
+        const userCountLabel = assignedUsers !== null
+            ? `ผู้ใช้งาน ${assignedUsers} คน`
+            : (adminUserListLoadError ? 'โหลดจำนวนผู้ใช้ไม่สำเร็จ' : 'กำลังโหลดจำนวนผู้ใช้...');
         const isCurrent = String(o.id) === String(activeOrganizationId);
         const hasDuplicateIdentity = (identityCounts.get(String(o.id || '').toUpperCase()) || 0) > 1
             || (identityCounts.get(String(o.shortName || '').toUpperCase()) || 0) > 1;
@@ -4154,7 +4200,7 @@ function renderMasterOrganizations() {
                 <div class="organization-row-badges">
                     ${isCurrent ? '<span class="badge badge-claimable">กำลังใช้งาน</span>' : ''}
                     ${hasDuplicateIdentity ? '<span class="badge organization-duplicate-badge">รหัสข้อมูลซ้ำ</span>' : ''}
-                    <span class="organization-user-count">ผู้ใช้งาน ${assignedUsers} คน</span>
+                    <span class="organization-user-count">${userCountLabel}</span>
                 </div>
             </td>
             <td data-label="ที่อยู่ / ติดต่อ">
@@ -4227,6 +4273,18 @@ function masterFieldValue(item, key, fallback = '') {
 async function handleMasterDelete(master, idx) {
     const item = getMasterCollection(master)[idx];
     if (!item || !item.id) return;
+    if (master === 'organization' && !adminUserListLoaded) {
+        showLoading(true);
+        try {
+            await loadAdminUserList();
+            renderMasterOrganizations();
+        } catch (error) {
+            appAlert('ยังไม่สามารถตรวจสอบผู้ใช้งานของสถาบันนี้ได้ กรุณาลองซิงก์ข้อมูลอีกครั้งก่อนปิดใช้งาน', 'error');
+            return;
+        } finally {
+            showLoading(false);
+        }
+    }
     const assignedUsers = master === 'organization'
         ? adminUserList.filter(user => user.active !== false && String(user.organizationId) === String(item.id)).length
         : 0;
@@ -4618,9 +4676,9 @@ async function quickAddProject(target) {
             organizationId: getActiveOrganizationId()
         });
         if (!result || !result.id) throw new Error('ระบบไม่ส่งรหัสโครงการใหม่กลับมา');
-        const newProj = { id: result.id, name: nameTrimmed, active: true };
+        const newProj = { id: result.id, name: nameTrimmed, active: true, organizationId: getActiveOrganizationId() };
         state.projects.push(newProj);
-        appAlert('เพิ่มโครงการสำเร็จ!');
+        appToast('เพิ่มโครงการสำเร็จ');
         const activeProjects = getActiveProjects();
         const selectedVal = newProj.id;
         
@@ -4686,8 +4744,22 @@ function openExpenseModal(editIdx = null, isNewProject = false) {
         const editingExpense = state.expenses[editIdx];
         expenseModalOrganizationId = editingExpense && editingExpense.organizationId || '';
     }
-    const activeProjects = getActiveProjects(expenseModalOrganizationId || getActiveOrganizationId());
-    populateDropdown('bill-project', activeProjects, 'id', 'name');
+    const modalOrganizationId = expenseModalOrganizationId || getActiveOrganizationId();
+    const activeProjects = getActiveProjects(modalOrganizationId);
+    const additionalProjects = isNewProject && editIdx === null
+        ? activeProjects.filter(project => isAdditionalProjectId(project.id, modalOrganizationId))
+        : [];
+    if (additionalProjects.length) {
+        // Additional projects already exist: choose one from the same dropdown as the
+        // monthly form (เพิ่มโครงการด่วน still covers a brand-new project).
+        isNewProjectExpenseMode = false;
+        if (selectGroup) selectGroup.style.display = 'block';
+        if (newGroup) newGroup.style.display = 'none';
+        if (newNameInput) newNameInput.required = false;
+        populateDropdown('bill-project', additionalProjects, 'id', 'name', additionalProjects[0].id);
+    } else {
+        populateDropdown('bill-project', activeProjects, 'id', 'name', editIdx === null ? getRegularProjectId(modalOrganizationId) : null);
+    }
     setupExpenseMasterInput('category');
     setupExpenseMasterInput('vendor');
     setupExpenseMasterInput('fundSource');
@@ -6542,8 +6614,8 @@ function addNewColumn(label) {
 function renderTableHeaders(tableId) {
     const table = document.getElementById(tableId);
     if (!table) return;
-    const isCompactExpenseTable = ['full-bills-table', 'attached-bills-table'].includes(tableId);
-    const isResponsiveRecordTable = ['full-bills-table', 'attached-bills-table', 'food-bills-table'].includes(tableId);
+    const isCompactExpenseTable = ['full-bills-table', 'additional-bills-table', 'attached-bills-table'].includes(tableId);
+    const isResponsiveRecordTable = ['full-bills-table', 'additional-bills-table', 'attached-bills-table', 'food-bills-table'].includes(tableId);
     table.classList.toggle('responsive-record-table', isResponsiveRecordTable);
     if (isResponsiveRecordTable) {
         const container = table.closest('.table-container');
@@ -6584,7 +6656,7 @@ function renderTableHeaders(tableId) {
 
 function renderExpenseRow(exp, idx, tbody) {
     const recordTable = tbody && tbody.closest('table');
-    if (recordTable && recordTable.id === 'full-bills-table') {
+    if (recordTable && (recordTable.id === 'full-bills-table' || recordTable.id === 'additional-bills-table')) {
         renderCompactExpenseRow(exp, idx, tbody);
         return;
     }
@@ -6916,16 +6988,57 @@ function getSelectedMonthDefaultDateStr() {
     return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
+// The project named "ปกติ" is the organisation's regular monthly project and is
+// listed under "รายการบิลประจำเดือน". Every other project is an additional project:
+// it is listed under "รายการใช้จ่าย (โครงการเพิ่มเติม)" and exported as its own
+// report section. Orgs without a "ปกติ" project fall back to the old default.
+const REGULAR_PROJECT_NAME = 'ปกติ';
+
+function isRegularProjectName(name) {
+    return normalizeMasterName(name) === normalizeMasterName(REGULAR_PROJECT_NAME);
+}
+
+function getRegularProjectId(organizationId = getActiveOrganizationId()) {
+    const projects = (state.projects || []).filter(project => project && project.id && isMasterItemInActiveOrganization(project, organizationId));
+    const regular = projects.find(project => isRegularProjectName(project.name));
+    if (regular) return regular.id;
+    const active = projects.filter(project => project.active !== false);
+    const dormitoryProject = active.find(project => /หอพัก|ค่าซ่อมแซม/i.test(String(project.name || '')));
+    return (dormitoryProject || active[0] || {}).id || '';
+}
+
+function isAdditionalProjectId(projectId, organizationId) {
+    const id = String(projectId || '');
+    if (!id) return false;
+    const project = (state.projects || []).find(item => String(item.id) === id);
+    // Unknown projects stay in the monthly list so a record can never disappear.
+    if (!project || isRegularProjectName(project.name)) return false;
+    const projectOrganizationId = project.organizationId || project.organization_id || organizationId || getActiveOrganizationId();
+    return String(getRegularProjectId(projectOrganizationId)) !== id;
+}
+
+function isAdditionalProjectExpense(expense) {
+    return !!expense && isAdditionalProjectId(expense.projectId, expense.organizationId);
+}
+
+function getAdditionalProjects(organizationId = getActiveOrganizationId()) {
+    return (state.projects || []).filter(project => project && project.id && project.active !== false
+        && isMasterItemInActiveOrganization(project, organizationId)
+        && isAdditionalProjectId(project.id, organizationId));
+}
+
 function getQuickDefaultProjectId() {
-    const projects = (state.projects || []).filter(project => project && project.id && project.active !== false);
-    const dormitoryProject = projects.find(project => /หอพัก|ค่าซ่อมแซม/i.test(String(project.name || '')));
-    return (dormitoryProject || projects[0] || {}).id || '';
+    if (quickExpenseEntryMode === 'PRJ') return (getAdditionalProjects()[0] || {}).id || '';
+    return getRegularProjectId();
 }
 
 function populateQuickExpenseProjectOptions(selectedId = '') {
     const select = document.getElementById('inline-exp-project');
     if (!select) return;
-    const projects = (state.projects || []).filter(project => project && project.id && project.active !== false);
+    const allProjects = (state.projects || []).filter(project => project && project.id && project.active !== false);
+    const projects = quickExpenseEntryMode === 'PRJ'
+        ? allProjects.filter(project => isAdditionalProjectId(project.id))
+        : allProjects;
     const defaultId = selectedId || getQuickDefaultProjectId();
     select.innerHTML = [
         '<option value="">เลือกโครงการ</option>',
@@ -7163,7 +7276,7 @@ function ensureQuickExpenseTrailingRow(sourceRowId) {
 }
 
 function validateQuickExpenseInlineEdit(draft) {
-    if (quickExpenseEntryMode === 'EXP' && !draft.receiptNo) return 'กรุณาระบุเลขที่ใบเสร็จ';
+    if (quickExpenseEntryMode !== 'ATT' && !draft.receiptNo) return 'กรุณาระบุเลขที่ใบเสร็จ';
     if (!draft.expenseDate) return 'กรุณาระบุวันที่บิล';
     if (!draft.vendorName) return 'กรุณาระบุร้านค้า/ผู้ขาย';
     if (!draft.description) return 'กรุณาระบุรายละเอียด';
@@ -8007,11 +8120,18 @@ function addQuickExpenseSavedRow(expense) {
     return rowId;
 }
 
+// Saved rows shown back in the quick table belong to the widget that hosts it:
+// regular-project bills for EXP, additional-project bills for PRJ.
+function isQuickExpenseSavedRowForMode(expense) {
+    if (!isExpenseInSelectedMonth(expense) || quickExpenseHiddenSavedIds.has(String(expense.id || ''))) return false;
+    if (quickExpenseEntryMode === 'PRJ') return isAdditionalProjectExpense(expense);
+    if (quickExpenseEntryMode === 'EXP') return !isAdditionalProjectExpense(expense);
+    return true;
+}
+
 function syncQuickExpenseSavedRows() {
     if (quickExpenseRows.length === 0) return;
-    const savedExpenses = getQuickExpenseDataSource().filter(expense =>
-        isExpenseInSelectedMonth(expense) && !quickExpenseHiddenSavedIds.has(String(expense.id || ''))
-    );
+    const savedExpenses = getQuickExpenseDataSource().filter(isQuickExpenseSavedRowForMode);
     const expectedIds = new Set(savedExpenses.map(expense => String(expense.id || '')));
 
     quickExpenseRows.slice().forEach(rowId => {
@@ -8086,7 +8206,7 @@ function initializeQuickExpenseEntry(options = {}) {
         setValue('inline-exp-posting-month', shared.postingMonth);
 
         getQuickExpenseDataSource()
-            .filter(expense => isExpenseInSelectedMonth(expense) && !quickExpenseHiddenSavedIds.has(String(expense.id || '')))
+            .filter(isQuickExpenseSavedRowForMode)
             .forEach(addQuickExpenseSavedRow);
         const rows = savedDraft && Array.isArray(savedDraft.rows) ? savedDraft.rows : [];
         const restoredRowIds = rows.map(row => addQuickExpenseRow(row, { focus: false, persist: false }));
@@ -8187,32 +8307,88 @@ function toggleAttachmentBillsRecords(force) {
 }
 window.toggleAttachmentBillsRecords = toggleAttachmentBillsRecords;
 
+function toggleAdditionalBillsRecords(force) {
+    const records = document.getElementById('additional-bills-records');
+    const toggle = document.getElementById('additional-bills-records-toggle');
+    if (!records) return;
+    const show = typeof force === 'boolean' ? force : records.hidden;
+    records.hidden = !show;
+    if (toggle) {
+        toggle.setAttribute('aria-expanded', String(show));
+        toggle.dataset.collapsed = show ? 'false' : 'true';
+        toggle.title = show ? 'ซ่อนรายการโครงการเพิ่มเติมที่บันทึกแล้ว' : 'แสดงรายการโครงการเพิ่มเติมที่บันทึกแล้ว';
+        const label = toggle.querySelector('[data-role="label"]');
+        if (label) label.textContent = show ? 'ซ่อนรายการเดิม' : 'แสดงรายการเดิม';
+    }
+}
+window.toggleAdditionalBillsRecords = toggleAdditionalBillsRecords;
+
+// Each quick-entry mode lives inside its own widget and hides that widget's saved
+// records while the entry table is open.
+const QUICK_EXPENSE_MODE_CONFIG = {
+    EXP: {
+        hostId: 'quick-expense-entry-host',
+        toggleRecords: show => toggleMonthlyBillsRecords(show),
+        title: 'เพิ่มรายการบิลในตาราง',
+        description: 'กำหนดข้อมูลร่วมครั้งเดียว แล้วเพิ่มใบเสร็จหลายรายการต่อเนื่อง เลขบิลจะสร้างอัตโนมัติหลังบันทึก',
+        pendingTitle: 'รายการใบเสร็จที่รอบันทึก',
+        receiptHeader: 'เล่มที่ / เลขที่ใบเสร็จ',
+        saveLabel: 'บันทึกใบเสร็จที่รอทั้งหมด'
+    },
+    PRJ: {
+        hostId: 'quick-project-entry-host',
+        toggleRecords: show => toggleAdditionalBillsRecords(show),
+        title: 'เพิ่มรายการใช้จ่ายโครงการเพิ่มเติมในตาราง',
+        description: 'เลือกโครงการเพิ่มเติม (หรือเพิ่มโครงการด่วน) แล้วเพิ่มใบเสร็จหลายรายการต่อเนื่อง เลขบิลจะสร้างอัตโนมัติหลังบันทึก',
+        pendingTitle: 'รายการใบเสร็จโครงการเพิ่มเติมที่รอบันทึก',
+        receiptHeader: 'เล่มที่ / เลขที่ใบเสร็จ',
+        saveLabel: 'บันทึกรายการโครงการเพิ่มเติมทั้งหมด'
+    },
+    ATT: {
+        hostId: 'quick-attachment-entry-host',
+        toggleRecords: show => toggleAttachmentBillsRecords(show),
+        title: 'เพิ่มบิลแนบ / ค่าสาธารณูปโภคในตาราง',
+        description: 'กำหนดข้อมูลร่วมครั้งเดียว แล้วเพิ่มบิลแนบหลายรายการต่อเนื่อง เลขบิลจะสร้างอัตโนมัติหลังบันทึก',
+        pendingTitle: 'รายการบิลแนบที่รอบันทึก',
+        receiptHeader: 'เลขอ้างอิง / ใบเสร็จ (ถ้ามี)',
+        saveLabel: 'บันทึกบิลแนบที่รอทั้งหมด'
+    }
+};
+
+function getQuickExpenseModeConfig(mode = quickExpenseEntryMode) {
+    return QUICK_EXPENSE_MODE_CONFIG[mode] || QUICK_EXPENSE_MODE_CONFIG.EXP;
+}
+
+function normalizeQuickExpenseEntryMode(mode) {
+    return mode === 'ATT' || mode === 'PRJ' ? mode : 'EXP';
+}
+
 function updateQuickExpenseEntryModeUI() {
-    const isAttachmentMode = quickExpenseEntryMode === 'ATT';
+    const config = getQuickExpenseModeConfig();
     const panel = document.getElementById('quick-expense-entry');
-    const host = document.getElementById(isAttachmentMode ? 'quick-attachment-entry-host' : 'quick-expense-entry-host');
+    const host = document.getElementById(config.hostId);
     if (panel && host && panel.parentElement !== host) host.appendChild(panel);
     const title = document.getElementById('quick-expense-title');
     const description = title && title.nextElementSibling;
     const pendingTitle = document.querySelector('#quick-expense-form .quick-batch-toolbar strong');
     const receiptHeader = document.querySelector('#quick-expense-batch-table thead th:nth-child(3)');
     const saveButton = document.getElementById('quick-exp-save-btn');
-    if (title) title.textContent = isAttachmentMode ? 'เพิ่มบิลแนบ / ค่าสาธารณูปโภคในตาราง' : 'เพิ่มรายการบิลในตาราง';
-    if (description) description.textContent = isAttachmentMode
-        ? 'กำหนดข้อมูลร่วมครั้งเดียว แล้วเพิ่มบิลแนบหลายรายการต่อเนื่อง เลขบิลจะสร้างอัตโนมัติหลังบันทึก'
-        : 'กำหนดข้อมูลร่วมครั้งเดียว แล้วเพิ่มใบเสร็จหลายรายการต่อเนื่อง เลขบิลจะสร้างอัตโนมัติหลังบันทึก';
-    if (pendingTitle) pendingTitle.textContent = isAttachmentMode ? 'รายการบิลแนบที่รอบันทึก' : 'รายการใบเสร็จที่รอบันทึก';
-    if (receiptHeader) receiptHeader.textContent = isAttachmentMode ? 'เลขอ้างอิง / ใบเสร็จ (ถ้ามี)' : 'เล่มที่ / เลขที่ใบเสร็จ';
-    if (saveButton) saveButton.innerHTML = `<i data-lucide="save"></i> ${isAttachmentMode ? 'บันทึกบิลแนบที่รอทั้งหมด' : 'บันทึกใบเสร็จที่รอทั้งหมด'}`;
+    if (title) title.textContent = config.title;
+    if (description) description.textContent = config.description;
+    if (pendingTitle) pendingTitle.textContent = config.pendingTitle;
+    if (receiptHeader) receiptHeader.textContent = config.receiptHeader;
+    if (saveButton) saveButton.innerHTML = `<i data-lucide="save"></i> ${config.saveLabel}`;
 }
 
 function setQuickExpenseEntryMode(mode) {
-    const nextMode = mode === 'ATT' ? 'ATT' : 'EXP';
+    const nextMode = normalizeQuickExpenseEntryMode(mode);
     if (nextMode === quickExpenseEntryMode) {
         updateQuickExpenseEntryModeUI();
         return false;
     }
     if (quickExpenseRows.length) persistQuickExpenseLocalDraft();
+    // The panel is leaving the previous widget: show that widget's records again.
+    getQuickExpenseModeConfig().toggleRecords(true);
     quickExpenseEntryMode = nextMode;
     updateQuickExpenseEntryModeUI();
     initializeQuickExpenseEntry();
@@ -8225,14 +8401,13 @@ function toggleQuickExpenseEntry(force, mode = quickExpenseEntryMode) {
     const modeChanged = setQuickExpenseEntryMode(mode);
     const open = modeChanged ? true : (typeof force === 'boolean' ? force : panel.hidden);
     panel.hidden = !open;
+    const config = getQuickExpenseModeConfig();
     if (open) {
-        if (quickExpenseEntryMode === 'ATT') toggleAttachmentBillsRecords(false);
-        else toggleMonthlyBillsRecords(false);
+        config.toggleRecords(false);
         if (quickExpenseRows.length === 0) initializeQuickExpenseEntry();
         panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     } else {
-        if (quickExpenseEntryMode === 'ATT') toggleAttachmentBillsRecords(true);
-        else toggleMonthlyBillsRecords(true);
+        config.toggleRecords(true);
     }
     initializeLucide();
 }
@@ -8240,6 +8415,7 @@ window.toggleQuickExpenseEntry = toggleQuickExpenseEntry;
 
 function openQuickExpenseFullForm() {
     if (quickExpenseEntryMode === 'ATT') openAttachmentModal();
+    else if (quickExpenseEntryMode === 'PRJ') openExpenseModal(null, true);
     else openExpenseModal();
 }
 window.openQuickExpenseFullForm = openQuickExpenseFullForm;
@@ -8662,7 +8838,7 @@ function validateQuickExpenseDraft(draft, rowNumber) {
     if (!draft.organizationId) missing.push('หน่วยงาน');
     if (!draft.documentPrefix) missing.push('รหัสผู้ออกบิล');
     if (!/^\d{4}-\d{2}$/.test(draft.postingMonth)) missing.push('รอบบันทึก');
-    if (quickExpenseEntryMode === 'EXP' && !draft.receiptNo) missing.push('เลขที่ใบเสร็จ');
+    if (quickExpenseEntryMode !== 'ATT' && !draft.receiptNo) missing.push('เลขที่ใบเสร็จ');
     if (!draft.expenseDate) missing.push('วันที่บิล');
     if (!draft.vendorName) missing.push('ร้านค้า/ผู้ขาย');
     if (!draft.description) missing.push('รายละเอียด');
@@ -8716,7 +8892,20 @@ function createImportTemplateDate(dateValue) {
 
 function normalizeImportedPostingMonth(value) {
     const text = String(value || '').trim();
-    if (/^\d{4}-\d{2}$/.test(text)) return text;
+    const isoMonth = text.match(/^(\d{4})-(\d{1,2})$/);
+    if (isoMonth) {
+        // Thai users often type the Buddhist year (2569-10); records must be stored in CE,
+        // otherwise they are saved under year 2569 and never appear in the monthly table.
+        let year = Number(isoMonth[1]);
+        if (year > 2400) year -= 543;
+        return `${year}-${String(Number(isoMonth[2])).padStart(2, '0')}`;
+    }
+    const monthYear = text.match(/^(\d{1,2})[\/-](\d{4})$/);
+    if (monthYear) {
+        let year = Number(monthYear[2]);
+        if (year > 2400) year -= 543;
+        return `${year}-${String(Number(monthYear[1])).padStart(2, '0')}`;
+    }
     const date = normalizeImportedDate(value);
     return date ? date.slice(0, 7) : '';
 }
@@ -8771,7 +8960,7 @@ async function downloadQuickImportTemplate(type) {
         const dateColumnIndex = Object.keys(rows[0]).indexOf(dateHeader);
         const dateCell = dateColumnIndex >= 0 ? worksheet[XLSX.utils.encode_cell({ r: 1, c: dateColumnIndex })] : null;
         if (dateCell) dateCell.z = 'mm-dd-yyyy';
-        XLSX.utils.book_append_sheet(workbook, worksheet, importType === 'FOOD' ? 'ค่าอาหาร' : importType === 'ATT' ? 'บิลแนบ' : 'บิลประจำเดือน');
+        XLSX.utils.book_append_sheet(workbook, worksheet, importType === 'FOOD' ? 'ค่าอาหาร' : importType === 'ATT' ? 'บิลแนบ' : importType === 'PRJ' ? 'โครงการเพิ่มเติม' : 'บิลประจำเดือน');
         XLSX.writeFile(workbook, `RDF_${importType}_IMPORT_TEMPLATE.xlsx`);
     } catch (error) {
         appAlert('สร้างไฟล์แม่แบบไม่สำเร็จ: ' + (error.message || error), 'error');
@@ -8816,7 +9005,11 @@ async function readQuickImportFile(file) {
     const extension = String(file.name || '').split('.').pop().toLowerCase();
     if (extension === 'csv') return parseSimpleCsv(await file.text());
     await ensureSpreadsheetLib('กำลังอ่านไฟล์นำเข้า...');
-    const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
+    // Keep date cells as Excel serial numbers. cellDates:true converts through the
+    // browser timezone and in Asia/Bangkok shifts midnight back ~18 minutes (LMT
+    // offset), turning 1 Oct into 30 Sep — rows then land in the wrong month.
+    // normalizeImportedDate() decodes serials with XLSX.SSF, which is timezone-free.
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: false });
     const firstSheet = workbook.SheetNames[0];
     if (!firstSheet) return [];
     return XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet], { defval: '', raw: true });
@@ -8870,7 +9063,7 @@ function mapQuickImportRows(rawRows, type) {
         if (!row.expenseDate) errors.push(type === 'FOOD' ? 'วันที่ซื้อไม่ถูกต้อง' : 'วันที่บิลไม่ถูกต้อง');
         if (type === 'FOOD' && !row.name) errors.push('ไม่พบชื่อรายการ');
         if (type !== 'FOOD' && !row.description) errors.push('ไม่พบรายละเอียด');
-        if (type === 'EXP' && !row.receiptNo) errors.push('ไม่พบเลขที่ใบเสร็จ');
+        if ((type === 'EXP' || type === 'PRJ') && !row.receiptNo) errors.push('ไม่พบเลขที่ใบเสร็จ');
         if (type !== 'FOOD' && !row.vendorName) errors.push('ไม่พบร้านค้า/ผู้ขาย');
         if (row.quantity <= 0) errors.push('จำนวนต้องมากกว่า 0');
         if (row.unitPrice <= 0) errors.push('ราคา/หน่วยต้องมากกว่า 0');
@@ -8917,7 +9110,7 @@ function renderQuickImportPreview() {
     const confirm = document.getElementById('quick-import-confirm');
     if (confirm) confirm.disabled = preview.rows.length === 0 || errorCount > 0;
     const subtitle = document.getElementById('quick-import-subtitle');
-    if (subtitle) subtitle.textContent = `ตัวอย่างก่อนยืนยัน · ${isFood ? 'ค่าอาหารประจำเดือน' : preview.type === 'ATT' ? 'บิลแนบ / ค่าสาธารณูปโภค' : 'รายการบิลประจำเดือน'}`;
+    if (subtitle) subtitle.textContent = `ตัวอย่างก่อนยืนยัน · ${isFood ? 'ค่าอาหารประจำเดือน' : preview.type === 'ATT' ? 'บิลแนบ / ค่าสาธารณูปโภค' : preview.type === 'PRJ' ? 'รายการใช้จ่าย (โครงการเพิ่มเติม)' : 'รายการบิลประจำเดือน'}`;
     modal.classList.add('active');
     initializeLucide();
 }
@@ -9054,11 +9247,16 @@ async function confirmQuickTableImport() {
     setBatchUploadProgress('quick-import', 0, total, { label: 'กำลังเพิ่มรายการจากไฟล์ลงตาราง' });
     try {
         if (preview.type === 'FOOD') {
-            const postingMonth = preview.common.postingMonth || getSelectedPostingMonth();
+            // The food panel always records into the month chosen in the top filter
+            // (that's what its label shows). Silently switching to the file's month
+            // saved rows into a period the table never displays.
+            syncQuickFoodEntryPeriod();
+            const selectedMonth = getSelectedPostingMonth();
+            if (preview.common.postingMonth && preview.common.postingMonth !== selectedMonth) {
+                foodImportPeriodNotice = `รอบบันทึกในไฟล์ (${formatPostingMonth(preview.common.postingMonth)}) ไม่ตรงกับรอบที่เลือก ระบบจะบันทึกเข้ารอบ ${formatPostingMonth(selectedMonth)}`;
+            }
             const category = preview.common.category || 'อาหารประจำเดือน';
-            const postingInput = document.getElementById('quick-food-posting-month');
             const categoryInput = document.getElementById('quick-food-category');
-            if (postingInput) postingInput.value = postingMonth;
             if (categoryInput) categoryInput.value = category;
             removeEmptyQuickFoodRowsBeforeImport();
         } else {
@@ -9082,7 +9280,12 @@ async function confirmQuickTableImport() {
         setBatchUploadProgress('quick-import', total, total, { label: 'เพิ่มรายการจากไฟล์ครบแล้ว', state: 'success' });
         await new Promise(resolve => window.setTimeout(resolve, 350));
         closeQuickImportPreview();
-        appAlert(`เพิ่มข้อมูลจากไฟล์ลงตารางแล้ว ${total} รายการ กรุณาตรวจสอบอีกครั้งก่อนกดบันทึกทั้งหมด`, 'success');
+        if (foodImportPeriodNotice) {
+            appAlert(`เพิ่มข้อมูลจากไฟล์ลงตารางแล้ว ${total} รายการ\n\n${foodImportPeriodNotice}`, 'warning');
+            foodImportPeriodNotice = '';
+        } else {
+            appToast(`เพิ่มข้อมูลจากไฟล์ลงตารางแล้ว ${total} รายการ กรุณาตรวจสอบก่อนกดบันทึกทั้งหมด`);
+        }
     } catch (error) {
         setBatchUploadProgress('quick-import', 0, total, { label: 'เพิ่มรายการจากไฟล์ไม่สำเร็จ', state: 'warning' });
         if (confirmButton) confirmButton.disabled = false;
@@ -9201,7 +9404,7 @@ async function submitQuickExpenseBatch(event) {
             try {
                 const vendorId = await resolveExpenseMasterName('vendor', item.draft.vendorName);
                 const payload = {
-                    idPrefix: quickExpenseEntryMode,
+                    idPrefix: quickExpenseEntryMode === 'ATT' ? 'ATT' : 'EXP',
                     requestId: item.draft.requestId,
                     receiptNo: item.draft.receiptNo,
                     expenseDate: item.draft.expenseDate,
@@ -9310,6 +9513,7 @@ async function submitQuickFoodEntry(event) {
         return;
     }
 
+    syncQuickFoodEntryPeriod();
     const postingMonth = (document.getElementById('quick-food-posting-month') || {}).value || '';
     const category = String((document.getElementById('quick-food-category') || {}).value || 'อาหารประจำเดือน').trim();
     const saveButton = document.getElementById('quick-food-save-btn');
@@ -9435,6 +9639,7 @@ async function submitQuickFoodEntry(event) {
             if (getFoodPostingMonth(savedFood) === getSelectedPostingMonth()) upsertFoodRecord(savedFood);
         });
         clearMonthlyRecordFilters();
+        if (savedRows.length) foodBillsTableExpanded = true;
         renderFoodBillsTable();
         if (!quickFoodRows.length) addQuickFoodRow({}, { focus: false });
         renumberQuickFoodRows();
@@ -9447,7 +9652,13 @@ async function submitQuickFoodEntry(event) {
             attachmentErrorCount ? `หลักฐานอัปโหลดไม่สำเร็จ ${attachmentErrorCount} ไฟล์` : '',
             failedRows.length ? `บันทึกไม่สำเร็จ ${failedRows.length} รายการ\n${failedRows.map(item => `แถว ${item.rowNumber}: ${item.error.message || item.error}`).join('\n')}` : ''
         ].filter(Boolean).join('\n\n');
-        appAlert(message, failedRows.length || attachmentErrorCount ? 'warning' : 'success');
+        if (failedRows.length || attachmentErrorCount) {
+            appAlert(message, 'warning');
+        } else {
+            appToast(message);
+            const foodTable = document.getElementById('food-bills-table');
+            if (foodTable && savedRows.length) foodTable.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
     } catch (error) {
         appAlert('ไม่สามารถเริ่มบันทึกค่าอาหารได้: ' + error.message, 'error');
     } finally {
@@ -9756,7 +9967,14 @@ function openMultiItemsModal(target) {
     } else {
         currentMultiItems = [];
     }
-    
+    if (!currentMultiItems.length) {
+        const prefix = String(target || '').toLowerCase();
+        const desc = String((document.getElementById(`inline-${prefix}-desc`) || {}).value || '').trim();
+        const qty = parseFloat((document.getElementById(`inline-${prefix}-qty`) || {}).value) || 1;
+        const price = parseFloat((document.getElementById(`inline-${prefix}-price`) || {}).value) || 0;
+        if (desc || price) currentMultiItems.push({ desc, qty, price });
+    }
+
     renderMultiItemsInModal();
     
     const modal = document.getElementById('modal-multi-items');
@@ -9771,6 +9989,14 @@ function openQuickExpenseMultiItems(rowId) {
     currentQuickExpenseRowId = rowId;
     currentMultiItemsTarget = 'QUICK_EXPENSE_ROW';
     currentMultiItems = JSON.parse(JSON.stringify(quickExpenseMultiItemsByRow[rowId] || []));
+    if (!currentMultiItems.length) {
+        // Seed the first sub-item from what the user already typed in the row,
+        // otherwise saving the modal overwrites that description with the new items.
+        const desc = String((getQuickExpenseRowField(rowId, 'description') || {}).value || '').trim();
+        const qty = parseFloat((getQuickExpenseRowField(rowId, 'quantity') || {}).value) || 1;
+        const price = parseFloat((getQuickExpenseRowField(rowId, 'unitPrice') || {}).value) || 0;
+        if (desc || price) currentMultiItems.push({ desc, qty, price });
+    }
     renderMultiItemsInModal();
     const modal = document.getElementById('modal-multi-items');
     if (modal) {
@@ -9794,6 +10020,12 @@ function openExpenseModalMultiItems() {
     currentQuickExpenseRowId = null;
     currentMultiItemsTarget = 'FULL_EXPENSE';
     currentMultiItems = JSON.parse(JSON.stringify(expenseModalNoteMetadata.multiItems || []));
+    if (!currentMultiItems.length) {
+        const desc = String((document.getElementById('bill-desc') || {}).value || '').trim();
+        const qty = parseFloat((document.getElementById('bill-qty') || {}).value) || 1;
+        const price = parseFloat((document.getElementById('bill-price') || {}).value) || 0;
+        if (desc || price) currentMultiItems.push({ desc, qty, price });
+    }
     renderMultiItemsInModal();
     const modal = document.getElementById('modal-multi-items');
     if (modal) {
@@ -10334,7 +10566,8 @@ function getExportSignatureProjectTargets() {
         projectsById.set(projectId, {
             key: `project:${projectId}`,
             type: 'project',
-            sectionKey: 'bills',
+            // Additional projects are printed in their own section; sign after it.
+            sectionKey: isAdditionalProjectExpense(expense) ? getExportProjectSectionKey(projectId) : 'bills',
             projectId,
             label: getProjectName(projectId) || projectId,
         });
@@ -12073,12 +12306,23 @@ function buildExportSectionData(section) {
     const orgFilter = (orgFilterSel && getCurrentUserRole() === 'admin') ? orgFilterSel.value : '';
     const inOrg = (x) => !orgFilter || x.organizationId === orgFilter;
 
-    if (section === 'bills' || section === 'attach') {
+    const projectSection = String(section || '').startsWith(EXPORT_PROJECT_SECTION_PREFIX)
+        ? getExportSectionDefinition(section)
+        : null;
+    if (section === 'bills' || section === 'attach' || projectSection) {
+        const isExpenseSection = section !== 'attach';
         const source = contextReady
-            ? (section === 'bills' ? exportReportData.expenses : exportReportData.attachments)
-            : (section === 'bills' ? (state.expenses || []) : (state.attachments || []));
-        const rows = source
-            .filter(x => (!reportMonth || getExpensePostingMonth(x) === reportMonth) && inOrg(x))
+            ? (isExpenseSection ? exportReportData.expenses : exportReportData.attachments)
+            : (isExpenseSection ? (state.expenses || []) : (state.attachments || []));
+        // "รายการบิลประจำเดือน" = regular project only; each additional project
+        // has its own section, so together they still cover every bill once.
+        const inSection = x => {
+            if (projectSection) return String(x.projectId || '') === String(projectSection.projectId);
+            if (section === 'bills') return !isAdditionalProjectExpense(x);
+            return true;
+        };
+        const rows = (source || [])
+            .filter(x => (!reportMonth || getExpensePostingMonth(x) === reportMonth) && inOrg(x) && inSection(x))
             .map((x, sourceIndex) => ({
                 id: x.id,
                 sequence: Number(x.sequence || x.sortOrder) || sourceIndex + 1,
@@ -13268,15 +13512,29 @@ async function saveUserProfile() {
 
 // ---- Admin User Management ----
 let adminUserList = [];
+let adminUserListLoaded = false;
+let adminUserListLoadError = null;
 let userMgmtFilters = { search: '', role: '' };
+
+async function loadAdminUserList() {
+    try {
+        const res = await apiCall('getUsers');
+        adminUserList = res.users || [];
+        adminUserListLoaded = true;
+        adminUserListLoadError = null;
+        return adminUserList;
+    } catch (error) {
+        adminUserListLoadError = error;
+        throw error;
+    }
+}
 
 async function renderUserManagement() {
     const tbody = document.getElementById('user-management-tbody');
     if (!tbody) return;
     tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">กำลังโหลดข้อมูล...</td></tr>';
     try {
-        const res = await apiCall('getUsers');
-        adminUserList = res.users || [];
+        await loadAdminUserList();
         renderUserManagementRows();
     } catch (err) {
         tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--danger);">โหลดข้อมูลไม่สำเร็จ: ' + escapeHTML(err.message) + '</td></tr>';
@@ -14759,7 +15017,7 @@ window.saveBottomNavOpacity = function() {
     const val = document.getElementById('setting-bottom-nav-opacity').value;
     localStorage.setItem('BOTTOM_NAV_OPACITY', val);
     document.documentElement.style.setProperty('--bottom-nav-opacity', val);
-    showToast('บันทึกความโปร่งใสเมนูด้านล่างสำเร็จ', 'success');
+    appToast('บันทึกความโปร่งใสเมนูด้านล่างสำเร็จ', 'success');
 };
 
 // Call init on load
@@ -14949,6 +15207,7 @@ window.closeExportModal = function() {
 // — เดิมนับจาก DOM table ทำให้รวมแถว "เพิ่มข้อมูล" (inline-add) เกินมาด้วย และไม่ได้กรองตามเดือนของรายงาน
 window.updateExportSectionBadges = function() {
     try {
+        syncExportProjectSectionControls();
         getExportSectionDefinitions().forEach(section => {
             const badge = document.getElementById(section.badgeId);
             if (badge) badge.textContent = getExportSectionRows(section.key).length + ' รายการ';
@@ -15002,6 +15261,7 @@ window.clearExportLogo = function() {
 
 /* Count report rows (นับจากแหล่งเดียวกับ PDF — ดูหมายเหตุที่ window.updateExportSectionBadges) */
 function updateExportSectionBadges() {
+    syncExportProjectSectionControls();
     getExportSectionDefinitions().forEach(section => {
         const badge = document.getElementById(section.badgeId);
         if (badge) badge.textContent = getExportSectionRows(section.key).length + ' รายการ';
@@ -15064,12 +15324,74 @@ const EXPORT_REPORT_SECTIONS = [
     },
 ];
 
+const EXPORT_PROJECT_SECTION_PREFIX = 'prj_';
+
+function getExportReportExpenseSource() {
+    const reportMonth = (document.getElementById('export-report-month') || {}).value || '';
+    const contextReady = exportReportData.month === reportMonth && !exportReportData.loading;
+    const orgFilterSelect = document.getElementById('export-org-filter');
+    const orgFilter = orgFilterSelect && getCurrentUserRole() === 'admin' ? orgFilterSelect.value : '';
+    const source = contextReady ? (exportReportData.expenses || []) : (state.expenses || []);
+    return source.filter(expense => expense && expense.status !== 'cancelled'
+        && (!reportMonth || getExpensePostingMonth(expense) === reportMonth)
+        && (!orgFilter || expense.organizationId === orgFilter));
+}
+
+function getExportProjectSectionKey(projectId) {
+    return EXPORT_PROJECT_SECTION_PREFIX + String(projectId || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+// One "รายการบิล" section per additional project (anything other than "ปกติ") that
+// has bills in the report month. Columns are shared with the monthly bills section.
+function getExportProjectSectionDefinitions() {
+    const projects = new Map();
+    getExportReportExpenseSource().forEach(expense => {
+        if (!isAdditionalProjectExpense(expense)) return;
+        const projectId = String(expense.projectId);
+        if (!projects.has(projectId)) projects.set(projectId, getProjectName(projectId) || projectId);
+    });
+    return Array.from(projects.entries())
+        .sort((a, b) => a[1].localeCompare(b[1], 'th', { numeric: true }))
+        .map(([projectId, name]) => {
+            const key = getExportProjectSectionKey(projectId);
+            return {
+                key,
+                projectId,
+                isProjectSection: true,
+                label: `รายการบิลโครงการ: ${name}`,
+                reportLabel: `รายการบิล - โครงการ ${name}`,
+                checkboxId: `export-chk-${key}`,
+                badgeId: `export-${key}-badge`,
+                icon: 'folder-kanban', accent: '#2563eb', badgeBackground: '#dbeafe',
+                columnSourceKey: 'bills', showColumns: false,
+                appendMonthToLabel: true, supportsAttachments: true,
+            };
+        });
+}
+
 function getExportSectionDefinitions() {
-    return EXPORT_REPORT_SECTIONS.slice();
+    const sections = EXPORT_REPORT_SECTIONS.slice();
+    const billsIndex = sections.findIndex(section => section.key === 'bills');
+    sections.splice(billsIndex + 1, 0, ...getExportProjectSectionDefinitions());
+    return sections;
 }
 
 function getExportSectionDefinition(sectionKey) {
-    return EXPORT_REPORT_SECTIONS.find(section => section.key === sectionKey) || null;
+    return EXPORT_REPORT_SECTIONS.find(section => section.key === sectionKey)
+        || (String(sectionKey || '').startsWith(EXPORT_PROJECT_SECTION_PREFIX)
+            ? getExportProjectSectionDefinitions().find(section => section.key === sectionKey) || null
+            : null);
+}
+
+// The project sections depend on the report month's data, so re-render the
+// section cards and signature targets whenever that set of projects changes.
+function syncExportProjectSectionControls() {
+    const host = document.getElementById('export-section-options');
+    if (!host || host.dataset.registryRendered !== 'true') return;
+    const keys = getExportProjectSectionDefinitions().map(section => section.key).join('|');
+    if (host.dataset.projectSectionKeys === keys) return;
+    renderExportSectionControls(true);
+    renderExportSignatureSectionTargets(true);
 }
 
 function getExportSectionColumnDefinition(sectionKey) {
@@ -15289,6 +15611,7 @@ function renderExportSectionControls(force = false) {
         </div>`;
     }).join('');
     host.dataset.registryRendered = 'true';
+    host.dataset.projectSectionKeys = getExportProjectSectionDefinitions().map(section => section.key).join('|');
     renderExportEvidenceLayoutPreview();
     updateExportSectionBadges();
     if (typeof initializeLucide === 'function') initializeLucide();
@@ -16382,13 +16705,13 @@ async function exportSingleSectionInternal(section) {
 
     const sectionDefinition = getExportSectionDefinition(section);
     if (!sectionDefinition) {
-        if (typeof showToast === 'function') showToast('ไม่พบหัวข้อรายงานที่เลือก', 'warning');
+        appToast('ไม่พบหัวข้อรายงานที่เลือก', 'warning');
         return false;
     }
     const sectionName = sectionDefinition.fileName || sectionDefinition.label.replace(/[\\/:*?"<>|]/g, '_');
     const rows = getExportSectionRows(section);
     if (rows.length === 0) {
-        if (typeof showToast === 'function') showToast('ไม่มีข้อมูลในหัวข้อนี้', 'warning');
+        appToast('ไม่มีข้อมูลในหัวข้อนี้', 'warning');
         return false;
     }
 
@@ -16396,7 +16719,7 @@ async function exportSingleSectionInternal(section) {
     const selectedIds = getExportSelectedSectionColumns(section);
     const cols = columnDefs.filter(c => selectedIds.includes(c.id));
     if (cols.length === 0) {
-        if (typeof showToast === 'function') showToast('กรุณาเลือกคอลัมน์ที่จะดาวน์โหลดอย่างน้อย 1 คอลัมน์', 'warning');
+        appToast('กรุณาเลือกคอลัมน์ที่จะดาวน์โหลดอย่างน้อย 1 คอลัมน์', 'warning');
         return false;
     }
 
@@ -16422,7 +16745,7 @@ async function exportSingleSectionInternal(section) {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
 
-    if (typeof showToast === 'function') showToast('ดาวน์โหลด ' + sectionDefinition.label + ' สำเร็จ', 'success');
+    appToast('ดาวน์โหลด ' + sectionDefinition.label + ' สำเร็จ', 'success');
     return true;
 }
 
