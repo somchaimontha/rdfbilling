@@ -209,6 +209,32 @@ test('quick monthly bill form is a repeatable receipt table with shared collapsi
     assert.match(style, /\.monthly-bills-records\[hidden\]/);
 });
 
+test('additional-project bills have their own table, quick-entry mode, and export sections', () => {
+    assert.match(html, /id="additional-bills-widget-title"/);
+    assert.match(html, /id="quick-project-entry-host"/);
+    assert.match(html, /id="additional-bills-table"/);
+    assert.match(source, /const regularExp = filteredExp\.filter\(exp => !isAdditionalProjectExpense\(exp\)\)/);
+    assert.match(source, /const additionalExp = filteredExp\.filter\(isAdditionalProjectExpense\)/);
+    assert.match(source, /function getExportProjectSectionDefinitions\(\)/);
+    assert.match(source, /sections\.splice\(billsIndex \+ 1, 0, \.\.\.getExportProjectSectionDefinitions\(\)\)/);
+    assert.match(source, /sectionKey: isAdditionalProjectExpense\(expense\) \? getExportProjectSectionKey\(projectId\) : 'bills'/);
+});
+
+test('multi-item bills expand safely and file import validates the full file before appending', () => {
+    assert.match(html, /id="multi-items-import-file"[^>]+accept="\.csv,\.xlsx,\.xls"/);
+    assert.match(html, /onclick="downloadMultiItemsTemplate\(\)"/);
+    assert.match(source, /function buildExpenseSubItemsHtml\(record\)/);
+    assert.match(source, /class="expense-subitems-toggle"[\s\S]*?aria-expanded="false"/);
+    assert.match(source, /const MULTI_ITEMS_IMPORT_LIMIT = 500/);
+    assert.match(source, /const imported = \[\];[\s\S]*?if \(errors\.length\)[\s\S]*?currentMultiItems = kept\.concat\(imported\)/);
+});
+
+test('quick-entry panels provide an explicit return to the normal saved-record table', () => {
+    assert.match(html, /onclick="toggleQuickExpenseEntry\(false\)"[^>]*>[\s\S]*?กลับสู่ตารางปกติ/);
+    assert.match(html, /onclick="toggleQuickFoodEntry\(false\)"[^>]*>[\s\S]*?กลับสู่ตารางปกติ/);
+    assert.match(source, /toggleQuickExpenseEntry\(false\);[\s\S]*?ไม่มีรายการใหม่ที่รอบันทึก กลับสู่ตารางรายการแล้ว/);
+});
+
 test('receipt rows can be reordered across saved and pending entries', () => {
     assert.match(source, /if \(upButton\) upButton\.disabled = index === 0/);
     assert.match(source, /if \(downButton\) downButton\.disabled = index === quickExpenseRows\.length - 1/);
