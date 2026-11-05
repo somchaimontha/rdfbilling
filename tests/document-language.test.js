@@ -77,7 +77,8 @@ function createHarness() {
     vm.runInContext(source + `\n;globalThis.__documentLanguageTest = {
         addDocumentBreakOpportunities, preparePdfDocumentText, buildPdfDocDefinition, sortExportRows,
         wrapPdfTextByWords, splitPdfTableColumns, getPdfTableColumnWidths,
-        EXPORT_BILL_COLUMNS, getExportColumnValue
+        EXPORT_BILL_COLUMNS, getExportColumnValue, formatExportExpenseSubItems,
+        getExportExpenseDescription
     };`, context, { filename: appPath });
     return context.__documentLanguageTest;
 }
@@ -603,6 +604,29 @@ test('bill tables show evidence before amount and collapse identical metadata be
     assert.ok(variedTable);
     assert.equal(variedTable.table.body.filter(row => normalized(row).includes('รายละเอียดร่วม:')).length, 0);
     assert.equal(variedTable.table.body.filter(row => normalized(row).includes('รายละเอียดรายการที่')).length, 2);
+});
+
+test('bill export description includes itemized details without changing the bill total', () => {
+    const api = createHarness();
+    const row = {
+        description: 'ป้ายไวนิลพร้อมโครงไม้',
+        amount: 5000,
+        includeSubItems: true,
+        subItems: [
+            { desc: 'ป้ายไวนิล', qty: 1, price: 3200 },
+            { desc: 'โครงไม้', qty: 2, price: 900 },
+        ],
+    };
+
+    const descriptionColumn = api.EXPORT_BILL_COLUMNS.find(column => column.id === 'description');
+    const exported = api.getExportColumnValue(descriptionColumn, row, 0);
+    assert.match(exported, /ป้ายไวนิลพร้อมโครงไม้/);
+    assert.match(exported, /1\. ป้ายไวนิล — 1\.00 × 3,200\.00 = 3,200\.00 บาท/);
+    assert.match(exported, /2\. โครงไม้ — 2\.00 × 900\.00 = 1,800\.00 บาท/);
+    assert.equal(row.amount, 5000);
+
+    row.includeSubItems = false;
+    assert.equal(api.getExportColumnValue(descriptionColumn, row, 0), 'ป้ายไวนิลพร้อมโครงไม้');
 });
 
 test('report rows sort naturally by bill and receipt number with sequence fallback', () => {

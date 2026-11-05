@@ -5916,6 +5916,7 @@ table.table tbody tr:hover {
 }
 
 .export-section-columns,
+.export-section-subitems,
 .export-section-evidence-layout {
     display: grid;
     min-width: 0;
@@ -5928,6 +5929,7 @@ table.table tbody tr:hover {
 }
 
 .export-section-columns legend,
+.export-section-subitems legend,
 .export-section-evidence-layout legend {
     padding: 0 4px;
     color: var(--text-secondary);
@@ -5942,6 +5944,22 @@ table.table tbody tr:hover {
     color: var(--text-secondary);
     cursor: pointer;
     font-size: 10px;
+}
+
+.export-section-subitems > label {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    grid-column: 1 / -1;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.export-section-subitems input {
+    margin-top: 2px;
+    accent-color: var(--primary);
 }
 
 .export-section-columns input { accent-color: var(--primary); }

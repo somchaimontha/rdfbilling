@@ -12508,23 +12508,29 @@ function buildExportSectionData(section) {
             if (section === 'bills') return !isAdditionalProjectExpense(x);
             return true;
         };
+        const showSubItems = getExportSectionShowSubItems(section);
         const rows = (source || [])
             .filter(x => (!reportMonth || getExpensePostingMonth(x) === reportMonth) && inOrg(x) && inSection(x))
-            .map((x, sourceIndex) => ({
-                id: x.id,
-                sequence: Number(x.sequence || x.sortOrder) || sourceIndex + 1,
-                docNo: x.documentNo || '',
-                receiptNo: x.receiptNo || '',
-                date: x.expenseDate || '',
-                postingMonth: getExpensePostingMonth(x),
-                project: getProjectName(x.projectId),
-                category: getCategoryName(x.categoryId),
-                vendor: getVendorName(x.vendorId),
-                description: x.description || x.detail || '',
-                amount: parseFloat(x.amount) || 0,
-                claimType: x.claimable ? 'เบิกมูลนิธิ' : 'ไม่เบิก',
-                attachmentsCount: (attachmentStore[x.id] || []).length
-            }));
+            .map((x, sourceIndex) => {
+                const subItems = getExportExpenseSubItems(x);
+                return {
+                    id: x.id,
+                    sequence: Number(x.sequence || x.sortOrder) || sourceIndex + 1,
+                    docNo: x.documentNo || '',
+                    receiptNo: x.receiptNo || '',
+                    date: x.expenseDate || '',
+                    postingMonth: getExpensePostingMonth(x),
+                    project: getProjectName(x.projectId),
+                    category: getCategoryName(x.categoryId),
+                    vendor: getVendorName(x.vendorId),
+                    description: x.description || x.detail || '',
+                    subItems,
+                    includeSubItems: showSubItems,
+                    amount: parseFloat(x.amount) || 0,
+                    claimType: x.claimable ? 'เบิกมูลนิธิ' : 'ไม่เบิก',
+                    attachmentsCount: (attachmentStore[x.id] || []).length
+                };
+            });
 
         const sortBy = (document.getElementById('export-sort-by') || {}).value || 'docNo';
         const sortOrder = (document.getElementById('export-sort-order') || {}).value || 'asc';
@@ -13140,6 +13146,8 @@ function loadExportTemplate(name) {
             if (!saved) return;
             const checkbox = document.getElementById(section.checkboxId);
             if (checkbox) checkbox.checked = saved.enabled !== false;
+            const subItemsInput = document.querySelector(`[data-export-subitems-section="${section.key}"]`);
+            if (subItemsInput) subItemsInput.checked = saved.showSubItems !== false;
             document.querySelectorAll(`.export-section-column[data-export-column-section="${section.key}"]`).forEach(input => {
                 input.checked = !saved.columns || saved.columns.includes(input.value);
             });
@@ -15465,7 +15473,7 @@ const EXPORT_BILL_COLUMNS = [
     { id: 'receiptNo', label: 'เล่มที่ / เลขที่ใบเสร็จ', align: 'left', get: r => r.receiptNo, pdfWeight: 1.25 },
     { id: 'postingMonth', label: 'รอบบันทึก', align: 'left', get: r => formatPostingMonth(r.postingMonth), pdfWeight: 0.95 },
     { id: 'vendor', label: 'ผู้ขาย', align: 'left', get: r => r.vendor, pdfWeight: 1.20 },
-    { id: 'description', label: 'รายละเอียดรายการ', align: 'left', get: r => r.description, pdfWeight: 1.80 },
+    { id: 'description', label: 'รายละเอียดรายการ', align: 'left', get: r => getExportExpenseDescription(r), pdfWeight: 1.80 },
     { id: 'project', label: 'โครงการ', align: 'left', get: r => r.project, pdfWeight: 0.90 },
     { id: 'category', label: 'หมวดหมู่', align: 'left', get: r => r.category },
     { id: 'attachmentsCount', label: 'หลักฐาน', align: 'right', get: r => r.attachmentsCount || 0, pdfWeight: 0.48 },
@@ -15485,6 +15493,40 @@ function getExportColumnValue(column, row, rowIndex) {
     return column.get(row, rowIndex) ?? '';
 }
 
+function getExportExpenseSubItems(expense) {
+    return (parseNoteData(expense && expense.note).multiItems || [])
+        .map(item => ({
+            desc: String(item && item.desc || '').trim(),
+            qty: Number(item && item.qty) || 0,
+            price: Number(item && item.price) || 0,
+        }))
+        .filter(item => item.desc);
+}
+
+function formatExportExpenseSubItems(subItems) {
+    return (subItems || []).map((item, index) => {
+        const total = item.qty * item.price;
+        return `${index + 1}. ${item.desc} — ${formatNumber(item.qty)} × ${formatNumber(item.price)} = ${formatNumber(total)} บาท`;
+    }).join('\n');
+}
+
+function getExportExpenseDescription(row) {
+    const description = String(row && row.description || '');
+    if (!row || !row.includeSubItems || !row.subItems || !row.subItems.length) return description;
+    const details = formatExportExpenseSubItems(row.subItems);
+    return details ? `${description}\nรายการย่อย:\n${details}` : description;
+}
+
+function getExportSectionShowSubItems(sectionKey) {
+    const input = document.querySelector(`[data-export-subitems-section="${sectionKey}"]`);
+    return input ? input.checked : true;
+}
+
+window.handleExportSubItemsChange = function() {
+    clearExportPreviewCache();
+    renderExportPreview();
+};
+
 // ทะเบียนหัวข้อรายงานเป็นแหล่งกำหนดกลางของเมนู, Preview, PDF, CSV/Excel และ Template
 // หัวข้อใหม่ลงทะเบียนเพิ่มเพียงจุดเดียว พร้อม columns และ dataProvider (ถ้ามีแหล่งข้อมูลใหม่)
 // ระบบจะสร้างตัวเลือกคอลัมน์ ป้ายจำนวน และการส่งออกให้โดยอัตโนมัติ.
@@ -15494,7 +15536,7 @@ const EXPORT_REPORT_SECTIONS = [
         checkboxId: 'export-chk-bills', badgeId: 'export-bills-badge',
         icon: 'receipt', accent: '#059669', badgeBackground: 'var(--accent-light)',
         columns: EXPORT_BILL_COLUMNS, columnClass: 'export-col-chk', showColumns: true,
-        appendMonthToLabel: true, supportsAttachments: true,
+        appendMonthToLabel: true, supportsAttachments: true, supportsSubItems: true,
     },
     {
         key: 'food', label: 'ค่าอาหารประจำเดือน', reportLabel: 'ค่าอาหารประจำเดือน',
@@ -15508,6 +15550,7 @@ const EXPORT_REPORT_SECTIONS = [
         checkboxId: 'export-chk-attach', badgeId: 'export-attach-badge',
         icon: 'paperclip', accent: '#7c3aed', badgeBackground: '#ede9fe',
         columnSourceKey: 'bills', showColumns: false, supportsAttachments: true,
+        supportsSubItems: true,
     },
 ];
 
@@ -15551,7 +15594,7 @@ function getExportProjectSectionDefinitions() {
                 badgeId: `export-${key}-badge`,
                 icon: 'folder-kanban', accent: '#2563eb', badgeBackground: '#dbeafe',
                 columnSourceKey: 'bills', showColumns: false,
-                appendMonthToLabel: true, supportsAttachments: true,
+                appendMonthToLabel: true, supportsAttachments: true, supportsSubItems: true,
             };
         });
 }
@@ -15614,6 +15657,7 @@ function getExportSectionState() {
         return [section.key, {
             enabled: checkbox ? checkbox.checked : section.defaultChecked !== false,
             columns: getExportSelectedSectionColumns(section.key),
+            showSubItems: getExportSectionShowSubItems(section.key),
             evidenceLayout: section.supportsAttachments
                 ? getExportSectionEvidenceLayoutSetting(section.key)
                 : null,
@@ -15727,6 +15771,7 @@ function renderExportSectionControls(force = false) {
                 ? existingColumns.filter(input => input.checked).map(input => input.value)
                 : null,
             collapsed: !!document.querySelector(`[data-export-section-card="${section.key}"]`)?.classList.contains('is-collapsed'),
+            showSubItems: getExportSectionShowSubItems(section.key),
             evidenceLayout: section.supportsAttachments
                 ? getExportSectionEvidenceLayoutSetting(section.key)
                 : null,
@@ -15743,6 +15788,10 @@ function renderExportSectionControls(force = false) {
             const selected = !stateBefore.columns || stateBefore.columns.includes(column.id);
             return `<label><input type="checkbox" class="export-section-column${columnClass}" data-export-column-section="${escapeHTML(section.key)}" value="${escapeHTML(column.id)}"${selected ? ' checked' : ''} onchange="renderExportPreview()"> ${escapeHTML(column.label)}</label>`;
         }).join('')}</fieldset>` : '';
+        const subItemsHtml = section.supportsSubItems ? `<fieldset class="export-section-subitems">
+            <legend>รายละเอียดหลายรายการในบิล</legend>
+            <label><input type="checkbox" data-export-subitems-section="${escapeHTML(section.key)}"${stateBefore.showSubItems !== false ? ' checked' : ''} onchange="handleExportSubItemsChange()"> แสดงรายการย่อย พร้อมจำนวน ราคา/หน่วย และยอดรวมในไฟล์ส่งออก</label>
+        </fieldset>` : '';
         const savedLayout = stateBefore.evidenceLayout || getExportSectionEvidenceLayoutSetting(section.key);
         const sectionLayout = normalizeExportEvidenceLayout(savedLayout, getExportEvidenceLayoutDefaults());
         const layoutHtml = section.supportsAttachments ? `<fieldset class="export-section-evidence-layout">
@@ -15794,7 +15843,7 @@ function renderExportSectionControls(force = false) {
                     <button type="button" class="btn btn-sm btn-secondary export-section-collapse" data-export-section-toggle onclick="toggleExportSectionDetails('${escapeHTML(section.key)}')" aria-expanded="${stateBefore.collapsed ? 'false' : 'true'}" title="${stateBefore.collapsed ? 'ขยาย' : 'ยุบ'}รายละเอียดหัวข้อ"><i data-lucide="chevron-down"></i></button>
                 </div>
             </div>
-            <div class="export-section-card-body">${columnHtml}${layoutHtml}</div>
+            <div class="export-section-card-body">${columnHtml}${subItemsHtml}${layoutHtml}</div>
         </div>`;
     }).join('');
     host.dataset.registryRendered = 'true';
@@ -16646,6 +16695,7 @@ function getExportPreviewCacheKey() {
             key: section.key,
             enabled: checked(section.checkboxId),
             columns: getExportSelectedSectionColumns(section.key),
+            showSubItems: getExportSectionShowSubItems(section.key),
         })),
         attachments: getExportSelectedColumns('.att-chk'),
         signaturesEnabled: checked('pdf-include-signature'),
